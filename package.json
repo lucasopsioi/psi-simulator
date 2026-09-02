@@ -1,0 +1,42 @@
+{
+  "name": "fsd-psi-sim",
+  "version": "60.0.0",
+  "description": "FSD PSI weekly simulation dashboard",
+  "main": "main.js",
+  "author": "lucasopsioi",
+  "license": "SEE LICENSE IN LICENSE",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test.js",
+    "dist": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "io.lucasopsioi.fsdpsi",
+    "productName": "FSD PSI Sim",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "FSD-PSI.html",
+      "node_modules/xlsx/**"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "FSD-PSI-Sim.exe"
+    },
+    "asar": true
+  }
+}
