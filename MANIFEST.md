@@ -6,8 +6,13 @@
 BINARY   build/icon-preview.png
 BINARY   build/icon.ico
 COPY     preload.js
+OVERLAY  CHANGELOG.md（docs-src 提供）
 OVERLAY  LICENSE（docs-src 提供）
 OVERLAY  README.md（docs-src 提供）
+OVERLAY  docs/screenshots/channel-architecture.png（docs-src 提供）
+OVERLAY  docs/screenshots/monitoring.png（docs-src 提供）
+OVERLAY  docs/screenshots/simulation-editor.png（docs-src 提供）
+OVERLAY  docs/screenshots/workbench.png（docs-src 提供）
 RENAMED  FSD-PSI.html
 RENAMED  README.md
 RENAMED  README.md -> README.zh.md（中文版保留，英文主README来自docs-src）

@@ -32,3 +32,21 @@ npm start                   # or run it as a desktop window (Electron)
 ```
 
 The tool itself is deliberately dependency-free: the entire simulator (engine + UI) opens from disk with zero install, which is what field teams actually need. Dependencies are only for generating demo spreadsheets and the optional desktop shell.
+
+Prefer a packaged build? Grab the portable **FSD-PSI-Sim.exe** from [Releases](https://github.com/lucasopsioi/psi-simulator/releases/latest) — no install, no dependencies; it opens on the built-in sample dataset so the boards are populated from the first second.
+
+## Screenshots
+
+Every screenshot below was taken on the built-in sample dataset that loads on first start (synthetic units, channels and product names).
+
+| Workbench — unit list with live DOS and year-end sell-through risk | Simulation editor — hand-set any SI/SO at any level, the model re-balances |
+|---|---|
+| ![Workbench](docs/screenshots/workbench.png) | ![Simulation editor](docs/screenshots/simulation-editor.png) |
+
+| Channel architecture — drag-to-link direct and downstream channels, reconciliation | Monitoring & targets |
+|---|---|
+| ![Channel architecture](docs/screenshots/channel-architecture.png) | ![Monitoring](docs/screenshots/monitoring.png) |
+
+## Version history
+
+One build number per shipped version; see [CHANGELOG.md](CHANGELOG.md) for the condensed V10 → V79 evolution (SO-target loop, simulation engine, lock quantities, three audit rounds on hand-set numbers, board consolidation into five views).
