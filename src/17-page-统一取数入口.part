@@ -49,7 +49,7 @@ function pv2DimVal(u,d){
   if(d==='rep')return F.repOf(u.country);
   return u[d]||'(未知)';
 }
-function pv2UKey(country,account,model){ return F.unitKey3(country,account,model); }
+function pv2UKey(country,account,model){ return F.unitKey3(country,account,model); }   // 外推映射表的键(引擎 unitSeries 也按它查),保持名字键;uid 转换在 ovExtKeyOf
 /* ---------- 外推手工覆盖层 + 撤销栈 ---------- */
 let ovExtGen=0;
 /* 预算外推行 + 手工覆盖(state.ovExt):替换 SO/SI 后按 库存=上月末+SI−SO 重链该单元后续月库存与金额;

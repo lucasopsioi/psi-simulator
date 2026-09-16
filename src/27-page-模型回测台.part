@@ -157,7 +157,7 @@ async function runModelBacktest(host){
     +'<div class="tblwrap" style="max-height:24vh"><table class="sortable"><thead><tr>'
     +'<th class="l">来源</th><th class="l">单元</th><th class="l">产品线</th><th>平销WMAPE</th><th>现行WMAPE</th><th>实际量</th></tr></thead><tbody>'
     +agg.worst.map(function(x){
-      return '<tr><td class="l">'+esc(x.src)+'</td><td class="l ell" style="max-width:380px" title="'+esc(x.key.split(F.SEP).join(' · '))+'">'+esc(x.key.split(F.SEP).join(' · '))+'</td>'
+      return '<tr><td class="l">'+esc(x.src)+'</td><td class="l ell" style="max-width:380px" title="'+esc(keyLabel(x.key).split(F.SEP).join(' · '))+'">'+esc(keyLabel(x.key).split(F.SEP).join(' · '))+'</td>'
         +'<td class="l">'+esc(x.line)+'</td><td>'+pc(x.wmA)+'</td><td>'+pc(x.wmB)+'</td><td>'+F.fmt(x.act)+'</td></tr>'; }).join('')
     +'</tbody></table></div></div>';
   hh+='<div class="bar" style="margin-top:6px"><button class="ghost" id="btnExpMB">导出 Excel</button></div>';
@@ -169,7 +169,7 @@ async function runModelBacktest(host){
     const data=[['整体',(wmA*100).toFixed(1)+'%',(wmB*100).toFixed(1)+'%',Math.round(agg.sumAct)]];
     Object.keys(agg.perLine).forEach(function(l){ const pl=agg.perLine[l];
       if(pl.act>0)data.push([l,(pl.a/pl.act*100).toFixed(1)+'%',(pl.b/pl.act*100).toFixed(1)+'%',Math.round(pl.act)]); });
-    agg.worst.forEach(function(x){ data.push([x.src+' '+x.key.split(F.SEP).join(' · '),(x.wmA*100).toFixed(1)+'%',(x.wmB*100).toFixed(1)+'%',x.act]); });
+    agg.worst.forEach(function(x){ data.push([x.src+' '+keyLabel(x.key).split(F.SEP).join(' · '),(x.wmA*100).toFixed(1)+'%',(x.wmB*100).toFixed(1)+'%',x.act]); });
     exportTable('模型回测结果',headers,data);
   };
   window.__mbLast={wmA:wmA,wmB:wmB,ms:ms,n:agg.n,workers:workerOk?nw:0};

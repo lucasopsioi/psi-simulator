@@ -118,7 +118,7 @@ function renderSettings(elOpt){
       h+='<div class="panel"><h3>手拍键体检 <span class="muted">('+a.stray.length+' 处属于下游/音频单元的裸键,'+a.dual.length+' 处 FSD 与下游/音频同名两可)</span></h3>'
         +'<div class="note">V70 及之前,下游/音频页周表拍数写的是不带来源前缀的键,推演读不到(或串到同名 FSD 单元)。「迁移」把它们挪到正确的来源前缀(拍数从此生效);「删除」直接清掉;两可的键请先在推演编辑核对再决定。</div>'
         +'<div class="tblwrap" style="max-width:900px"><table><thead><tr><th class="l">键</th><th class="l">袋</th><th class="l">属于</th><th>周数</th></tr></thead><tbody>'
-        +a.stray.concat(a.dual).map(function(x){ return '<tr><td class="l">'+esc(x.key)+'</td><td class="l">'+x.bag+'</td><td class="l">'+x.owner+'</td><td>'+x.n+'</td></tr>'; }).join('')
+        +a.stray.concat(a.dual).map(function(x){ return '<tr><td class="l">'+esc(keyLabel(x.key))+'</td><td class="l">'+x.bag+'</td><td class="l">'+x.owner+'</td><td>'+x.n+'</td></tr>'; }).join('')
         +'</tbody></table></div>'
         +'<div style="margin-top:6px"><button class="ghost" id="btnOvKeyMig"'+(a.stray.length?'':' disabled')+'>迁移到下游/音频前缀('+a.stray.length+')</button> '
         +'<button class="ghost" id="btnOvKeyDrop">删除这些裸键('+(a.stray.length+a.dual.length)+')</button></div></div>';

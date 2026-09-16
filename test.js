@@ -1987,5 +1987,18 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   ok(/去年同周.*基线.*档位.*系数.*增速.*承接.*取整/.test(txt), '血缘文案: 含全部因子', txt);
 })();
 
+
+/* ---------- R3(2026-09-15):稳定 uid 注入 ---------- */
+(function () {
+  const rows = [{ country: 'CO', account: 'A', line: 'L', product: 'P', model: 'M', period: 2026030, psi: 'so', qty: 5 }];
+  const st0 = C.buildStore(rows);
+  eq(Array.from(st0.units.keys()), ['CO::A::M'], 'buildStore 默认键仍是 国家::账户::型号');
+  const map = {}; let seq = 0; const keyOf = nk => map[nk] || (map[nk] = 'u' + (++seq));
+  const st1 = C.buildStore(rows, { keyOf: keyOf });
+  const u = st1.units.get('u1');
+  ok(u && u.nameKey === 'CO::A::M' && u.key === 'u1', 'buildStore keyOf: key=uid, nameKey 保留可读名', u && u.key);
+  eq(C.nameKey3('CO', 'A', null), 'CO::A::', 'nameKey3: 型号空');
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -125,7 +125,7 @@ function renderWatch(elOpt){
     +'</div>';
   const rowHtml=function(r,module){
     if(r.missing)
-      return '<tr style="opacity:.5"><td class="l" colspan="'+(module==='fsd'?11:11)+'">'+esc(r.key.split(F.SEP).join(' · '))
+      return '<tr style="opacity:.5"><td class="l" colspan="'+(module==='fsd'?11:11)+'">'+esc(keyLabel(r.key).split(F.SEP).join(' · '))
         +' <span class="muted">（当前数据中未找到,可能已停售或渠道改名）</span>'
         +' <button class="mini" data-unwatch="'+esc(r.kind)+'" data-wk="'+esc(r.key)+'">移出</button></td></tr>';
     const u=r.it.u,m=r.m,b=r.base;

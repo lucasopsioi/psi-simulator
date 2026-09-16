@@ -1,7 +1,13 @@
 /* ===== 下游渠道 ===== */
 /* 渠道改名:把 oldName 下所有原名写入别名表,迁移手工改写/不管标记的 key,重放重建 */
+function aliasUidForRename(stx,oldA,newA){   // R3:改名前把 新名 nameKey 指向旧单元的 uid,重建后 u.key 不变、所有袋子自然命中
+  if(!stx||!state.uidMap)return 0; let n=0;
+  stx.units.forEach(function(u){ if(u.account!==oldA)return; const nk=F.nameKey3(u.country,newA,u.model); if(!state.uidMap[nk]){ state.uidMap[nk]=u.key; n++; } });
+  return n;
+}
 function renameChannel(oldName,newName,raws){
   raws.forEach(function(raw){ state.channelAlias[String(raw).trim()]=newName; });
+  aliasUidForRename(retailStore,oldName,newName);
   /* key = 国家::渠道::型号,渠道段在中间 */
   const mid=F.SEP+oldName+F.SEP, midNew=F.SEP+newName+F.SEP;
   const migrate=function(bag){
@@ -28,7 +34,7 @@ function applyAliasAndRebuild(){
   bumpDataGen();
   if(!lastRetailRows){ recompute(); return; }
   F.applyChannelMap(lastRetailRows,state.channelAlias);
-  retailStore=F.buildStore(lastRetailRows,{retail:true});
+  retailStore=F.buildStore(lastRetailRows,{retail:true,keyOf:uidOf});
   recompute();
 }
 function retailStatusChips(it){

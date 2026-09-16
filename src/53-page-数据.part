@@ -119,7 +119,7 @@ function importRetailRows(rows,label){
   bumpDataGen();
   const mapRes=F.applyChannelMap(rows,state.channelAlias);
   lastRetailRows=rows;
-  retailStore=F.buildStore(rows,{retail:true});
+  retailStore=F.buildStore(rows,{retail:true,keyOf:uidOf}); migrateBagsToUid();
   retailReport='✅ '+label+'：有效数据 '+F.fmt(rows.length)+' 行 · 渠道×产品单元 '+retailStore.units.size+' 个 · 区间 '
     +F.periodY(retailStore.minPeriod)+F.weekLabel(retailStore.minPeriod)+' ~ '+F.periodY(retailStore.maxPeriod)+F.weekLabel(retailStore.maxPeriod)
     +(mapRes.unmapped?' · 未映射渠道 '+mapRes.names.length+' 个（'+mapRes.names.slice(0,3).join('、')+(mapRes.names.length>3?'…':'')+'，按原名显示）':'');
@@ -134,7 +134,7 @@ function importAudioRows(rows,label){
     return false;
   }
   bumpDataGen();
-  audioStore=F.buildStore(rows);   // INV/INV1 语义同 FSD 表,账户=直接渠道客户
+  audioStore=F.buildStore(rows,{keyOf:uidOf}); migrateBagsToUid();   // INV/INV1 语义同 FSD 表,账户=直接渠道客户
   audioReport='✅ '+label+'：有效数据 '+F.fmt(rows.length)+' 行 · 客户×产品单元 '+audioStore.units.size+' 个 · 区间 '
     +F.periodY(audioStore.minPeriod)+F.weekLabel(audioStore.minPeriod)+' ~ '+F.periodY(audioStore.maxPeriod)+F.weekLabel(audioStore.maxPeriod);
   const rp=$('#report'); if(rp)rp.textContent=audioReport;
@@ -178,6 +178,7 @@ function applyChanAlias(rows){
 }
 /* 渠道改名后迁移手工设置键(键=国家::账户::型号,账户在中段) */
 function migrateAccountKeys(oldA,newA){
+  aliasUidForRename(store,oldA,newA); aliasUidForRename(audioStore,oldA,newA);   // R3
   const mig=function(bag){ if(!bag)return;
     Object.keys(bag).forEach(function(k){
       const parts=k.split(F.SEP);
@@ -239,7 +240,7 @@ function importRows(rows,label){
   }
   bumpDataGen();
   lastFsdRows=rows;                 // 原始行留副本:渠道类别改名时就地重放
-  store=F.buildStore(applyChanAlias(rows));
+  store=F.buildStore(applyChanAlias(rows),{keyOf:uidOf}); migrateBagsToUid();
   recompute();
   const weeks=[];
   store.units.forEach(function(u){ u.periods.forEach(function(p){ if(weeks.indexOf(p)<0)weeks.push(p); }); });
@@ -856,6 +857,41 @@ window.__selftest=async function(arg){
        再按周拆分时余数只能塞进某一周 → 月合计出现 19/13/169/187 这种非 5 倍数。
        断言:承接月(备注含「承接拍数比例」)的 SO 与 SI 都是 roundTo 的倍数。 */
     sfStep('roundStepOk begin');
+    /* R3 门禁 uidOk:①袋子里的键(去前缀)都是 uid 且落在某个单元上 ②改名回环:拍一个数+加监控 → renameChannel → 同一 uid、手拍仍在、监控仍在、数不变 → 改回
+       ③老档迁移:按名字写进袋子的键,migrateBagsToUid 后变成 uid */
+    let uidOk=false;
+    try{
+      const strip=function(k){ return k.replace(/^(r\||a\||n\|)/,''); };
+      const all=new Set(); [D,Dr,Da].forEach(function(Dx){ if(Dx)Dx.list.forEach(function(it){ all.add(it.u.key); }); });
+      let nKeys=0,badKeys=0;
+      [state.ovSO,state.ovSI,state.ovTail,state.decisions,state.growth,state.ignored,state.buyMode].forEach(function(b){ Object.keys(b||{}).forEach(function(k){ if(/^NP\|/.test(k))return; nKeys++; const s2=strip(k); if(!/^u\d+$/.test(s2)||!all.has(s2))badKeys++; }); });
+      const dg=function(){ const out=[]; [D,Dr,Da].forEach(function(Dx,di){ if(!Dx)return; Dx.list.forEach(function(it){ out.push(di+'|'+it.u.key+'|'+((it.sim&&it.sim.rows)||[]).map(function(r){ return r.p+':'+(r.so||0)+':'+(r.si||0)+':'+(r.buy||0)+':'+(r.inv==null?'':r.inv); }).join(',')); }); }); out.sort(); return out.join('\n'); };
+      let sameUid=false,kept=false,wKept=false,same=false,mig=false,info={};
+      const it0=Dr?Dr.list.filter(function(x){ return !x.ignored&&!x.exempt&&x.sim&&x.sim.rows&&x.sim.rows.length&&x.u.rawNames&&x.u.rawNames.length; })[0]:null;
+      if(it0){
+        const u0=it0.u,p0=it0.sim.rows[0].p,old=u0.account,nn=old+'·改名测试';
+        planWrite({src:'retail',key:u0.key,bag:'ovSO',p:p0,val:4321}); computeAll(); addWatch('retail',u0.key);
+        const d1=dg();
+        renameChannel(old,nn,u0.rawNames);
+        const it1=Dr.list.filter(function(x){ return x.u.account===nn&&x.u.model===u0.model&&x.u.country===u0.country; })[0];
+        sameUid=!!(it1&&it1.u.key===u0.key);
+        kept=!!(state.ovSO['r|'+u0.key]&&state.ovSO['r|'+u0.key][p0]===4321);
+        wKept=!!(state.watch.retail[u0.key]);
+        same=dg()===d1;
+        renameChannel(nn,old,u0.rawNames);
+        if(state.ovSO['r|'+u0.key]){ delete state.ovSO['r|'+u0.key][p0]; if(!Object.keys(state.ovSO['r|'+u0.key]).length)delete state.ovSO['r|'+u0.key]; }
+        removeWatch('retail',u0.key); delete state.watchBase[u0.key];
+        /* 老档:按名字写的键 */
+        state.ovSO['r|'+u0.nameKey]={}; state.ovSO['r|'+u0.nameKey][p0]=7;
+        migrateBagsToUid();
+        mig=!!(state.ovSO['r|'+u0.key]&&state.ovSO['r|'+u0.key][p0]===7)&&!state.ovSO['r|'+u0.nameKey];
+        if(state.ovSO['r|'+u0.key]){ delete state.ovSO['r|'+u0.key][p0]; if(!Object.keys(state.ovSO['r|'+u0.key]).length)delete state.ovSO['r|'+u0.key]; }
+        recompute();
+        info={unit:u0.nameKey,uid:u0.key,sameUid:sameUid,kept:kept,wKept:wKept,same:same,mig:mig};
+      }
+      uidOk=badKeys===0&&sameUid&&kept&&wKept&&same&&mig;
+      tms.uid=Object.assign({keys:nKeys,bad:badKeys},info);
+    }catch(e){ tms.uid='ERR:'+String(e&&e.message||e).slice(0,160); }
     /* R5 门禁:血缘必须自洽——全部单元全部推演周,(基线×档位×系数×增速×承接) == 原始;逐单元 quantizeSeq(原始) == 计划;实际 ≤ 计划 */
     let lineageOk=false;
     try{
@@ -2071,9 +2107,9 @@ window.__selftest=async function(arg){
     (function(){ const c=calcCache(); delete c.budTo; delete c.budOv; delete c.pvExt; delete c.lyModels; })();
     sfStep('pendGroup done');
     window.__soToolOff=__soSnap.off; if(SHELL&&SHELL.soTool){ state.cfg.autoFlat=__soSnap.autoFlat; }
-    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&lineageOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
+    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&lineageOk&&uidOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
       incOk:incOk,dosQOk:dosQOk,finOk:finOk,tapAuditOk:tapAuditOk,perfOk:perfOk,smSimOk:smSimOk,sumWatchOk:sumWatchOk,expPrevOk:expPrevOk,targetOk:targetOk,btOk:btOk,mkOk:mkOk,lockOk:lockOk,xgOk:xgOk,aiOk:aiOk,pvOk:pvOk,udOk:udOk,osOk:osOk,npPvOk:npPvOk,npLateOk:npLateOk,reconOk:reconOk,ctOk:ctOk,xgPvOk:xgPvOk,
-      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk, lineageOk:lineageOk,
+      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk, lineageOk:lineageOk, uidOk:uidOk,
       units:store?store.units.size:0, maxPeriod:store?store.maxPeriod:0, pend:pendingList().length,
       files:folderInfo&&folderInfo.files?folderInfo.files.length:0,
       retailUnits:retailStore?retailStore.units.size:0,

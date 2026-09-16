@@ -806,9 +806,35 @@ function mkNorm(s){ return String(s==null?'':s).trim().toLowerCase(); }
 /* 覆盖层键按数据源隔离(2026-09-02 审计:三源同 国家::账户::型号 的单元此前共用 ovSO/ovSI/ovExt 槽位——下游/音频视图拍数会串写 FSD 同名单元,
    反向亦然,锁量还把对方的拍数当手拍 fixed):FSD 保持裸键(兼容旧方案),下游 'r|'、音频 'a|';新品键自带 NP| 前缀。
    明年段 ovExt 同样:FSD 裸键,下游 'r|',音频 'a|',新品 'n|' */
+/* ===== 稳定 uid(R3)=====
+   state.uidMap: 国家::账户::型号 → 'uN'。三张底表构建单元时统一走 uidOf,所以 u.key、ovKey、锁量/监控/决策……全部按 uid 存。
+   改名 = 给新名字登记同一个 uid(renameChannel/migrateAccountKeys),袋子一个键都不用动。老档启动时 migrateBagsToUid 一次性把名称键换成 uid。 */
+function uidOf(nk){ if(!state.uidMap)state.uidMap={}; let id=state.uidMap[nk]; if(!id){ state.uidSeq=(state.uidSeq||0)+1; id='u'+state.uidSeq; state.uidMap[nk]=id; } return id; }
+function keyLabel(k){   // uid → 可读的 国家::账户::型号(找不到就原样)
+  const s2=String(k==null?'':k); const bare=s2.replace(/^(r\||a\||n\|)/,'');
+  const st=[store,retailStore,audioStore]; for(let i=0;i<st.length;i++){ const u=st[i]&&st[i].units.get(bare); if(u&&u.nameKey)return u.nameKey; }
+  const m=state.uidMap||{}; const hit=Object.keys(m).filter(function(nk){ return m[nk]===bare; })[0];
+  return hit||s2;
+}
+function migrateBagsToUid(){
+  const m=state.uidMap||{}; if(!Object.keys(m).length)return 0;
+  const isUid=function(k){ return /^u\d+$/.test(k); };
+  let n=0;
+  const mv=function(bag,conv){ if(!bag)return; Object.keys(bag).forEach(function(k){ const nk=conv(k); if(nk&&nk!==k){ if(bag[nk]==null)bag[nk]=bag[k]; delete bag[k]; n++; } }); };
+  const plain=function(k){ const pm=k.match(/^(r\||a\|)?(.*)$/); const pre=pm[1]||'',rest=pm[2]; if(isUid(rest)||/^NP\|/.test(k))return null; const id=m[rest]; return id?(pre+id):null; };
+  const ext=function(k){ const pm=k.match(/^(r\||a\||n\|)?(.*)$/); const pre=pm[1]||'',rest=pm[2]; if(isUid(rest))return null; const parts=rest.split('\u0001'); if(parts.length!==3)return null; const id=m[F.nameKey3(parts[0],parts[1],parts[2])]; return id?(pre+id):null; };
+  [state.ovSO,state.ovSI,state.ovTail,state.decisions,state.growth,state.ignored,state.buyMode,state.watchBase,
+   state.watch&&state.watch.fsd,state.watch&&state.watch.retail,state.watch&&state.watch.audio,
+   state.riskSel&&state.riskSel.fsd,state.riskSel&&state.riskSel.retail,state.riskSel&&state.riskSel.audio].forEach(function(b){ mv(b,plain); });
+  mv(state.ovExt,ext);
+  ['unit','retailUnit','auUnit'].forEach(function(f){ const v=state.ui[f]; if(v&&!isUid(v)&&m[v]){ state.ui[f]=m[v]; n++; } });
+  return n;
+}
 function ovKey(src,key){ return src==='retail'?('r|'+key):(src==='audio'?('a|'+key):key); }
 function srcNameOf(src){ return src==='fsd'?'FSD':(src==='retail'?'下游':(src==='np'?'新品规划':'音频专表')); }
-function ovExtKeyOf(srcName,k){ return srcName===F.DICT.SRC_RETAIL?('r|'+k):(srcName===F.DICT.SRC_AUDIO?('a|'+k):(srcName===F.DICT.SRC_NP?('n|'+k):k)); }
+function ovExtKeyOf(srcName,k){   // R3:ovExt 袋子的键按 uid 存——k 是 unitKey3 名字键,这里统一换成 uid;映射表本身仍按名字键查
+  const parts=String(k).split('\u0001'); if(parts.length===3)k=uidOf(F.nameKey3(parts[0],parts[1],parts[2]));
+  return srcName===F.DICT.SRC_RETAIL?('r|'+k):(srcName===F.DICT.SRC_AUDIO?('a|'+k):(srcName===F.DICT.SRC_NP?('n|'+k):k)); }
 let __ovMigGen=-1;
 function ovMigrateSrc(){
   /* 旧方案里下游/音频单元的手拍存在裸键下:不属于任何 FSD 单元、但属于下游/音频单元的裸键迁到带源前缀 */

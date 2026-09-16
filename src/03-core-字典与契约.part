@@ -106,14 +106,18 @@ C.parseGrid=function(grid){
 /* ---------- 组装单元 ---------- */
 C.isAudioLine=function(line){ const s=String(line||''); return s.indexOf('音频')>=0||s.toLowerCase().indexOf('audio')>=0; };
 C.SEP='::';
+C.nameKey3=function(country,account,model){ return (country||'')+C.SEP+(account||'')+C.SEP+String(model==null?'':model); };
 C.buildStore=function(rows,opts){
   const retail=!!(opts&&opts.retail);
   const units=new Map(); let maxPeriod=0,minPeriod=Infinity;
   rows.forEach(function(r){
     /* key 含国家:同一账户可在多个国家开展业务(如Andes Digital同时做巴西与加拿大),必须分开 */
-    const k=(r.country||'')+C.SEP+r.account+C.SEP+r.model;
+    /* 稳定键(2026-09-15 FDE 评审 R3):nameKey 仍是 国家::账户::型号(显示/解析用),u.key 由 opts.keyOf 决定——
+       页面传入 uidOf 后 key 变成 u123 这类不含业务名称的 id;渠道/型号改名不再让手拍、锁量、监控失联。默认(引擎单测)仍用 nameKey。 */
+    const nk=(r.country||'')+C.SEP+r.account+C.SEP+r.model;
+    const k=(opts&&opts.keyOf)?opts.keyOf(nk):nk;
     let u=units.get(k);
-    if(!u){ u={key:k,country:r.country,account:r.account,line:r.line,product:r.product,model:r.model,
+    if(!u){ u={key:k,nameKey:nk,country:r.country,account:r.account,line:r.line,product:r.product,model:r.model,
       series:r.series||'',rawNames:{},unmapped:!!r.unmapped,audio:false,weeks:new Map()}; units.set(k,u); }
     if(r.line&&!u.line)u.line=r.line;
     if(r.product&&!u.product)u.product=r.product;
