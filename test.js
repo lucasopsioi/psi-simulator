@@ -68,7 +68,7 @@ eq(p1.rows[0].period, 2026026, 'period 2026026');
 const md = [
   '| Management   Country/Region | Management Account Name(D) | Product Line | Product | Product Model | Period ID | PSI Type | QTY |',
   '| --- | --- | --- | --- | --- | --- | --- | --- |',
-  '| 哥伦比亚 | SED X | 平板 | P | M1 | 2026026 | Sell Out | 47 |'
+  '| 哥伦比亚 | BOREAL X | 平板 | P | M1 | 2026026 | Sell Out | 47 |'
 ].join('\n');
 const p2 = C.parseTable(md);
 eq(p2.rows.length, 1, 'markdown table parsed, separator row skipped');
@@ -92,7 +92,7 @@ eq(g1.rows[1].qty, 1957, 'parseGrid: numeric qty');
 eq(g1.report.total, 2, 'parseGrid: fully-empty row not counted');
 
 /* ---------- mergeFiles: newest wins per cell, in-file dupes sum ---------- */
-const mkR = (acc, model, period, psi, qty) => ({ Drift: 'CO', account: acc, Garnet: '平板', product: 'P', model, period, psi, qty });
+const mkR = (acc, model, period, psi, qty) => ({ country: 'CO', account: acc, line: '平板', product: 'P', model, period, psi, qty });
 const mg = C.mergeFiles([
   { name: 'new.xlsx', mtimeMs: 2000, rows: [mkR('A', 'M', 2026030, 'so', 47), mkR('A', 'M', 2026031, 'so', 5)] },
   { name: 'old.xlsx', mtimeMs: 1000, rows: [mkR('A', 'M', 2026030, 'so', 100), mkR('A', 'M', 2026029, 'so', 9), mkR('A', 'M', 2026029, 'so', 1)] }
@@ -106,11 +106,11 @@ const mgNew = mg.perFile.find(f => f.name === 'new.xlsx');
 eq(mgNew.overridden, 1, 'mergeFiles: overridden count = 1');
 
 /* ---------- audio vs non-audio current window ---------- */
-function mkRows(Garnet, weeks) { // weeks: [period, so, inv]
+function mkRows(line, weeks) { // weeks: [period, so, inv]
   const rows = [];
   weeks.forEach(function (w) {
-    rows.push({ Drift: 'CO', account: 'A', Garnet: Garnet, product: 'P', model: 'M', period: w[0], psi: 'so', qty: w[1] });
-    if (w[2] != null) rows.push({ Drift: 'CO', account: 'A', Garnet: Garnet, product: 'P', model: 'M', period: w[0], psi: 'inv', qty: w[2] });
+    rows.push({ country: 'CO', account: 'A', line: line, product: 'P', model: 'M', period: w[0], psi: 'so', qty: w[1] });
+    if (w[2] != null) rows.push({ country: 'CO', account: 'A', line: line, product: 'P', model: 'M', period: w[0], psi: 'inv', qty: w[2] });
   });
   return rows;
 }
@@ -128,9 +128,9 @@ eq(curT.windowWeeks, [2026031, 2026032, 2026033, 2026034], 'non-audio: zeros are
 eq(curT.dosCalc, 458, 'non-audio DOS = 900/(55/4/7) = 458');
 
 /* ---------- classify ---------- */
-function yearRows(Garnet, year, fromW, toW, so) {
+function yearRows(line, year, fromW, toW, so) {
   const rows = [];
-  for (let w = fromW; w <= toW; w++) rows.push({ Drift: 'CO', account: 'A', Garnet: Garnet, product: 'P', model: 'MX', period: C.mkPeriod(year, w), psi: 'so', qty: so });
+  for (let w = fromW; w <= toW; w++) rows.push({ country: 'CO', account: 'A', line: line, product: 'P', model: 'MX', period: C.mkPeriod(year, w), psi: 'so', qty: so });
   return rows;
 }
 const fw = C.futureWeeksOf(2026034); // W35..53
@@ -182,9 +182,9 @@ eq(simB.blocked, true, 'unconfirmed forecast blocks simulation');
 
 /* ---------- hist ST derivation ---------- */
 const stRows = [
-  { Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: 2026030, psi: 'inv1', qty: 500 },
-  { Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: 2026031, psi: 'inv1', qty: 450 },
-  { Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: 2026031, psi: 'si', qty: 100 }
+  { country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: 2026030, psi: 'inv1', qty: 500 },
+  { country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: 2026031, psi: 'inv1', qty: 450 },
+  { country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: 2026031, psi: 'si', qty: 100 }
 ];
 const uST = C.buildStore(stRows).units.values().next().value;
 eq(C.deriveHistST(uST).get(2026031), 150, 'hist ST = 500+100-450 = 150');
@@ -204,16 +204,16 @@ Object.values(statuses).forEach(s => count[s]++);
 eq(count, { auto: 6, partial: 1, new: 3 }, 'sample statuses: 6 auto / 1 partial / 3 new');
 /* audio distortion: system DOS (zeros included) > our DOS (zeros skipped) */
 const seSE3 = st.units.get('哥伦比亚::Boreal Abastos Corp.::Tidal-T20');
-ok(!!seSE3, 'sample has SED Tidal-T20');
-ok(seSE3.audio, 'Tidal-T20 is audio Garnet');
+ok(!!seSE3, 'sample has Boreal Tidal-T20');
+ok(seSE3.audio, 'Tidal-T20 is audio line');
 const curSE3 = C.unitCurrent(seSE3, { dosWindow: 4 });
 ok(curSE3.sysDos != null && curSE3.dosCalc != null && curSE3.sysDos > curSE3.dosCalc,
   'audio distortion visible: system DOS ' + curSE3.sysDos + ' > calc DOS ' + curSE3.dosCalc);
-eq(curSE3.lastSOP, 2026032, 'SED audio last reported = W32');
+eq(curSE3.lastSOP, 2026032, 'Boreal audio last reported = W32');
 /* full pipeline for the big tablet unit */
 const uW19 = st.units.get('哥伦比亚::Boreal Abastos Corp.::Vantor6-W19DP');
 const layers = C.seasonIndexLayers(st, 2025);
-ok(layers.Garnet['平板'] && Object.keys(layers.Garnet['平板']).length >= 40, 'season index built for tablet Garnet');
+ok(layers.line['平板'] && Object.keys(layers.line['平板']).length >= 40, 'season index built for tablet line');
 ok(layers.acctLine['Boreal Abastos Corp.|平板'], 'account-layer index exists');
 const klW19 = C.pickKLayer([layers], uW19);
 eq(klW19.key, 'CP|Boreal Abastos Corp.|ACME Slate SE 11-inch', 'pickKLayer prefers 渠道×产品 layer (>=16 weeks), account layer next');
@@ -237,11 +237,11 @@ const simKids = C.simulateUnit({ unit: uKids, cur: curKids, forecast: fcKids, pa
 ok(simKids.yearEnd.inv === curKids.curInv && simKids.rows.every(r => r.si === 0), 'Kids skip: INV flat, no SI');
 
 /* ---------- 下游渠道:period W 格式 / Purchase / 渠道映射 ---------- */
-const pw = C.parseTable('加拿大\tKEYSTONE (Amazon FBA)_Indirect Retailer\t音频与智能配件\tSonicClip\t音频耳夹德芙产品项目\tLark-T00\t2026W01\tPurchase\t3');
+const pw = C.parseTable('加拿大\tKEYSTONE (Amazon FBA)_Indirect Retailer\t音频与智能配件\tSonicClip\t音频耳夹云雀产品项目\tLark-T00\t2026W01\tPurchase\t3');
 eq(pw.rows.length, 1, 'retail row: 2026W01 + Purchase parsed (headerless 9-col)');
 eq(pw.rows[0].period, 2026001, 'period 2026W01 -> 2026001');
 eq(pw.rows[0].psi, 'si', 'Purchase -> si');
-eq(pw.rows[0].series, '音频耳夹德芙产品项目', 'series column captured');
+eq(pw.rows[0].series, '音频耳夹云雀产品项目', 'series column captured');
 const gRetail = C.parseGrid([
   ['Purchase   Country/Region', 'Channel Name(R)', 'Product Line', 'Product', 'Product Series', 'Product Model', 'Period ID', 'PSI Type', 'QTY'],
   ['加拿大', 'ANDINA COMERCIO_Indirect Retailer', '音频与智能配件', 'SonicBuds 6i', 'Manta', 'Manta-T100', '2026W01', 'Inventory1', 13],
@@ -282,8 +282,8 @@ eq(pw1.rows.length && pw1.rows[0].period, 2026001, 'single-digit 2026W1 parsed')
 
 /* ---------- 下游预测 + 零补货模拟 ---------- */
 const rfRows = [];
-for (let w = 20; w <= 34; w++) rfRows.push({ Drift: 'CA', account: 'X', Garnet: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 14 });
-rfRows.push({ Drift: 'CA', account: 'X', Garnet: '平板', product: 'P', series: '', model: 'M', period: 2026034, psi: 'inv1', qty: 200 });
+for (let w = 20; w <= 34; w++) rfRows.push({ country: 'CA', account: 'X', line: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 14 });
+rfRows.push({ country: 'CA', account: 'X', line: '平板', product: 'P', series: '', model: 'M', period: 2026034, psi: 'inv1', qty: 200 });
 const rfStore = C.buildStore(rfRows, { retail: true });
 const rfU = rfStore.units.values().next().value;
 const rfCur = C.unitCurrent(rfU, { dosWindow: 4 });
@@ -302,21 +302,21 @@ eq(rfSim2.rows[0].inv, 0, 'retail sim: inventory clamped at 0');
 /* ---------- CSV 通路:引号逗号渠道名 / 分号分隔 / 编码嗅探 ---------- */
 const csvRetail = [
   'Purchase Country/Region,Channel Name(R),Product Line,Product,Product Series,Product Model,Period ID,PSI Type,QTY',
-  '哥斯达黎加,"PACIFICA ALMACENES S.A._Indirect Retailer",音频与智能配件,SonicBuds SE 3,低成本TWS耳机,ULC-CT020,2026W10,Inventory1,25',
-  '哥斯达黎加,"PACIFICA ALMACENES S.A._Indirect Retailer",音频与智能配件,SonicBuds SE 3,低成本TWS耳机,ULC-CT020,2026W10,Sell Out,5'
+  '哥斯达黎加,"PACIFICA ALMACENES S.A._Indirect Retailer",音频与智能配件,SonicBuds SE 3,低成本TWS耳机,SBC-CT020,2026W10,Inventory1,25',
+  '哥斯达黎加,"PACIFICA ALMACENES S.A._Indirect Retailer",音频与智能配件,SonicBuds SE 3,低成本TWS耳机,SBC-CT020,2026W10,Sell Out,5'
 ].join('\n');
 const pcsv = C.parseTable(csvRetail);
 eq(pcsv.rows.length, 2, 'retail CSV: rows with quoted comma channel name parsed');
 eq(pcsv.rows[0].account, 'PACIFICA ALMACENES S.A._Indirect Retailer', 'CSV quoted account intact');
-eq(C.mapChannel(pcsv.rows[0].account), 'CR-UNION', 'quoted CSV channel maps to CR-UNION');
+eq(C.mapChannel(pcsv.rows[0].account), 'CR-Pacifica', 'quoted CSV channel maps to CR-UNION');
 eq(pcsv.rows[0].period, 2026010, 'CSV 2026W10 period');
 const psemi = C.parseTable('哥伦比亚;ACC;平板;P;S;M1;2026W05;Sell Out;12');
 eq(psemi.rows.length, 1, 'semicolon CSV parsed');
 eq(psemi.rows[0].qty, 12, 'semicolon CSV qty');
 eq(psemi.report.mode, 'csv;', 'semicolon mode reported');
-const Garnet9 = '加拿大\tCH_X\t平板\tP\tS\tM\t2026W02\tSell Out\t7';
-eq(C.parseTable(C.decodeSmart(Buffer.from('\ufeff' + Garnet9, 'utf16le'))).rows.length, 1, 'decodeSmart: UTF-16LE with BOM');
-eq(C.parseTable(C.decodeSmart(Buffer.from(Garnet9, 'utf16le'))).rows.length, 1, 'decodeSmart: UTF-16LE without BOM (NUL heuristic)');
+const line9 = '加拿大\tCH_X\t平板\tP\tS\tM\t2026W02\tSell Out\t7';
+eq(C.parseTable(C.decodeSmart(Buffer.from('\ufeff' + line9, 'utf16le'))).rows.length, 1, 'decodeSmart: UTF-16LE with BOM');
+eq(C.parseTable(C.decodeSmart(Buffer.from(line9, 'utf16le'))).rows.length, 1, 'decodeSmart: UTF-16LE without BOM (NUL heuristic)');
 ok(!C.decodeSmart(Buffer.from('\ufeffabc', 'utf8')).startsWith('\ufeff'), 'decodeSmart: UTF-8 BOM stripped');
 ok(C.decodeSmart(Buffer.from('哥伦比亚,平板', 'utf8')) === '哥伦比亚,平板', 'decodeSmart: plain UTF-8 passthrough');
 
@@ -327,32 +327,32 @@ eq(rsParsed.report.badPeriod + rsParsed.report.badPsi + rsParsed.report.noKey, 0
 const rsMap = C.applyChannelMap(rsParsed.rows);
 const rsStore = C.buildStore(rsParsed.rows, { retail: true });
 eq(rsStore.units.size, 7, 'retail sample: 7 units (FBA+FBM merged into CA-Amazon)');
-ok(rsStore.units.has('加拿大' + C.SEP + 'CA-Amazon' + C.SEP + 'ULC-CT020'), 'CA-Amazon merged unit exists');
-const amz = rsStore.units.get('加拿大' + C.SEP + 'CA-Amazon' + C.SEP + 'ULC-CT020');
+ok(rsStore.units.has('加拿大' + C.SEP + 'CA-Amazon' + C.SEP + 'SBC-CT020'), 'CA-Amazon merged unit exists');
+const amz = rsStore.units.get('加拿大' + C.SEP + 'CA-Amazon' + C.SEP + 'SBC-CT020');
 eq(amz.rawNames.length, 2, 'CA-Amazon keeps 2 raw names');
 ok(rsMap.names.indexOf('ANDINA COMERCIO_Indirect Retailer') >= 0, 'ANDINA COMERCIO reported unmapped');
 ok(rsStore.maxPeriod === 2026034, 'retail sample through W34');
-const dead = rsStore.units.get('哥伦比亚' + C.SEP + 'CO-Andaria' + C.SEP + 'Aris-B19F');
+const dead = rsStore.units.get('哥伦比亚' + C.SEP + 'CO-Dorada' + C.SEP + 'Aris-B19F');
 const deadCur = C.unitCurrent(dead, { dosWindow: 4 });
 ok(deadCur.curInv === 40 && deadCur.dosCalc === null, 'dead-stock unit: inv 40, DOS null (no movement)');
 
 /* ---------- pickKLayer 层级优先与回退链 ---------- */
-const uX = { account: 'ACC', Garnet: '平板', Drift: 'CO', product: 'P' };
-eq(C.pickKLayer([{ acctLine: { 'ACC|平板': { 1: 1 } }, DriftLine: { 'CO|平板': { 1: 1 } }, Garnet: {}, GarnetProduct: {}, global: {} }], uX).key,
-  'A|ACC|平板', 'account layer wins over Drift layer');
-eq(C.pickKLayer([{ acctLine: {}, DriftLine: {}, GarnetProduct: {}, Garnet: { '平板': { 1: 1 } }, global: {} }], uX).key,
-  'L|平板', 'falls to Garnet layer');
-eq(C.pickKLayer([{ acctLine: {}, DriftLine: {}, GarnetProduct: {}, Garnet: {}, global: {} },
-  { acctLine: { 'ACC|平板': { 2: 1.5 } }, DriftLine: {}, GarnetProduct: {}, Garnet: {}, global: {} }], uX).key,
+const uX = { account: 'ACC', line: '平板', country: 'CO', product: 'P' };
+eq(C.pickKLayer([{ acctLine: { 'ACC|平板': { 1: 1 } }, countryLine: { 'CO|平板': { 1: 1 } }, line: {}, lineProduct: {}, global: {} }], uX).key,
+  'A|ACC|平板', 'account layer wins over country layer');
+eq(C.pickKLayer([{ acctLine: {}, countryLine: {}, lineProduct: {}, line: { '平板': { 1: 1 } }, global: {} }], uX).key,
+  'L|平板', 'falls to line layer');
+eq(C.pickKLayer([{ acctLine: {}, countryLine: {}, lineProduct: {}, line: {}, global: {} },
+  { acctLine: { 'ACC|平板': { 2: 1.5 } }, countryLine: {}, lineProduct: {}, line: {}, global: {} }], uX).key,
   'A|ACC|平板', 'second source in chain (FSD fallback) still found');
 
 /* ---------- exemptThreshold 三级优先 ---------- */
-const EX = { global: 100, Garnet: { '平板': 50 }, model: { 'M9': 10 } };
+const EX = { global: 100, line: { '平板': 50 }, model: { 'M9': 10 } };
 eq(C.exemptThreshold(EX, '平板', 'M9'), 10, 'model override wins');
-eq(C.exemptThreshold(EX, '平板', 'M1'), 50, 'Garnet default next');
+eq(C.exemptThreshold(EX, '平板', 'M1'), 50, 'line default next');
 eq(C.exemptThreshold(EX, '手机', 'M1'), 100, 'global last');
-eq(C.exemptThreshold({ global: null, Garnet: {}, model: {} }, '平板', 'M1'), null, 'all empty -> null (no exemption)');
-eq(C.exemptThreshold({ global: 100, Garnet: { '平板': '' }, model: {} }, '平板', 'M1'), 100, 'empty-string Garnet falls through to global');
+eq(C.exemptThreshold({ global: null, line: {}, model: {} }, '平板', 'M1'), null, 'all empty -> null (no exemption)');
+eq(C.exemptThreshold({ global: 100, line: { '平板': '' }, model: {} }, '平板', 'M1'), 100, 'empty-string line falls through to global');
 
 /* ---------- learnReplenish: 渠道自己的触发/目标 ---------- */
 (function () {
@@ -361,9 +361,9 @@ eq(C.exemptThreshold({ global: 100, Garnet: { '平板': '' }, model: {} }, '平�
   for (let w = 1; w <= 17; w++) {
     const si = (w === 6 || w === 11 || w === 16) ? 600 : 0;
     inv = inv + si - 70;
-    rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 70 });
-    rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'inv', qty: inv });
-    if (si) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'si', qty: si });
+    rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 70 });
+    rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'inv', qty: inv });
+    if (si) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'si', qty: si });
   }
   const uL = C.buildStore(rows).units.values().next().value;
   const learned = C.learnReplenish(uL, { dosWindow: 4 });
@@ -371,7 +371,7 @@ eq(C.exemptThreshold({ global: 100, Garnet: { '平板': '' }, model: {} }, '平�
   eq(learned.trigger, 90, 'learned trigger = median pre-SI DOS (65/90/115 -> 90)');
   eq(learned.target, 143, 'learned target = median post-SI DOS (118/143/168 -> 143)');
   const uShort = C.buildStore(rows.filter(r => C.periodW(r.period) <= 12)).units.values().next().value;
-  ok(C.learnReplenish(uShort, { dosWindow: 4 }) === null, 'fewer than 3 events -> null (use Garnet defaults)');
+  ok(C.learnReplenish(uShort, { dosWindow: 4 }) === null, 'fewer than 3 events -> null (use line defaults)');
 })();
 
 /* ---------- stPlan: ST 可行性 ---------- */
@@ -391,7 +391,7 @@ eq(C.exemptThreshold({ global: 100, Garnet: { '平板': '' }, model: {} }, '平�
 /* ---------- sanityCheck: 相邻月数量级哨兵 ---------- */
 (function () {
   const rows = [];
-  for (let w = 31; w <= 34; w++) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 100 });
+  for (let w = 31; w <= 34; w++) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 100 });
   const uS = C.buildStore(rows).units.values().next().value;
   const curS = C.unitCurrent(uS, { dosWindow: 4 });
   const mkFc = v => { const out = []; for (let w = 35; w <= 42; w++) out.push({ p: C.mkPeriod(2026, w), so: v, src: 'fill' }); return out; };
@@ -411,10 +411,10 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   /* 去年:全年周销70,10月末(2025044)库存900 → 平销DOS=900/(70/7)=90 */
   const rows = [];
   for (let w = 1; w <= 52; w++) {
-    rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'so', qty: 70 });
-    if (w === 44) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'inv', qty: 900 });
-    if (w === 49) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'inv', qty: 700 });
-    if (w === 52) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'inv', qty: 500 });
+    rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'so', qty: 70 });
+    if (w === 44) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'inv', qty: 900 });
+    if (w === 49) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'inv', qty: 700 });
+    if (w === 52) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: C.mkPeriod(2025, w), psi: 'inv', qty: 500 });
   }
   const stLY = C.buildStore(rows);
   const caps = C.lastYearMonthEndCaps(stLY, 2025);
@@ -426,8 +426,8 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
      加检查点(12月底 cap50,平销日均10)后年底库存 ≤ 500+取整容差 */
   const rows = [[2026031, 70, null], [2026032, 70, null], [2026033, 70, null], [2026034, 70, 800]];
   const mk = rows.map(function (w) {
-    const out = [{ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: w[0], psi: 'so', qty: w[1] }];
-    if (w[2] != null) out.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', model: 'M', period: w[0], psi: 'inv', qty: w[2] });
+    const out = [{ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: w[0], psi: 'so', qty: w[1] }];
+    if (w[2] != null) out.push({ country: 'CO', account: 'A', line: '平板', product: 'P', model: 'M', period: w[0], psi: 'inv', qty: w[2] });
     return out;
   }).reduce(function (a, b) { return a.concat(b); }, []);
   const stC = C.buildStore(mk);
@@ -455,7 +455,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- 渠道别名 + Others 注释 ---------- */
 (function () {
-  const mkr = function (name) { return { Drift: 'CA', account: name, Garnet: '平板', product: 'P', series: '', model: 'M', period: 2026001, psi: 'so', qty: 1 }; };
+  const mkr = function (name) { return { country: 'CA', account: name, line: '平板', product: 'P', series: '', model: 'M', period: 2026001, psi: 'so', qty: 1 }; };
   const rows = [mkr('SOURCE IS NULL'), mkr('Weird Channel Co.'), mkr('KEYSTONE (Amazon FBA)_Indirect Retailer')];
   C.applyChannelMap(rows, null);
   eq(rows[0].account, 'Others(SOURCE IS NULL)', 'Others keeps raw name in parentheses');
@@ -477,9 +477,9 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   ok(C.isTailUnit({ avgWeeklySO: 0, curInv: 100 }, 12) === false, 'no movement -> not tail (handled by zero-movement flag)');
   /* 收尾预测:平推近4周均量,不乘系数、不参考去年 */
   const rows = [];
-  for (let w = 31; w <= 34; w++) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 20 });
-  for (let w = 31; w <= 53; w++) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2025, w), psi: 'so', qty: 300 });  // 去年正旺
-  rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', series: '', model: 'M', period: 2026034, psi: 'inv1', qty: 90 });
+  for (let w = 31; w <= 34; w++) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 20 });
+  for (let w = 31; w <= 53; w++) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2025, w), psi: 'so', qty: 300 });  // 去年正旺
+  rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', series: '', model: 'M', period: 2026034, psi: 'inv1', qty: 90 });
   const stT = C.buildStore(rows, { retail: true });
   const uT2 = stT.units.values().next().value;
   const curT2 = C.unitCurrent(uT2, { dosWindow: 4 });
@@ -503,7 +503,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const mk = function (specs) { // specs: [p, so, inv, inv1, si]
     const rows = [];
     specs.forEach(function (s) {
-      const base = { Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', series: '', model: 'M' };
+      const base = { country: 'CO', account: 'A', line: '平板', product: 'P', series: '', model: 'M' };
       if (s[1] != null) rows.push(Object.assign({}, base, { period: s[0], psi: 'so', qty: s[1] }));
       if (s[2] != null) rows.push(Object.assign({}, base, { period: s[0], psi: 'inv', qty: s[2] }));
       if (s[3] != null) rows.push(Object.assign({}, base, { period: s[0], psi: 'inv1', qty: s[3] }));
@@ -543,8 +543,8 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const stA = C.buildStore(p.rows);
   eq(stA.units.size, 6, 'audio sample: 6 direct-customer units');
   ok(stA.maxPeriod === 2026034, 'audio sample through W34');
-  const sammel = stA.units.get('乌拉圭' + C.SEP + 'Austral Suministros Corp.' + C.SEP + 'ULC-CT010');
-  ok(!!sammel && sammel.audio, 'SAMMEL SonicBuds SE 2 unit exists and is audio Garnet');
+  const sammel = stA.units.get('乌拉圭' + C.SEP + 'Austral Suministros Corp.' + C.SEP + 'SBC-CT010');
+  ok(!!sammel && sammel.audio, 'AUSTRAL SonicBuds SE 2 unit exists and is audio line');
   const curS = C.unitCurrent(sammel, { dosWindow: 4 });
   eq(curS.lastSOP, 2026030, 'audio sample: last reported week honored (skip-zero window)');
   ok(curS.curInv1 != null && curS.curInv1 >= 0, 'audio sample: INV1 present');
@@ -552,7 +552,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- 历史 ST 推导:INV1 缺周时累计间隔内全部 SI ---------- */
 (function () {
-  const base = { Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', series: '', model: 'M' };
+  const base = { country: 'CO', account: 'A', line: '平板', product: 'P', series: '', model: 'M' };
   const rows = [
     Object.assign({}, base, { period: 2026030, psi: 'inv1', qty: 500 }),
     Object.assign({}, base, { period: 2026031, psi: 'si', qty: 100 }),   // W31 无 INV1,SI 不能丢
@@ -602,10 +602,10 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
     const kl = C.pickKLayer([layers9], u);
     const fc = C.buildForecastForUnit({ unit: u, store: st9, futureWeeks: fw9, refYear: 2025, decision: null, growth: null, kdef: kl.kdef, kedit: {}, ovSO: null, cfg: { roundTo: 5 }, cls: cls });
     let s = 0; fc.forEach(function (f) { if (f.so) s += f.so; });
-    totFc += s; byLine[u.Garnet] = (byLine[u.Garnet] || 0) + s;
+    totFc += s; byLine[u.line] = (byLine[u.line] || 0) + s;
   });
-  let GarnetSum = 0; Object.keys(byLine).forEach(function (k) { GarnetSum += byLine[k]; });
-  eq(GarnetSum, totFc, 'aggregation conservation: sum of Garnet groups equals grand total');
+  let lineSum = 0; Object.keys(byLine).forEach(function (k) { lineSum += byLine[k]; });
+  eq(lineSum, totFc, 'aggregation conservation: sum of line groups equals grand total');
 })();
 
 /* ---------- 自顶向下分配:守恒 + 权重 + 能力校验 ---------- */
@@ -618,8 +618,8 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(C.distribute(7, [10, 0]), [7, 0], 'distribute: zero-weight leaf gets nothing when others have weight');
   /* leafWeight:去年同月优先 */
   const rows = [];
-  for (let w = 40; w <= 44; w++) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2025, w), psi: 'so', qty: 30 });
-  for (let w = 30; w <= 34; w++) rows.push({ Drift: 'CO', account: 'A', Garnet: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 5 });
+  for (let w = 40; w <= 44; w++) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2025, w), psi: 'so', qty: 30 });
+  for (let w = 30; w <= 34; w++) rows.push({ country: 'CO', account: 'A', line: '平板', product: 'P', series: '', model: 'M', period: C.mkPeriod(2026, w), psi: 'so', qty: 5 });
   const uW = C.buildStore(rows).units.values().next().value;
   ok(C.leafWeight(uW, C.mkPeriod(2026, 42), 2025, {}) >= 90, 'leafWeight: uses last-year same-month sum (Oct)');
   ok(C.leafWeight(uW, C.mkPeriod(2026, 20), 2025, {}) === 115, 'leafWeight: no last-year May -> recent-8-numbered-week sum (3x30+5x5)');
@@ -628,16 +628,16 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   ok(C.abilityCap(uW, C.mkPeriod(2026, 20), 2025) === Math.ceil(30 * 1.2), 'abilityCap: no last-year May -> all-time max x 1.2');
 })();
 
-/* ---------- 同一账户多国家:必须按 国家×渠道×型号 分开(神州数码巴西/加拿大场景) ---------- */
+/* ---------- 同一账户多国家:必须按 国家×渠道×型号 分开(Andes Digital巴西/加拿大场景) ---------- */
 (function () {
-  const mkr = function (c, q) { return { Drift: c, account: '北京神州数码科捷技术服务有限公司龙岗分公司', Garnet: '音频与智能配件', product: 'SonicClip', series: '', model: 'Lark-T00', period: 2026030, psi: 'inv', qty: q }; };
+  const mkr = function (c, q) { return { country: c, account: 'ANDES SERVICOS DIGITAIS LTDA', line: '音频与智能配件', product: 'SonicClip', series: '', model: 'Lark-T00', period: 2026030, psi: 'inv', qty: q }; };
   const st2 = C.buildStore([mkr('巴西', 100), mkr('加拿大', 40)]);
   eq(st2.units.size, 2, 'same account in two countries -> two units');
-  eq(st2.units.get('巴西' + C.SEP + '北京神州数码科捷技术服务有限公司龙岗分公司' + C.SEP + 'Lark-T00').weeks.get(2026030).inv, 100, 'Brazil inventory kept separate');
-  eq(st2.units.get('加拿大' + C.SEP + '北京神州数码科捷技术服务有限公司龙岗分公司' + C.SEP + 'Lark-T00').weeks.get(2026030).inv, 40, 'Canada inventory kept separate');
+  eq(st2.units.get('巴西' + C.SEP + 'ANDES SERVICOS DIGITAIS LTDA' + C.SEP + 'Lark-T00').weeks.get(2026030).inv, 100, 'Brazil inventory kept separate');
+  eq(st2.units.get('加拿大' + C.SEP + 'ANDES SERVICOS DIGITAIS LTDA' + C.SEP + 'Lark-T00').weeks.get(2026030).inv, 40, 'Canada inventory kept separate');
   /* mergeFiles 同键含国家:两国同周同指标互不覆盖 */
   const mg2 = C.mergeFiles([{ name: 'f', mtimeMs: 1, rows: [mkr('巴西', 100), mkr('加拿大', 40)] }]);
-  eq(mg2.rows.length, 2, 'mergeFiles keeps Drift dimension');
+  eq(mg2.rows.length, 2, 'mergeFiles keeps country dimension');
 })();
 
 /* ---------- ST→SO 激活效率:电渠(当周–次周) vs 线下(第1–3周铺货期后) ---------- */
@@ -675,9 +675,9 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 纯 Inventory1 库存表(直签渠道库存管控,用户 2026-08-26:「只需要识别出来 Inventory1 就行」) ---------- */
 (function () {
   const tsv = ['Country\tManagement Account\tProduct Line\tProduct\tModel\tPeriod\tPSI Type\tQty',
-    '墨西哥\tACME DIST\t智能穿戴\tWATCH GT5\tGT5-B19\t2026030\tInventory1\t500',
-    '墨西哥\tACME DIST\t智能穿戴\tWATCH GT5\tGT5-B19\t2026031\tInventory1\t450',
-    '墨西哥\tACME DIST\t智能穿戴\tWATCH GT5\tGT5-B19\t2026032\tInventory1\t380',
+    '墨西哥\tACME DIST\t智能穿戴\tWATCH GX5\tGX5-B19\t2026030\tInventory1\t500',
+    '墨西哥\tACME DIST\t智能穿戴\tWATCH GX5\tGX5-B19\t2026031\tInventory1\t450',
+    '墨西哥\tACME DIST\t智能穿戴\tWATCH GX5\tGX5-B19\t2026032\tInventory1\t380',
     '智利\tBETA SA\t平板\tSlate Tab 12\tSL12-W09\t2026031\tInventory1\t200',
     '智利\tBETA SA\t平板\tSlate Tab 12\tSL12-W09\t2026032\tInventory1\t210'].join('\n');
   const pr = C.parseTable(tsv);
@@ -686,7 +686,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const st = C.buildStore(pr.rows);
   eq(st.units.size, 2, 'pure-INV1: two units');
   const fw = C.futureWeeksOf(st.maxPeriod);
-  const u = st.units.get('墨西哥' + C.SEP + 'ACME DIST' + C.SEP + 'GT5-B19');
+  const u = st.units.get('墨西哥' + C.SEP + 'ACME DIST' + C.SEP + 'GX5-B19');
   eq(C.classify(u, 2025, fw, {}).status, 'stock', 'pure-INV1 unit classified as stock (no SO records at all)');
   const hs = C.deriveHistST(u);
   eq(hs.get(2026031), 50, 'pure-INV1: ST derived 500->450 = 50 (SI absent = 0)');
@@ -695,9 +695,9 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(cur.curInv1, 380, 'pure-INV1: latest INV1 kept');
   ok(cur.curInv == null, 'pure-INV1: total channel inventory absent (null, not 0)');
   /* 有 SO 记录(哪怕 0)的单元不是 stock:0 是真实零销/音频未报量,各有既定口径 */
-  const rows2 = pr.rows.concat([{ Drift: '墨西哥', account: 'ACME DIST', Garnet: '智能穿戴', product: 'WATCH GT5', model: 'GT5-B19', series: '', period: 2026032, psi: 'so', qty: 0 }]);
+  const rows2 = pr.rows.concat([{ country: '墨西哥', account: 'ACME DIST', line: '智能穿戴', product: 'WATCH GX5', model: 'GX5-B19', series: '', period: 2026032, psi: 'so', qty: 0 }]);
   const st2 = C.buildStore(rows2);
-  ok(C.classify(st2.units.get('墨西哥' + C.SEP + 'ACME DIST' + C.SEP + 'GT5-B19'), 2025, fw, {}).status !== 'stock',
+  ok(C.classify(st2.units.get('墨西哥' + C.SEP + 'ACME DIST' + C.SEP + 'GX5-B19'), 2025, fw, {}).status !== 'stock',
     'unit with an SO=0 record is NOT stock-only');
 })();
 
@@ -721,21 +721,21 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
     ['产品线', '产品', '国家', '渠道', '原始渠道名', '当前INV', '近4周周均SO', '当前DOS', '9月SO目标', '9月底库存', '9月底DOS', '10月SO目标', '10月底库存', '10月底DOS', '11月SO目标', '11月底库存', '11月底DOS', '12月SO目标', '年底库存', '年底DOS', '备注'],
     ['示例', '示例', '示例', '示例', '示例', 10000, 500, 400, 1500, 8500, 159, 1500, 7000, 131, 2000, 5000, 70, 2000, 3000, 42, '备注'],
     ['音频与智能配件', 'SonicClip 2 耳夹耳机', '阿根廷', 'CARIBE SUMINISTROS S.A.', 'CARIBE SUMINISTROS S.A.', 999, 0, '-', 200, 799, 112, 150, 649, 121, 200, 449, 63, 200, 249, 35, ''],
-    ['音频与智能配件', 'SonicBuds SE 2', '巴西', '北京神州数码科捷技术服务有限公司龙岗分公司', '北京神州数码科捷技术服务有限公司龙岗分公司', 23708, 360, 462, '　', 23708, '-', '　', 23708, '-', '　', 23708, '-', '　', 23708, '-', '']
+    ['音频与智能配件', 'SonicBuds SE 2', '巴西', 'ANDES SERVICOS DIGITAIS LTDA', 'ANDES SERVICOS DIGITAIS LTDA', 23708, 360, 462, '　', 23708, '-', '　', 23708, '-', '　', 23708, '-', '　', 23708, '-', '']
   ];
   const r = C.parseTargetGrid(grid);
   eq(r.rows.length, 2, 'target parse: 2 data rows (example row excluded)');
   eq(r.rows[0].t[9], 200, 'target parse: Sep target 200');
   eq(r.rows[0].t[10], 150, 'target parse: Oct target 150');
   ok(r.rows[1].t[9] == null, 'target parse: fullwidth-space cell = unfilled');
-  eq(r.rows[1].rawName, '北京神州数码科捷技术服务有限公司龙岗分公司', 'target parse: raw name kept');
+  eq(r.rows[1].rawName, 'ANDES SERVICOS DIGITAIS LTDA', 'target parse: raw name kept');
   /* 映射 */
   eq(C.familyOf('SonicClip 2 耳夹耳机').family, '开放式耳机', 'familyOf: SonicClip 2');
-  eq(C.familyOf('WATCH FIT 5').family, 'FIT系列', 'familyOf: WATCH FIT 5');
+  eq(C.familyOf('WATCH FLEX 5').family, 'FLEX系列', 'familyOf: WATCH FLEX 5');
   eq(C.familyOf('nimbus Y74').family, 'nimbus Y系列', 'familyOf: nimbus Y74');
   ok(C.familyOf('不存在的产品') == null, 'familyOf: unknown -> null');
-  eq(C.repOf('智利'), '南美洲多国终端事业部', 'repOf: Chile');
-  eq(C.repOf('加拿大'), '墨西哥终端事业部', 'repOf: Canada');
+  eq(C.repOf('智利'), '南美区设备事业部', 'repOf: Chile');
+  eq(C.repOf('加拿大'), '墨西哥设备事业部', 'repOf: Canada');
   eq(C.repOf('未知国'), '(未归属国家办)', 'repOf: unknown');
 })();
 
@@ -823,7 +823,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(C.promoSpecText([{ w1: 21, w2: 23, name: 'Hot Sale' }]), '21-23:Hot Sale', 'promo spec roundtrip');
   /* Theil-Sen */
   const pts = []; for (let i = 0; i < 10; i++) pts.push([i, 100 - 2 * i]);
-  eq(C.theilSen(pts), -2, 'theilSen: exact slope on clean Garnet');
+  eq(C.theilSen(pts), -2, 'theilSen: exact slope on clean line');
   /* 平销模式 forecast */
   const fc = C.buildForecastForUnit({ unit: mkU(rows), store: { units: new Map() }, futureWeeks: [C.mkPeriod(2026, 41), C.mkPeriod(2026, 42)], refYear: 2025, decision: { mode: 'flat' }, growth: 1, kdef: {}, kedit: {}, ovSO: null, cfg: { roundTo: 5 }, cls: { status: 'partial' }, baseline: { base: 10, delta: 0, conf: 'high' } });
   eq(fc[0].so, 10, 'flat mode: base x season x growth');
@@ -839,7 +839,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- SI/SO 引擎 P2-P4 CORE:渠道大促识别/退市学习/EOL衰减/起量基线/新品模拟 ---------- */
 (function () {
   const mku = function (rows, audio) {
-    const u = { audio: !!audio, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: !!audio, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -964,7 +964,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 渠道补货策略判型:先学历史再模拟(2026-09-01 用户拍板,禁止全渠道一刀切) ---------- */
 (function () {
   const mku = function (rows, audio) {
-    const u = { audio: !!audio, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: !!audio, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1010,7 +1010,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   (function () {
     const rows = [];
     for (let w = 1; w <= 20; w++) rows.push([C.mkPeriod(2026, w), 50, w === 5 ? 400 : 0, 800 - w * 10]);
-    eq(C.replenishPolicyOf(mku(rows), {}), null, 'policy: <3 events -> null (fallback to Garnet default)');
+    eq(C.replenishPolicyOf(mku(rows), {}), null, 'policy: <3 events -> null (fallback to line default)');
   })();
   /* 水位型策略进 simulateRetail:库存穿过触发水位才补,补到目标水位;手拍覆盖优先 */
   (function () {
@@ -1036,7 +1036,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 年末收官约束进 simulateRetail(2026-09-01 用户实测:下游年末 DOS 被规则补货顶到 100+) ---------- */
 (function () {
   const mku = function (rows, audio) {
-    const u = { audio: !!audio, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: !!audio, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1062,7 +1062,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 历史年末画像 + 月末补到位(2026-09-01 用户拍板:不许卡死 DOS,按回测年末水平模拟) ---------- */
 (function () {
   const mku = function (rows, audio) {
-    const u = { audio: !!audio, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: !!audio, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1112,7 +1112,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 渠道×产品季节层 / 单周进货能力上限 / 取整(2026-09-01 用户拍板:全年规律从回测学,SI 不许脱离渠道能力) ---------- */
 (function () {
   const mk = function (key, product, rows) {
-    const u = { audio: false, key: key, Drift: 'X', account: 'A', Garnet: 'L', product: product, model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: key, country: 'X', account: 'A', line: 'L', product: product, model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1161,7 +1161,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 前瞻需求护栏:规则日均用平销,不被大促周放大;水位型/画像水位随需求塌陷收缩 ---------- */
 (function () {
   const mk = function (rows) {
-    const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1184,7 +1184,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 前瞻需求:淡季少补、大促前多补;画像检查点按检查点之后的销量折算 ---------- */
 (function () {
   const mk = function (rows) {
-    const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1221,7 +1221,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(fc[3].so, null, 'quantizeFc: null (none) untouched');
   eq(fc[0].so + fc[2].so, 15, 'quantizeFc: non-override weeks quantized on their own cumulative (7+7=14 -> 15)');
   /* 引擎级:周销 2 台的单元,推演不再全 0 */
-  const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+  const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
   for (let w = 1; w <= 30; w++) { const p = C.mkPeriod(2026, w); u.periods.push(p); u.weeks.set(p, { so: 2, si: 0, inv: 100, inv1: null }); }
   const fw = []; for (let w = 31; w <= 40; w++) fw.push(C.mkPeriod(2026, w));
   const cur = C.unitCurrent(u, {});
@@ -1234,7 +1234,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 拍数承接 / 正常经营水位(2026-09-01 用户拍板) ---------- */
 (function () {
   const mk = function (rows, extra) {
-    const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return Object.assign(u, extra || {});
   };
@@ -1284,7 +1284,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- simulateUnit(FSD/间接渠道):前瞻需求、水位型策略、画像检查点月末补到位 ---------- */
 (function () {
   const mk = function (rows) {
-    const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: x[3] != null ? x[3] : null }); });
     return u;
   };
@@ -1312,7 +1312,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- 锁量已发=生命周期累计(跨年,从首次 SI 起) ---------- */
 (function () {
-  const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+  const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
   const put = function (p, si) { u.periods.push(p); u.weeks.set(p, { so: 10, si: si, inv: 100, inv1: 100 }); };
   put(C.mkPeriod(2025, 8), 0); put(C.mkPeriod(2025, 10), 40000); put(C.mkPeriod(2025, 30), 20000); put(C.mkPeriod(2026, 5), 15000); put(C.mkPeriod(2026, 30), 0);
   const lc = C.lifecycleSI(u);
@@ -1323,13 +1323,13 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- 财经Q表透视(经营数据表输入块) ---------- */
 (function () {
-  const mkRow = function (Garnet, name, Drift, src, y, m, so, si, inv, rrp) {
-    return [Garnet, 'P', name, 'FAM', Drift, 'ACC', src, y, 'Q' + Math.ceil(m / 3), m, so, si, inv, rrp, '', '', '', 'M'];
+  const mkRow = function (line, name, country, src, y, m, so, si, inv, rrp) {
+    return [line, 'P', name, 'FAM', country, 'ACC', src, y, 'Q' + Math.ceil(m / 3), m, so, si, inv, rrp, '', '', '', 'M'];
   };
   const rows = [
-    mkRow('手机', 'Astra X7', '墨西哥', 'FSD', 2027, 1, 1000, 500, 200, 48999),
-    mkRow('手机', 'Astra X7', '墨西哥', 'FSD', 2027, 12, 3000, 0, 900, 48999),
-    mkRow('手机', 'Astra X7', '墨西哥', 'FSD', 2026, 12, 800, 0, 400, 48999),
+    mkRow('手机', 'Astra X7', '墨西哥', 'FSD', 2027, 1, 1000, 500, 200, 39999),
+    mkRow('手机', 'Astra X7', '墨西哥', 'FSD', 2027, 12, 3000, 0, 900, 39999),
+    mkRow('手机', 'Astra X7', '墨西哥', 'FSD', 2026, 12, 800, 0, 400, 39999),
     mkRow('手机', 'Astra X7', '墨西哥', '下游', 2027, 1, 9999, 9999, 9999, ''),
     mkRow('音频与智能配件', 'SonicBuds 6', '墨西哥', 'FSD', 2027, 2, 5000, 5000, 5000, ''),
     mkRow('音频与智能配件', 'SonicBuds 6', '墨西哥', '音频专表', 2027, 2, 700, 300, 100, 1999)
@@ -1345,7 +1345,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(mx[14], 0.9, 'qpivot: year-end inventory (K) = Dec month-end');
   eq(C.monthDaysOf(2027, 12), 35, 'qpivot: Dec 2027 has 5 Thursday-weeks → 35 days');
   eq(mx[15], Math.round(900 / (3000 / 35)), 'qpivot: year-end DOS = 900 / (3000/12月天数 35) = 11 (was ÷30 → 9)');
-  eq(mx[16], 48999, 'qpivot: RRP carried');
+  eq(mx[16], 39999, 'qpivot: RRP carried');
   const fb = qv.rows.filter(function (r) { return r[1] === 'SonicBuds 6'; })[0];
   eq(fb[4], 0.7, 'qpivot: audio taken from 专表 only (FSD audio row skipped)');
   eq(qv.headers[3], '26年年底库存(K)', 'qpivot: prior-year header labelled');
@@ -1377,7 +1377,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 /* ---------- 锚品历史平销:2025 年卖完的老品照样能当锚(不看现在卖不卖);新品窗口跨到明年 ---------- */
 (function () {
   const mk = function (rows) {
-    const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1444,8 +1444,8 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- FSD ⇄ 下游 对账:Σ下游SO≈FSD SO;FSD总库存≈INV1+Σ下游库存;共同周窗口;缺边标记;差异分级 ---------- */
 (function () {
-  const mkU = function (Drift, account, product, model, audio, rows) {
-    const u = { key: Drift + '|' + account + '|' + model, Drift: Drift, account: account, Garnet: 'L', product: product, model: model, audio: !!audio, periods: [], weeks: new Map() };
+  const mkU = function (country, account, product, model, audio, rows) {
+    const u = { key: country + '|' + account + '|' + model, country: country, account: account, line: 'L', product: product, model: model, audio: !!audio, periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: 0, inv: x[2] != null ? x[2] : null, inv1: x[3] != null ? x[3] : null }); });
     return u;
   };
@@ -1480,8 +1480,8 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- 对账 + 渠道类型/连线:直签型不参与 SO 对账;按直接渠道细分;未连线/国家合计单列 ---------- */
 (function () {
-  const mkU = function (Drift, account, product, model, audio, rows) {
-    const u = { key: Drift + '|' + account + '|' + model, Drift: Drift, account: account, Garnet: 'L', product: product, model: model, audio: !!audio, periods: [], weeks: new Map() };
+  const mkU = function (country, account, product, model, audio, rows) {
+    const u = { key: country + '|' + account + '|' + model, country: country, account: account, line: 'L', product: product, model: model, audio: !!audio, periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: 0, inv: x[2] != null ? x[2] : null, inv1: x[3] != null ? x[3] : null }); });
     return u;
   };
@@ -1511,7 +1511,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(bdS.status, '国家合计', 'recon/tree: * bucket not judged');
   eq(rec.byDirect.filter(function (r) { return r.account === 'TELCO'; })[0].status, '直达', 'recon/tree: operator flagged 直达');
   const bdU = rec.byDirect.filter(function (r) { return r.account === '(未连线)'; })[0];
-  eq(bdU.Drift + '/' + bdU.dsSO, 'MX/30', 'recon/tree: unwired MX R3 lands in the 未连线 bucket');
+  eq(bdU.country + '/' + bdU.dsSO, 'MX/30', 'recon/tree: unwired MX R3 lands in the 未连线 bucket');
   eq(rec.byDirect[0].account, 'DIST', 'recon/tree: 异常 sorts first');
   const rec0 = C.reconcileFsdRetail({ units: fsd }, { units: ds }, { weeks: 8 });
   eq(rec0.byDirect.length, 0, 'recon: no tree → no byDirect rows');
@@ -1523,10 +1523,10 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(C.chanTypeGuess('KEYSTONE (Amazon FBA)_Indirect Retailer'), 'online', 'typeGuess: Amazon → 电商·直签');
   eq(C.chanTypeGuess('Colombia_ACME_ESHOP_Indirect Retailer'), 'own', 'typeGuess: ESHOP → 自营·直签');
   eq(C.chanTypeGuess('TELCOM ANDINA S.A.'), 'operator', 'typeGuess: TELCOM → 运营商·直签');
-  eq(C.chanTypeGuess('FLUVIAL ALMACENES_DRP'), 'retail', 'typeGuess: _DRP → 直签零售');
+  eq(C.chanTypeGuess('FLUVIAL ALMACENES_DST'), 'retail', 'typeGuess: _DST → 直签零售');
   eq(C.chanTypeGuess('Boreal Abastos Corp.'), null, 'typeGuess: distributor name → null (app treats as 分销)');
-  const mkU = function (Drift, account, product, model, Garnet, rows) {
-    const u = { key: Drift + '|' + account + '|' + model, Drift: Drift, account: account, Garnet: Garnet, product: product, model: model, audio: false, periods: [], weeks: new Map() };
+  const mkU = function (country, account, product, model, line, rows) {
+    const u = { key: country + '|' + account + '|' + model, country: country, account: account, line: line, product: product, model: model, audio: false, periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: 0, inv: x[2] != null ? x[2] : null, inv1: x[3] != null ? x[3] : null }); });
     return u;
   };
@@ -1540,19 +1540,19 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const types = { 'CO||平板||X': 'dist', 'CO||手机||X': 'retail' };
   const tree = { 'CO||平板': { R1: 'X' } };
   const rec = C.reconcileFsdRetail({ units: fsd }, { units: ds }, { weeks: 8, types: types, tree: tree });
-  eq(rec.rows.filter(function (r) { return r.product === 'PadA'; })[0].status, 'OK', 'recon/Garnet: 平板 under 分销 reconciles (200 vs 200; inv 500 vs 200+300)');
-  eq(rec.rows.filter(function (r) { return r.product === 'PhoneB'; })[0].status, '直达', 'recon/Garnet: same account is 直签 for 手机 → 直达, not 缺下游');
+  eq(rec.rows.filter(function (r) { return r.product === 'PadA'; })[0].status, 'OK', 'recon/line: 平板 under 分销 reconciles (200 vs 200; inv 500 vs 200+300)');
+  eq(rec.rows.filter(function (r) { return r.product === 'PhoneB'; })[0].status, '直达', 'recon/line: same account is 直签 for 手机 → 直达, not 缺下游');
   const bd = rec.byDirect;
-  eq(bd.filter(function (r) { return r.account === 'X' && r.Garnet === '平板'; })[0].status, 'OK', 'recon/Garnet: byDirect row per 国家×产业×渠道 (平板 OK)');
-  eq(bd.filter(function (r) { return r.account === 'X' && r.Garnet === '手机'; })[0].status, '直达', 'recon/Garnet: byDirect 手机 row is 直达');
+  eq(bd.filter(function (r) { return r.account === 'X' && r.line === '平板'; })[0].status, 'OK', 'recon/line: byDirect row per 国家×产业×渠道 (平板 OK)');
+  eq(bd.filter(function (r) { return r.account === 'X' && r.line === '手机'; })[0].status, '直达', 'recon/line: byDirect 手机 row is 直达');
   const legacy = C.reconcileFsdRetail({ units: fsd }, { units: ds }, { weeks: 8, types: { 'CO||X': 'dist' }, tree: { CO: { R1: 'X' } } });
-  eq(legacy.byDirect.filter(function (r) { return r.account === 'X' && r.Garnet === '平板'; })[0].dsSO, 200, 'recon/Garnet: legacy Drift-level keys still resolve');
+  eq(legacy.byDirect.filter(function (r) { return r.account === 'X' && r.line === '平板'; })[0].dsSO, 200, 'recon/line: legacy country-level keys still resolve');
 })();
 
 /* ---------- 凑数推荐:上游 SO/库存缺口 = 某(几)家未连线下游 → 推荐;直达型上游不推荐 ---------- */
 (function () {
-  const mkU = function (Drift, account, product, model, Garnet, rows) {
-    const u = { key: Drift + '|' + account + '|' + model, Drift: Drift, account: account, Garnet: Garnet, product: product, model: model, audio: false, periods: [], weeks: new Map() };
+  const mkU = function (country, account, product, model, line, rows) {
+    const u = { key: country + '|' + account + '|' + model, country: country, account: account, line: line, product: product, model: model, audio: false, periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: 0, inv: x[2] != null ? x[2] : null, inv1: x[3] != null ? x[3] : null }); });
     return u;
   };
@@ -1564,7 +1564,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   add(ds, mkU('CO', 'R1', 'P1', 'M1', 'L', [[P(1), 50, 350], [P(2), 50, 350], [P(3), 50, 350]]));
   add(ds, mkU('CO', 'R2', 'P1', 'M1', 'L', [[P(1), 50, 250], [P(2), 50, 250], [P(3), 50, 250]]));
   add(ds, mkU('CO', 'R3', 'P1', 'M1', 'L', [[P(1), 13, 900], [P(2), 13, 900], [P(3), 14, 900]]));
-  const sug = C.suggestWiring({ units: fsd }, { units: ds }, { Drift: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST' }, types: { DIST: 'dist' } });
+  const sug = C.suggestWiring({ units: fsd }, { units: ds }, { country: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST' }, types: { DIST: 'dist' } });
   eq(sug.length, 1, 'suggest: exactly one suggestion');
   eq(sug[0].parent + '←' + sug[0].ds.join('+'), 'DIST←R2', 'suggest: R2 closes both the SO gap (150) and the inventory gap (250)');
   eq(sug[0].needSO + '/' + sug[0].needInv, '150/250', 'suggest: gaps = 300−150 and 1000−400−350');
@@ -1574,19 +1574,19 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   add(ds2, mkU('CO', 'R1', 'P1', 'M1', 'L', [[P(1), 50, 350], [P(2), 50, 350], [P(3), 50, 350]]));
   add(ds2, mkU('CO', 'R2a', 'P1', 'M1', 'L', [[P(1), 33, 150], [P(2), 33, 150], [P(3), 34, 150]]));
   add(ds2, mkU('CO', 'R2b', 'P1', 'M1', 'L', [[P(1), 17, 100], [P(2), 17, 100], [P(3), 16, 100]]));
-  const sug2 = C.suggestWiring({ units: fsd }, { units: ds2 }, { Drift: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST' }, types: { DIST: 'dist' } });
+  const sug2 = C.suggestWiring({ units: fsd }, { units: ds2 }, { country: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST' }, types: { DIST: 'dist' } });
   eq(sug2.length, 1, 'suggest: combo found');
   eq(sug2[0].ds.slice().sort().join('+'), 'R2a+R2b', 'suggest: two channels together close the gap');
-  eq(C.suggestWiring({ units: fsd }, { units: ds }, { Drift: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST' }, types: { DIST: 'operator' } }).length, 0, 'suggest: 直达消费者 parent gets no suggestion');
-  eq(C.suggestWiring({ units: fsd }, { units: ds }, { Drift: 'CO', weeks: 8, tol: 0, wired: { R1: 'DIST' }, types: { DIST: 'dist' } }).length, 1, 'suggest: exact fit passes tol 0');
-  eq(C.suggestWiring({ units: fsd }, { units: ds }, { Drift: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST', R2: 'DIST' }, types: { DIST: 'dist' } }).length, 0, 'suggest: nothing left once R2 is wired (R3 does not fit)');
-  eq(C.suggestWiring({ units: fsd }, { units: ds }, { Drift: 'MX', weeks: 8, tol: 0.15 }).length, 0, 'suggest: other Drift → empty');
+  eq(C.suggestWiring({ units: fsd }, { units: ds }, { country: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST' }, types: { DIST: 'operator' } }).length, 0, 'suggest: 直达消费者 parent gets no suggestion');
+  eq(C.suggestWiring({ units: fsd }, { units: ds }, { country: 'CO', weeks: 8, tol: 0, wired: { R1: 'DIST' }, types: { DIST: 'dist' } }).length, 1, 'suggest: exact fit passes tol 0');
+  eq(C.suggestWiring({ units: fsd }, { units: ds }, { country: 'CO', weeks: 8, tol: 0.15, wired: { R1: 'DIST', R2: 'DIST' }, types: { DIST: 'dist' } }).length, 0, 'suggest: nothing left once R2 is wired (R3 does not fit)');
+  eq(C.suggestWiring({ units: fsd }, { units: ds }, { country: 'MX', weeks: 8, tol: 0.15 }).length, 0, 'suggest: other country → empty');
 })();
 
 /* ---------- 同一家(镜像):直达渠道 AMZ 在间接表里也有同名行 → 连上后 SO 计入 FSD 侧、库存按同一家核对不加 INV1;凑数推荐推荐镜像 ---------- */
 (function () {
-  const mkU = function (Drift, account, product, model, Garnet, rows) {
-    const u = { key: Drift + '|' + account + '|' + model, Drift: Drift, account: account, Garnet: Garnet, product: product, model: model, audio: false, periods: [], weeks: new Map() };
+  const mkU = function (country, account, product, model, line, rows) {
+    const u = { key: country + '|' + account + '|' + model, country: country, account: account, line: line, product: product, model: model, audio: false, periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: 0, inv: x[2] != null ? x[2] : null, inv1: x[3] != null ? x[3] : null }); });
     return u;
   };
@@ -1610,16 +1610,16 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(bdA.mirror, true, 'mirror: byDirect flags AMZ as mirrored');
   eq(bdA.status, 'OK', 'mirror: AMZ vs its twin: SO 240=240, inventory 300=300 (no INV1 added)');
   eq(rec.byDirect.filter(function (r) { return r.account === 'DIST'; })[0].status, 'OK', 'mirror: DIST unaffected');
-  const sug = C.suggestWiring({ units: fsd }, { units: ds }, { Drift: 'CO', weeks: 8, tol: 0.1, wired: { R1: 'DIST' }, types: { AMZ: 'online', DIST: 'dist' } });
+  const sug = C.suggestWiring({ units: fsd }, { units: ds }, { country: 'CO', weeks: 8, tol: 0.1, wired: { R1: 'DIST' }, types: { AMZ: 'online', DIST: 'dist' } });
   const sA = sug.filter(function (s) { return s.parent === 'AMZ'; })[0];
   ok(sA && sA.mirror === true && sA.ds.join() === 'AMZ-ds', 'mirror: suggest AMZ-ds as the same entity of AMZ (SO 240 / inventory 300 both match)');
-  eq(C.suggestWiring({ units: fsd }, { units: ds }, { Drift: 'CO', weeks: 8, tol: 0.1, wired: { R1: 'DIST', 'AMZ-ds': 'AMZ' }, types: { AMZ: 'online', DIST: 'dist' } }).filter(function (s) { return s.parent === 'AMZ'; }).length, 0, 'mirror: once wired, no further suggestion for AMZ');
+  eq(C.suggestWiring({ units: fsd }, { units: ds }, { country: 'CO', weeks: 8, tol: 0.1, wired: { R1: 'DIST', 'AMZ-ds': 'AMZ' }, types: { AMZ: 'online', DIST: 'dist' } }).filter(function (s) { return s.parent === 'AMZ'; }).length, 0, 'mirror: once wired, no further suggestion for AMZ');
 })();
 
 /* ---------- 下游手拍 SO 高于可售:进货补足,拍数不被库存压回;SI 也手拍时不补 ---------- */
 (function () {
   const mk = function (rows) {
-    const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1662,7 +1662,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(C.retailLockBudget({ total: 10000, remain: 300, inv1: 500, lifePurchase: 9900 }), 100, 'retailLockBudget: strict but lifecycle ceiling tighter than 余量 → 100');
   /* 手拍补足向上取整到 5 */
   const mk = function (rows) {
-    const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+    const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
     rows.forEach(function (x) { u.periods.push(x[0]); u.weeks.set(x[0], { so: x[1], si: x[2] || 0, inv: x[3] != null ? x[3] : null, inv1: null }); });
     return u;
   };
@@ -1735,7 +1735,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- 今年月末画像:已过月用实际库存,未过月用推演行;DOS=月末库存÷(月SO÷天数) ---------- */
 (function () {
-  const u = { audio: false, key: 'k', Drift: 'X', account: 'A', Garnet: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
+  const u = { audio: false, key: 'k', country: 'X', account: 'A', line: 'L', product: 'P', model: 'M', periods: [], weeks: new Map() };
   const maxP = C.mkPeriod(2026, 35);   // W35(周四 8/27)=8 月最后一周
   for (let w = 1; w <= 35; w++) { const p = C.mkPeriod(2026, w); u.periods.push(p); u.weeks.set(p, { so: 70, si: 0, inv: 1000, inv1: null }); }
   const sim = []; for (let w = 36; w <= 53; w++) sim.push({ p: C.mkPeriod(2026, w), so: 70, si: 0, inv: 1500 });
@@ -1769,19 +1769,19 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(w.so1, 43, 'store: week.so1 stored separately (not used by simulation)');
 })();
 
-/* ---------- 产品经营(财经口径):公式照抄经营数据表;附件例:Laputa 墨西哥 RRP 69999/税 16%/渠长 29.5%/负向 15%/汇率 (18+17)/2×1.03 ---------- */
+/* ---------- 产品经营(财经口径):公式照抄经营数据表;附件例:Solano 墨西哥 RRP 59999/税 16%/渠长 27.5%/负向 12%/汇率 (18+17)/2×1.03 ---------- */
 (function () {
   eq(C.evalArith('(18+17)/2*1.03'), 18.025, 'fin: 汇率公式 (18+17)/2*1.03 = 18.025');
   eq(C.evalArith('=1+2'), null, 'fin: 非法字符返回 null');
   eq(C.finNum('=(3770+3120)/2*1.1'), 3789.5, 'fin: =公式 求值');
   eq(C.finNum('16%'), 0.16, 'fin: 16% → 0.16');
   eq(C.finRate('16'), 0.16, 'fin: 裸 16 当百分数');
-  eq(C.finRate('0.295'), 0.295, 'fin: 0.295 原样');
-  eq(C.finNum('1,432.472'), 1432.472, 'fin: 千分位');
+  eq(C.finRate('0.275'), 0.275, 'fin: 0.275 原样');
+  eq(C.finNum('1,232.472'), 1232.472, 'fin: 千分位');
   eq(C.finNum('　'), null, 'fin: 全角空格=空');
   /* 预算行 → 季度透视(SI 2000 台在 4 月,季末库存 6 月 3000,6 月 SO 1500) */
   const y = 2027;
-  const mk = function (m, so, si, inv) { return ['手机', 'Laputa', 'Laputa (Astra XT下一代)', 'Astra', '墨西哥', 'ACC', 'FSD', y, 'Q' + Math.ceil(m / 3), m, so, si, inv, 69999, '', '', '', 'M1']; };
+  const mk = function (m, so, si, inv) { return ['手机', 'Solano', 'Solano (Astra XT下一代)', 'Astra', '墨西哥', 'ACC', 'FSD', y, 'Q' + Math.ceil(m / 3), m, so, si, inv, 59999, '', '', '', 'M1']; };
   const rows = [mk(4, 1000, 2000, 4000), mk(5, 1200, 0, 2800), mk(6, 1500, 0, 3000), mk(10, 500, 1000, 800), mk(11, 400, 0, 400), mk(12, 300, 0, 100)];
   const pv = C.finQuarterPivot(rows, y);
   eq(pv.length, 1, 'fin: 一行 BU×传播名×国家');
@@ -1790,16 +1790,16 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const d6 = C.monthDaysOf(y, 6);
   eq(pv[0].dos.Q2, Math.round(3000 / (1500 / d6)), 'fin: Q2 DOS = 季末库存÷(6 月 SO÷6 月天数)');
   eq(pv[0].dos.Q1, null, 'fin: 无库存季 DOS 为空');
-  const pm = { rrp: [69999, 69999, 69999, 69999], vat: 0.16, ch: 0.295, neg: [0.15, 0.15, 0.15, 0.15], fx: [18.025, 18.025, 18.025, 18.025], zero: [1432.472, 1432.472, 1432.472, 1432.472], r1: 0.05 };
+  const pm = { rrp: [59999, 59999, 59999, 59999], vat: 0.16, ch: 0.275, neg: [0.12, 0.12, 0.12, 0.12], fx: [18.025, 18.025, 18.025, 18.025], zero: [1232.472, 1232.472, 1232.472, 1232.472], r1: 0.05 };
   const c = C.finCompute(pv[0], pm);
-  const sip = 69999 / 1.16 * (1 - 0.295), nsip = sip * 0.85 / 18.025;
-  ok(Math.abs(c.q.Q2.sip - 42542.496) < 1e-3, 'fin: SIP = 42542.496(附件值)');
-  ok(Math.abs(c.q.Q2.nsip - 2006.1648) < 1e-4, 'fin: NSIP = 2006.1648(附件值)');
+  const sip = 59999 / 1.16 * (1 - 0.275), nsip = sip * 0.88 / 18.025;
+  ok(Math.abs(c.q.Q2.sip - 37499.375) < 1e-3, 'fin: SIP = 37499.375(附件值)');
+  ok(Math.abs(c.q.Q2.nsip - 1830.7601) < 1e-4, 'fin: NSIP = 1830.7601(附件值)');
   const dos2 = pv[0].dos.Q2;
   const defer2 = dos2 > 90 ? 3 / dos2 * (dos2 - 90) : 0;
   ok(Math.abs(c.q.Q2.defer - defer2) < 1e-9, 'fin: 递延量 = IF(DOS>90, 季末库存/DOS×(DOS−90), 0)');
   ok(Math.abs(c.q.Q2.rev - nsip * (2 - defer2)) < 1e-9, 'fin: 收入 = NSIP×(SI−递延量)');
-  ok(Math.abs(c.q.Q2.gm - (nsip * 0.95 - 1432.472) / nsip) < 1e-12, 'fin: 销毛率 = (NSIP×(1−其他成本率)−Floor)/NSIP');
+  ok(Math.abs(c.q.Q2.gm - (nsip * 0.95 - 1232.472) / nsip) < 1e-12, 'fin: 销毛率 = (NSIP×(1−其他成本率)−Floor)/NSIP');
   eq(c.q.Q1.rev, 0, 'fin: 无量季收入 0');
   ok(Math.abs(c.year.rev - (c.q.Q1.rev + c.q.Q2.rev + c.q.Q3.rev + c.q.Q4.rev)) < 1e-9, 'fin: 全年收入=四季度之和');
   ok(Math.abs(c.year.gmSum - (c.q.Q1.gm + c.q.Q2.gm + c.q.Q3.gm + c.q.Q4.gm)) < 1e-12, 'fin: 销毛率全年=四季度之和(照表)');
@@ -1814,25 +1814,25 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(c3.q.Q2.rev, null, 'fin: 缺汇率 → 收入 null');
   ok(c3.q.Q2.flags.indexOf('缺汇率') >= 0, 'fin: 标缺汇率');
   const c4 = C.finCompute(pv[0], Object.assign({}, pm, { ch: null }));
-  ok(Math.abs(c4.q.Q2.sip - 69999 / 1.16) < 1e-9, 'fin: 渠长空按 0(照 Excel)');
+  ok(Math.abs(c4.q.Q2.sip - 59999 / 1.16) < 1e-9, 'fin: 渠长空按 0(照 Excel)');
   /* 附件文本解析(公式版形制):汇率公式、比率、Floor、其他成本率空 */
   const hdr1 = '产品字段\t\t\tSO 量（K）\t\t\t\t\t\tSI 量（K）\t\t\t\t\t\t\tRRP（本币）\t\t\t\t增值税率\t渠长\t\t负向投入比例（分母为SIP）已默认填入上一代产品投入\t\t\t\t\t\t收入额（KUSD）\t\t\t\t\t\t其他成本率\t销毛率';
   const hdr2 = 'BU\t传播名\t国家\t26年年底库存\tSO Q1\tSO Q2\tSO Q3\tSO Q4\tSO全年合计\tSI Q1\tSI Q2\tSI Q3\tSI Q4\tSI全年合计\t年底库存\t年底DOS\tQ1\tQ2\tQ3\tQ4\t增值税率\t渠长(SIP=不含税RRP*（1-渠长）\tQ4\tQ1\tQ2\tQ3\tQ4\tQ4\tQ4\tQ1\tQ2\tQ3\tQ4\t全年\tQ4\t基于NSIP\tQ1\tQ2\tQ3\tQ4\t全年';
-  const r1 = ['手机', 'Laputa (Astra XT下一代)', '墨西哥', '', '', '1', '1', '1', '=SUM(I3:L3)', '', '2', '1', '1', '=SUM(N3:Q3)', '=V3', '=AA3', '69999', '69999', '69999', '69999', '0.16', '0.295', '=AF3/(1+$AG3)*(1-$AH3)', '0.15', '0.15', '0.15', '0.15', '=(18+17)/2*1.03', '=AL3*(1-AP3)/AT3', '=AU3*(N3-IF(X3>90,S3/X3*(X3-90),0))', '', '', '', '=SUM(AY3:BB3)', '1432.472', '', '=(AU3*(1-$BH3-$BI3-$BJ3)-BD3)/AU3', '', '', '', '=SUM(BO3:BR3)'].join('\t');
-  const r2 = ['手机', 'Laputa (Astra XT下一代)', '秘鲁', '', '', '', '', '', '=SUM(I6:L6)', '', '', '', '', '=SUM(N6:Q6)', '=V6', '=AA6', '', '', '', '', '0.18', '', '=AF6/(1+$AG6)*(1-$AH6)', '0.08', '0.08', '0.08', '0.08', '=(3.3+3.35)/2', '=AL6*(1-AP6)/AT6', '', '', '', '', '', '1432.472', '', '', '', '', '', ''].join('\t');
+  const r1 = ['手机', 'Solano (Astra XT下一代)', '墨西哥', '', '', '1', '1', '1', '=SUM(I3:L3)', '', '2', '1', '1', '=SUM(N3:Q3)', '=V3', '=AA3', '59999', '59999', '59999', '59999', '0.16', '0.275', '=AF3/(1+$AG3)*(1-$AH3)', '0.12', '0.12', '0.12', '0.12', '=(18+17)/2*1.03', '=AL3*(1-AP3)/AT3', '=AU3*(N3-IF(X3>90,S3/X3*(X3-90),0))', '', '', '', '=SUM(AY3:BB3)', '1232.472', '', '=(AU3*(1-$BH3-$BI3-$BJ3)-BD3)/AU3', '', '', '', '=SUM(BO3:BR3)'].join('\t');
+  const r2 = ['手机', 'Solano (Astra XT下一代)', '秘鲁', '', '', '', '', '', '=SUM(I6:L6)', '', '', '', '', '=SUM(N6:Q6)', '=V6', '=AA6', '', '', '', '', '0.18', '', '=AF6/(1+$AG6)*(1-$AH6)', '0.08', '0.08', '0.08', '0.08', '=(3.3+3.35)/2', '=AL6*(1-AP6)/AT6', '', '', '', '', '', '1232.472', '', '', '', '', '', ''].join('\t');
   const p = C.parseFinParamsText(hdr1 + '\n' + hdr2 + '\n' + r1 + '\n' + r2 + '\n');
   eq(p.error, null, 'finParse: 无错');
   eq(p.rows.length, 2, 'finParse: 两行');
   eq(p.cols.shape, 'fixed', 'finParse: 固定形制定位');
-  eq(p.rows[0].rrp, [69999, 69999, 69999, 69999], 'finParse: RRP Q1-Q4');
-  eq([p.rows[0].vat, p.rows[0].ch, p.rows[0].fx, p.rows[0].zero, p.rows[0].r1], [0.16, 0.295, 18.025, 1432.472, null], 'finParse: 税率/渠长/汇率公式/Floor/其他成本率空');
-  eq(p.rows[0].neg, [0.15, 0.15, 0.15, 0.15], 'finParse: 负向投入 Q1-Q4');
+  eq(p.rows[0].rrp, [59999, 59999, 59999, 59999], 'finParse: RRP Q1-Q4');
+  eq([p.rows[0].vat, p.rows[0].ch, p.rows[0].fx, p.rows[0].zero, p.rows[0].r1], [0.16, 0.275, 18.025, 1232.472, null], 'finParse: 税率/渠长/汇率公式/Floor/其他成本率空');
+  eq(p.rows[0].neg, [0.12, 0.12, 0.12, 0.12], 'finParse: 负向投入 Q1-Q4');
   eq([p.rows[1].ch, p.rows[1].fx, p.rows[1].rrp[0]], [null, 3.325, null], 'finParse: 秘鲁 渠长空/汇率 3.325/RRP 空');
   /* Markdown 版(值已求出,含 % 与全角空格) */
-  const md = '| 产品字段 | 区域 |\n| --- | --- |\n| ' + hdr2.split('\t').join(' | ') + ' |\n| ' + ['手机', 'Astra X7', '墨西哥', '　', '　', '　', '　', '　', '0', '　', '　', '　', '　', '0', '0', '0', '48999', '48999', '48999', '48999', '16%', '29.50%', '29779.565', '30%', '30%', '30%', '30%', '18.025', '1156.4879', '0', '0', '0', '0', '0', '1070.16', '　', '-1%', '-2%', '-3%', '-2%', '0'].join(' | ') + ' |\n';
+  const md = '| 产品字段 | 区域 |\n| --- | --- |\n| ' + hdr2.split('\t').join(' | ') + ' |\n| ' + ['手机', 'Astra X7', '墨西哥', '　', '　', '　', '　', '　', '0', '　', '　', '　', '　', '0', '0', '0', '39999', '39999', '39999', '39999', '16%', '27.50%', '24999.375', '25%', '25%', '25%', '25%', '18.025', '1156.4879', '0', '0', '0', '0', '0', '990.16', '　', '-1%', '-2%', '-3%', '-2%', '0'].join(' | ') + ' |\n';
   const pm2 = C.parseFinParamsText(md);
   eq(pm2.error, null, 'finParse md: 无错');
-  eq([pm2.rows[0].name, pm2.rows[0].vat, pm2.rows[0].ch, pm2.rows[0].neg[0], pm2.rows[0].fx, pm2.rows[0].zero], ['Astra X7', 0.16, 0.295, 0.3, 18.025, 1070.16], 'finParse md: 值列');
+  eq([pm2.rows[0].name, pm2.rows[0].vat, pm2.rows[0].ch, pm2.rows[0].neg[0], pm2.rows[0].fx, pm2.rows[0].zero], ['Astra X7', 0.16, 0.275, 0.25, 18.025, 990.16], 'finParse md: 值列');
 })();
 
 /* ---------- 拍数审计回归(2026-09-02):承接按段合计/拍 0 不承接/清尾段重置;FSD 手拍超库存进货补足且库存不负;末次SI后不补按可售压回;distribute 防御;lockSeqAlloc cutAt ---------- */
@@ -1895,12 +1895,12 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
 
 /* ---------- 阶段2(2026-09-04):统一时间立方 纯函数单测 ---------- */
 (function () {
-  const mkU = function (key, Drift, account, model, Garnet, product, soBase) {
+  const mkU = function (key, country, account, model, line, product, soBase) {
     const weeks = new Map(), periods = [];
     const add = function (p, so, si, inv) { weeks.set(p, { so: so, si: si, inv: inv }); periods.push(p); };
     for (let w = 1; w <= 52; w++) add(2025000 + w, soBase, soBase, 1000);
     for (let w = 1; w <= 30; w++) add(2026000 + w, soBase + 1, soBase + 1, 900);
-    return { key: key, Drift: Drift, account: account, model: model, Garnet: Garnet, product: product, weeks: weeks, periods: periods };
+    return { key: key, country: country, account: account, model: model, line: line, product: product, weeks: weeks, periods: periods };
   };
   const u1 = mkU('A::X::M1', 'A', 'X', 'M1', '手机', 'P1', 10), u2 = mkU('A::Y::M1', 'A', 'Y', 'M1', '手机', 'P1', 20);
   const fw = []; for (let w = 31; w <= 40; w++) fw.push(2026000 + w);
@@ -1917,7 +1917,7 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const iJan = bctx.bks.findIndex(function (b) { return b.key === 'M2025-1'; });
   ok(iJan >= 0, 'timeBuckets: 有 2025-1 月桶');
   eq(a.so[iJan], (10 + 20) * bctx.bks[iJan].weeks.length, 'aggSeries: 2025-1 月 SO = 两单元周和');
-  const r = C.qRun({ Dx: Dx, stx: stx, items: Dx.list, extByKey: null, expand: null }, { src: 'fsd', gran: 'month', yrs: [2025, 2026], dims: ['Drift', 'account'], mode: 'tree' });
+  const r = C.qRun({ Dx: Dx, stx: stx, items: Dx.list, extByKey: null, expand: null }, { src: 'fsd', gran: 'month', yrs: [2025, 2026], dims: ['country', 'account'], mode: 'tree' });
   eq(r.rows.length, 1 + 1 + 2, 'qRun tree: 合计 + 国家 + 2 账户 = 4 行');
   eq(r.rows[0].v.so, a.so, 'qRun: 合计行 = aggSeries 全体');
   const rowY = r.rows.find(function (x) { return x.path.length === 2 && x.path[1] === 'Y'; });
@@ -1925,12 +1925,23 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const iLast = bctx.bks.length - 1; const d = r.rows[0].dos[iLast];
   const md = C.monthDos(a.inv[iLast], a.soL[iLast], bctx.bks[iLast].lastDays);
   ok(d.dv === md || (d.dv == null && (md == null || md === Infinity)), 'qRun: 行级桶 DOS 与 C.monthDos 同式');
-  const qf = C.qRun({ Dx: Dx, stx: stx, items: Dx.list, extByKey: null, expand: null }, { src: 'fsd', gran: 'quarter', yrs: [2026], dims: ['Drift', 'account'], mode: 'flat' });
+  const qf = C.qRun({ Dx: Dx, stx: stx, items: Dx.list, extByKey: null, expand: null }, { src: 'fsd', gran: 'quarter', yrs: [2026], dims: ['country', 'account'], mode: 'flat' });
   eq(qf.rows.length, 1 + 2, 'qRun flat: 合计 + 2 叶子');
   eq(C.curAgg(Dx.list, {}).inv, 1800, 'curAgg: Σ当前库存');
   eq(C.curAgg([{ u: u1, cur: { curInv: null, curInv1: 50, dailySO: 1 } }], { invFallback: 'inv1' }).inv, 50, 'curAgg: invFallback=inv1 回落');
   eq(C.curAgg([{ u: u1, cur: { curInv: null, curInv1: 50, dailySO: 1 } }], {}).inv, null, 'curAgg: 默认不回落');
   eq(C.unitKey3('A', 'X', null), 'A\u0001X\u0001', 'unitKey3: 型号空串');
+})();
+
+
+/* ---------- 2026-09-15 拍板 Q3:周系数只用 2 层 ---------- */
+(function () {
+  const L = { acctProduct: { 'ACC|P1': { 1: 2 } }, acctLine: { 'ACC|平板': { 1: 1.5 } }, countryLine: { 'CO|平板': { 1: 1.2 } }, lineProduct: { '平板|P1': { 1: 1.1 } }, line: { '平板': { 1: 1 } }, global: {} };
+  const u = { account: 'ACC', country: 'CO', line: '平板', product: 'P1' };
+  eq(C.pickKLayer([L], u).label, '渠道×产品', 'pickKLayer 默认仍是五层(老口径可选)');
+  eq(C.pickKLayer([L], u, true).label, '产品线×产品', 'pickKLayer only2 跳过渠道/国家层,取 产品线×产品');
+  const L2 = { acctProduct: {}, acctLine: { 'ACC|平板': { 1: 1.5 } }, countryLine: {}, lineProduct: {}, line: { '平板': { 1: 1 } }, global: {} };
+  eq(C.pickKLayer([L2], u, true).label, '产品线', 'pickKLayer only2 无产品层时回退 产品线');
 })();
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

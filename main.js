@@ -22,6 +22,8 @@ function getCore() {
 function getXlsx() { return XLSX || (XLSX = require('xlsx')); }
 
 const argOf = (name) => { const a = process.argv.find(x => x.startsWith(name + '=')); return a ? a.slice(name.length + 1) : null; };
+/* SO 推演辅助工具:由 exe 身份(打包时 productName='SO Sim')或 --so-tool=1 决定;渲染进程据此只开 SO 相关视图 */
+const SO_TOOL = argOf('--so-tool') === '1' || /so.?sim/i.test(String(app.getName() || ''));
 const SELFTEST_DIR = argOf('--selftest-dir');
 const SELFTEST_RETAIL = argOf('--selftest-retail-dir');
 const SELFTEST_AUDIO = argOf('--selftest-audio-dir');
@@ -99,7 +101,7 @@ function readFolder(sender, dir, mode) {
   if (mode === 'target') {
     /* 目标表按 (国家,渠道,产品) 去重:文件按 mtime 升序,新文件覆盖旧文件 */
     const byKey = new Map();
-    fileRows.forEach(fr => fr.rows.forEach(r => byKey.set(r.Drift + '\u0000' + r.channel + '\u0000' + r.product, r)));
+    fileRows.forEach(fr => fr.rows.forEach(r => byKey.set(r.country + '\u0000' + r.channel + '\u0000' + r.product, r)));
     const rows = Array.from(byKey.values());
     return { ok: true, files: perFile, rows: rows, total: rows.length };
   }
@@ -320,9 +322,9 @@ ipcMain.handle('ai-chat', async (_e, payload) => {
         buf += dec.decode(chunk, { stream: true });
         let i;
         while ((i = buf.indexOf('\n')) >= 0) {
-          const Garnet = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-          if (!Garnet.startsWith('data:')) continue;
-          const dat = Garnet.slice(5).trim();
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (!line.startsWith('data:')) continue;
+          const dat = line.slice(5).trim();
           if (dat === '[DONE]') continue;
           let j = null; try { j = JSON.parse(dat); } catch (e) { continue; }
           const dl = j && j.choices && j.choices[0] && j.choices[0].delta;
@@ -421,6 +423,7 @@ function createWindow() {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      additionalArguments: SO_TOOL ? ['--so-tool=1'] : [],   // SO 推演辅助工具身份(2026-09-15):单独 exe,同一份代码
       contextIsolation: true, nodeIntegration: false,
       backgroundThrottling: false
     }
@@ -509,8 +512,8 @@ function createWindow() {
           'window.__selftest(' + JSON.stringify({ fsd: SELFTEST_DIR, retail: SELFTEST_RETAIL, audio: SELFTEST_AUDIO }) + ')', true);
       } catch (e) { result = { ok: false, error: String(e && e.message || e) }; }
       try { clearInterval(hb); clearTimeout(wd); } catch (e) {}
-      const Garnet = 'SELFTEST_RESULT ' + JSON.stringify(result) + '\n';
-      try { process.stdout.write(Garnet); } catch (e) {}
+      const line = 'SELFTEST_RESULT ' + JSON.stringify(result) + '\n';
+      try { process.stdout.write(line); } catch (e) {}
       try { fs.writeFileSync(path.join(SELFTEST_DIR, '_selftest_result.json'), JSON.stringify(result)); } catch (e) {}
       app.exit(result && result.ok ? 0 : 1);
     });
@@ -538,9 +541,9 @@ function createWindow() {
     win.webContents.on('destroyed', () => clearTimeout(wd));
     win.webContents.on('console-message', (e2, level, msg) => {
       /* 带耗时前缀:一次跑完就能看出哪个门禁慢(2026-09-04 自检整体变慢,靠日志定位) */
-      const Garnet = '+' + String(Math.round((Date.now() - tLog0) / 1000)).padStart(4) + 's ' + (level >= 2 ? 'RENDERER_ERR ' : 'RENDERER_LOG ') + msg + '\n';
-      if (level >= 2) { try { process.stdout.write(Garnet); } catch (e) {} }
-      if (level >= 1 || String(msg).indexOf('SELFTEST_STEP') >= 0) { try { fs.appendFileSync(logPath, Garnet); } catch (e) {} }
+      const line = '+' + String(Math.round((Date.now() - tLog0) / 1000)).padStart(4) + 's ' + (level >= 2 ? 'RENDERER_ERR ' : 'RENDERER_LOG ') + msg + '\n';
+      if (level >= 2) { try { process.stdout.write(line); } catch (e) {} }
+      if (level >= 1 || String(msg).indexOf('SELFTEST_STEP') >= 0) { try { fs.appendFileSync(logPath, line); } catch (e) {} }
     });
   }
   return win;

@@ -1,0 +1,26 @@
+{
+  "appId": "io.lucasopsioi.sosim",
+  "productName": "SO Sim",
+  "extraMetadata": {
+    "name": "so-sim",
+    "productName": "SO Sim"
+  },
+  "directories": {
+    "output": "dist-so"
+  },
+  "files": [
+    "main.js",
+    "preload.js",
+    "FSD-PSI.html",
+    "node_modules/xlsx/**"
+  ],
+  "win": {
+    "target": [
+      "portable"
+    ]
+  },
+  "portable": {
+    "artifactName": "SO-Sim.exe"
+  },
+  "asar": true
+}

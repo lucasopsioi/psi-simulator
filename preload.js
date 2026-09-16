@@ -1,6 +1,7 @@
 'use strict';
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 contextBridge.exposeInMainWorld('fsdShell', {
+  soTool: process.argv.indexOf('--so-tool=1') >= 0,   // SO 推演辅助工具身份(2026-09-15)
   zoomSet: (f) => { try { webFrame.setZoomFactor(f); return webFrame.getZoomFactor(); } catch (e) { return null; } },
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   readFolder: (dir, mode) => ipcRenderer.invoke('read-folder', dir, mode),
