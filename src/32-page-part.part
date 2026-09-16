@@ -528,7 +528,7 @@ function aiValidateArgs(name,args){
   Object.keys(a).forEach(function(k){
     const pd=props[k];
     if(pd&&typeof a[k]==='string'&&(pd.type==='object'||pd.type==='array')&&/^\s*[\[{]/.test(a[k])){
-      try{ a[k]=JSON.parse(a[k]); }catch(e){}
+      try{ a[k]=JSON.parse(a[k]); }catch(e){ reportErr(e,'page-part'); }
     }
   });
   for(const k of Object.keys(a)){
@@ -554,7 +554,7 @@ function aiShrink(name,result){
         _省略:'仅前 '+rowCap+' 行,共 '+result.rows.length+' 行;请加过滤收窄'});
     if(r&&typeof r==='object'&&Array.isArray(r.取值)&&r.取值.length>60)
       r=Object.assign({},r,{取值:r.取值.slice(0,60),_省略:'仅前60个取值,用 contains 收窄'});
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-part'); }
   let s; try{ s=JSON.stringify(r); }catch(e){ s=String(r); }
   if(s.length>AI_BUDGET.toolResultChars)s=s.slice(0,AI_BUDGET.toolResultChars-12)+'…(已截断)';
   return '[工具 '+name+' 返回]\n'+s;
@@ -686,7 +686,7 @@ function aiParseToolCall(text){
   try{
     const o=JSON.parse(m[0]);
     if(o&&o.tool)return {tool:String(o.tool),args:(o.args&&typeof o.args==='object')?o.args:{}};
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-part'); }
   return null;
 }
 let __aiStreamCb=null,__aiStreamSeq=0,__aiLlmOverride=null;
@@ -726,8 +726,8 @@ async function aiRunSpecialist(task,budget,ui2){
   const toolTrace=[];
   const messages=[];
   const ctx=[];
-  try{ ctx.push('【界面状态】'+JSON.stringify(aiToolBoardState())); }catch(e){}
-  try{ const mt=JSON.stringify(aiToolMeta()); ctx.push('【数据概览】'+(mt.length>AI_BUDGET.snapshotChars?mt.slice(0,AI_BUDGET.snapshotChars)+'…':mt)); }catch(e){}
+  try{ ctx.push('【界面状态】'+JSON.stringify(aiToolBoardState())); }catch(e){ reportErr(e,'page-part'); }
+  try{ const mt=JSON.stringify(aiToolMeta()); ctx.push('【数据概览】'+(mt.length>AI_BUDGET.snapshotChars?mt.slice(0,AI_BUDGET.snapshotChars)+'…':mt)); }catch(e){ reportErr(e,'page-part'); }
   if(ctx.length)messages.push({role:'user',content:ctx.join('\n')});
   const guardTxt=(task.guards&&task.guards.length)?('\n\n【本题硬约束(违反即废答)】\n'+task.guards.map(function(g){return '· '+g;}).join('\n')):'';
   messages.push({role:'user',content:task.subQuestion+guardTxt+'\n\n'+AI_CHECKLIST});

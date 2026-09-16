@@ -929,7 +929,7 @@ function pv2SyncSticky(el){
         if(i===1)th.style.left=w0+'px';
       });
     }
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-统一取数入口'); }
 }
 /* 右键推演逻辑浮层:今年月=确定性因子分解;外推年=外推参数卡;历史=实际说明 */
 function pv2ShowLogic(td,e,nodeIdx,bks,src,curY){

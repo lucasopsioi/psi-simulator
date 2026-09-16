@@ -185,7 +185,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:
 </style>
 <script>
 /* 版本号单一定义处:发布新版只改这里(界面两处显示自动跟随),同时把 package.json 的 version 对齐 */
-window.APP_VER='V88';
+window.APP_VER='V89';
 </script>
 </head>
 <body>
@@ -197,7 +197,7 @@ window.APP_VER='V88';
 <header>
   <div class="hrow">
     <h1>FSD PSI 推演<span class="ver" id="appVer"></span><span class="sub">Salesboard</span></h1>
-    <span id="dataline">未载入数据</span>
+    <span id="dataline">未载入数据</span><span id="errBadge" class="badge" style="display:none;cursor:pointer;margin-left:8px" title="最近错误(点开看;也写到 errors.log)"></span>
     <script>document.getElementById('bootVer').textContent=window.APP_VER;
     document.getElementById('appVer').textContent=window.APP_VER;</script>
   </div>

@@ -48,7 +48,7 @@ function xgSelectAllIn(td){
   try{
     const r=document.createRange(); r.selectNodeContents(td);
     const s=getSelection(); s.removeAllRanges(); s.addRange(r);
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-XGrid'); }
 }
 /* 逐格拍入:记 orig→写值→合成 blur(各页既有提交监听必然执行:解析/守恒分配/重算/重绘),重绘后按选择器重定位下一格。
    用合成事件而非真实焦点:不受窗口焦点状态影响;「未改动不提交」护栏保证后续真实 blur 只是无害空操作 */
@@ -268,7 +268,7 @@ function xgInit(){
   };
   /* 重算/重绘后按选择器把选区找回来(Excel:Delete/粘贴后选区还在) */
   window.xgReselect=function(sels){
-    try{ let k=0; sels.forEach(function(s){ const td=xgQ(s); if(td){ td.classList.add('xsel'); k++; } }); if(k)xgBarUpdate(); }catch(e){}
+    try{ let k=0; sels.forEach(function(s){ const td=xgQ(s); if(td){ td.classList.add('xsel'); k++; } }); if(k)xgBarUpdate(); }catch(e){ reportErr(e,'page-XGrid'); }
   };
   /* 活动格:选区里的锚点格(没有就取第一格) */
   window.xgActiveCell=function(){
@@ -286,7 +286,7 @@ function xgInit(){
     if(shift&&xgAnchor&&xgAnchor.tbl===tbl){ xgMarkRect(tbl,xgAnchor.r,xgAnchor.c,pN.r,pN.c); }
     else { xgSelCells().forEach(function(td){ td.classList.remove('xsel'); }); nx.classList.add('xsel'); xgAnchor={tbl:tbl,r:pN.r,c:pN.c}; xgBarUpdate(); }
     xgCursor={td:nx};
-    try{ nx.scrollIntoView({block:'nearest',inline:'nearest'}); }catch(e){}
+    try{ nx.scrollIntoView({block:'nearest',inline:'nearest'}); }catch(e){ reportErr(e,'page-XGrid'); }
   };
   /* --- 焦点:进格记 orig+全选,输入即替换 --- */
   document.addEventListener('focusin',function(e){

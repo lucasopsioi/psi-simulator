@@ -559,7 +559,9 @@
 | R5 计算期血缘 | V86 | `buildForecastForUnit / buildRetailForecast` 每周带 `f={base,scale,k,g,how}`，`carryTaps` 记 `carry/raw`，`quantizeFc` 记 `plan`，模拟行带 `lin`；`C.lineageText` 一处生成文案；单元明细 SO 格悬停、矩阵右键浮层「四因子」块 | 门禁 `lineageOk`：全部推演周 四因子相乘==原始、取整序列==计划、实际≤计划（361 周） |
 | R3 稳定 uid 键 | V87 | `buildStore` 注入 `keyOf=uidOf`（`state.uidMap` 持久化），`u.key` 变 `uN`、`u.nameKey` 保留可读名；`ovExtKeyOf` 统一把外推键换成 uid；改名只给新名登记同一 uid（`aliasUidForRename`），袋子一个键不动；老档 `migrateBagsToUid` 一次性迁移 | 门禁 `uidOk`：袋键全为 uid；改名回环 同 uid / 手拍在 / 监控在 / 数不变；老档迁移。指纹不变 |
 
-下一步：R6 口径强制 → R8 SO 工具物理独立 → R9–R12。
+| R6 口径唯一实现 | V88 | **D3** 当前库存 INV 缺失回落 INV1：`C.invCurOf` 一处实现，汇总树 / 平铺 / 月末 / 监控 / 总控 / `q()` 同口径；**D7** 平铺「未来SO」改取压回后的推演行（与树形、推演编辑同数）；**D2** 历史月末库存缺则结转上一已知：`C.invAtOrBefore`，推演编辑长表与总控长表与矩阵桶一致。D1/D4/D5/D6 按评审维持，`dosWatch` / `dosTarget28` 保持独立 id | 基线差异只有推演编辑长表 +36 行（免推演单元数据结束后的月份按结转出行）；其余 43 视图 / 18 导出逐位不变 |
+
+下一步：R8 SO 工具物理独立 → R9 缓存统一 → R10 错误可见 → R11 持久化 schema → R12 隐私。
 
 ## 模块合并方案（2026-09-02 提出，待用户拍板后实施）
 

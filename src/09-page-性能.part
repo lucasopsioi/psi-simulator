@@ -353,7 +353,7 @@ function calcLogCollect(tm){
     const L=(D&&D.layers)||{}; s.layers={cp:Object.keys(L.acctProduct||{}).length,a:Object.keys(L.acctLine||{}).length,c:Object.keys(L.countryLine||{}).length,p:Object.keys(L.lineProduct||{}).length,l:Object.keys(L.line||{}).length};
     s.total=s.ms.fsd+s.ms.retail+s.ms.audio+s.ms.targets+s.ms.newprod+s.ms.unmapped;
     window.__calcLog.runs.unshift(s); if(window.__calcLog.runs.length>5)window.__calcLog.runs.length=5;
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-性能'); }
 }
 /* ---------- 新品规划:虚拟单元(规划数据,与底表事实物理隔离) ---------- */
 const FAM_LIFE_DEF={'手机':52,'平板':78,'智能穿戴与运动健康':78,'音频与智能配件':104,'PC':104,'智慧屏':104};
@@ -720,7 +720,7 @@ function importTargetText(txt,label){
   try{
     const rows=JSON.parse(txt);
     if(Array.isArray(rows)&&rows.length){ targetRows=rows; recomputeTargets(); return true; }
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-性能'); }
   return false;
 }
 /* 音频专板派生:直接渠道客户口径,监控看板(现状+历史),不做推演 */

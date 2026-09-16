@@ -16,7 +16,7 @@ function restoreOpenState(el,snap){
     try{
       const inp=el.querySelector('input['+snap.focus[0]+'="'+CSS.escape(snap.focus[1])+'"]');
       if(inp){ inp.focus({preventScroll:true}); const v=inp.value; inp.value=''; inp.value=v; }
-    }catch(e){}
+    }catch(e){ reportErr(e,'page-通用'); }
   }
 }
 

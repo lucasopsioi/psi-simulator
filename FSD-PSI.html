@@ -185,7 +185,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:
 </style>
 <script>
 /* 版本号单一定义处:发布新版只改这里(界面两处显示自动跟随),同时把 package.json 的 version 对齐 */
-window.APP_VER='V88';
+window.APP_VER='V89';
 </script>
 </head>
 <body>
@@ -197,7 +197,7 @@ window.APP_VER='V88';
 <header>
   <div class="hrow">
     <h1>FSD PSI 推演<span class="ver" id="appVer"></span><span class="sub">Salesboard</span></h1>
-    <span id="dataline">未载入数据</span>
+    <span id="dataline">未载入数据</span><span id="errBadge" class="badge" style="display:none;cursor:pointer;margin-left:8px" title="最近错误(点开看;也写到 errors.log)"></span>
     <script>document.getElementById('bootVer').textContent=window.APP_VER;
     document.getElementById('appVer').textContent=window.APP_VER;</script>
   </div>
@@ -3075,6 +3075,34 @@ let state={
 };
 const UI_DEFAULTS=JSON.parse(JSON.stringify(state.ui));
 const SHELL=window.fsdShell||null;
+/* ===== 错误可见(2026-09-15 FDE 评审 R10)=====
+   此前 49 处 catch(e){ reportErr(e,'page-open'); } 静默吞错,用户看到「数不对」而不是「哪里错了」。现在:环形日志 + 头部角标 + 浮层,并经主进程追加到 userData/errors.log。
+   引擎(CORE)保持纯函数不上报;自检里刻意容错的 catch 也不动。 */
+window.__errRing=window.__errRing||[];
+function reportErr(e,where){
+  try{
+    const msg=String(e&&e.message||e||'').slice(0,300); const st=String(e&&e.stack||'').split('\n').slice(1,3).join(' | ').slice(0,300);
+    const rec={t:new Date().toISOString().slice(11,19),where:where||'',msg:msg,stack:st};
+    window.__errRing.push(rec); if(window.__errRing.length>50)window.__errRing.shift();
+    const b=document.getElementById('errBadge'); if(b){ b.textContent=String(window.__errRing.length); b.style.display=''; }
+    if(SHELL&&SHELL.errLog)SHELL.errLog(new Date().toISOString()+' ['+(where||'')+'] '+msg+(st?' :: '+st:''));
+    if(typeof console!=='undefined'&&console.warn)console.warn('[reportErr]',where||'',msg);
+  }catch(e2){}
+}
+window.addEventListener('error',function(ev){ reportErr(ev.error||ev.message,'window.onerror'); });
+window.addEventListener('unhandledrejection',function(ev){ reportErr(ev.reason,'unhandledrejection'); });
+function showErrBox(){
+  let box=document.getElementById('errBox');
+  if(!box){ box=document.createElement('div'); box.id='errBox'; box.className='xp'; box.style.cssText='position:fixed;right:16px;top:56px;z-index:99;max-width:640px;max-height:60vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.25)'; document.body.appendChild(box); }
+  const ring=window.__errRing.slice().reverse();
+  box.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b>最近错误</b><span class="muted">'+ring.length+' 条,完整日志在 errors.log</span>'
+    +'<button class="mini" id="errClear" style="margin-left:auto">清空</button><button class="mini" id="errClose">✕</button></div>'
+    +(ring.length?ring.map(function(r){ return '<div class="note" style="margin:3px 0"><b>'+esc(r.t)+'</b> <span class="muted">'+esc(r.where)+'</span><br>'+esc(r.msg)+(r.stack?'<br><span class="muted" style="font-size:11px">'+esc(r.stack)+'</span>':'')+'</div>'; }).join(''):'<div class="muted">没有错误</div>');
+  box.style.display='block';
+  box.querySelector('#errClose').onclick=function(){ box.style.display='none'; };
+  box.querySelector('#errClear').onclick=function(){ window.__errRing.length=0; const b=document.getElementById('errBadge'); if(b)b.style.display='none'; box.style.display='none'; };
+}
+document.addEventListener('DOMContentLoaded',function(){ const b=document.getElementById('errBadge'); if(b)b.onclick=showErrBox; });
 /* SO 推演辅助工具模式(2026-09-15 用户拍板 Q4:单独 exe)。同一份文件、同一套引擎,由 exe 身份决定开哪些视图:
    SO 工具只回答「每个渠道×型号未来卖多少」,矩阵只留 SO 行,导航只剩 SO 推演 / 待办 / 配置;PSI 全量不变。 */
 function soTool(){ if(window.__soToolForce)return true; if(window.__soToolOff)return false; return !!(SHELL&&SHELL.soTool); }   // __soToolOff:自检期间按 PSI 全量跑,两个 exe 同一套门禁同一份基线
@@ -3162,37 +3190,37 @@ let lsSaveTimer=null;
 function saveState(){
   /* 兜底存储改空闲写:同步 stringify 整个方案曾拖慢每次拍数(2026-09-01 用户:"每拍一个数要隔一秒") */
   clearTimeout(lsSaveTimer);
-  lsSaveTimer=setTimeout(function(){ try{ localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){} },800);
+  lsSaveTimer=setTimeout(function(){ try{ localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){ reportErr(e,'page-open'); } },800);
   if(SHELL&&SHELL.stateSave){
     clearTimeout(stateSaveTimer);
     stateSaveTimer=setTimeout(function(){
-      try{ SHELL.stateSave(JSON.parse(JSON.stringify(state))).catch(function(){}); }catch(e){}
+      try{ SHELL.stateSave(JSON.parse(JSON.stringify(state))).catch(function(){}); }catch(e){ reportErr(e,'page-open'); }
     },400);
   }
 }
 window.addEventListener('beforeunload',function(){
-  try{ clearTimeout(lsSaveTimer); localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){}
+  try{ clearTimeout(lsSaveTimer); localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){ reportErr(e,'page-open'); }
   if(SHELL&&SHELL.stateSaveNow){ clearTimeout(stateSaveTimer);
-    try{ SHELL.stateSaveNow(JSON.parse(JSON.stringify(state))); }catch(e){} }
+    try{ SHELL.stateSaveNow(JSON.parse(JSON.stringify(state))); }catch(e){ reportErr(e,'page-open'); } }
 });
 function saveData(){
   try{ if(rawText&&rawText.length<3500000) localStorage.setItem(LS_DATA,rawText);
-    else localStorage.removeItem(LS_DATA); }catch(e){}
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('fsd',rawText||'').catch(function(){}); }catch(e){} }
+    else localStorage.removeItem(LS_DATA); }catch(e){ reportErr(e,'page-open'); }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('fsd',rawText||'').catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 function saveData2(){
   try{ if(rawText2&&rawText2.length<3500000) localStorage.setItem(LS_DATA2,rawText2);
-    else localStorage.removeItem(LS_DATA2); }catch(e){}
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('retail',rawText2||'').catch(function(){}); }catch(e){} }
+    else localStorage.removeItem(LS_DATA2); }catch(e){ reportErr(e,'page-open'); }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('retail',rawText2||'').catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 function saveData4(){
   const txt=targetRows&&targetRows.length?JSON.stringify(targetRows):'';
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('target',txt).catch(function(){}); }catch(e){} }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('target',txt).catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 function saveData3(){
   try{ if(rawText3&&rawText3.length<3500000) localStorage.setItem(LS_DATA3,rawText3);
-    else localStorage.removeItem(LS_DATA3); }catch(e){}
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('audio',rawText3||'').catch(function(){}); }catch(e){} }
+    else localStorage.removeItem(LS_DATA3); }catch(e){ reportErr(e,'page-open'); }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('audio',rawText3||'').catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 
 /* ---------- 计算 ---------- */
@@ -3734,7 +3762,7 @@ function calcLogCollect(tm){
     const L=(D&&D.layers)||{}; s.layers={cp:Object.keys(L.acctProduct||{}).length,a:Object.keys(L.acctLine||{}).length,c:Object.keys(L.countryLine||{}).length,p:Object.keys(L.lineProduct||{}).length,l:Object.keys(L.line||{}).length};
     s.total=s.ms.fsd+s.ms.retail+s.ms.audio+s.ms.targets+s.ms.newprod+s.ms.unmapped;
     window.__calcLog.runs.unshift(s); if(window.__calcLog.runs.length>5)window.__calcLog.runs.length=5;
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-性能'); }
 }
 /* ---------- 新品规划:虚拟单元(规划数据,与底表事实物理隔离) ---------- */
 const FAM_LIFE_DEF={'手机':52,'平板':78,'智能穿戴与运动健康':78,'音频与智能配件':104,'PC':104,'智慧屏':104};
@@ -4101,7 +4129,7 @@ function importTargetText(txt,label){
   try{
     const rows=JSON.parse(txt);
     if(Array.isArray(rows)&&rows.length){ targetRows=rows; recomputeTargets(); return true; }
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-性能'); }
   return false;
 }
 /* 音频专板派生:直接渠道客户口径,监控看板(现状+历史),不做推演 */
@@ -4572,7 +4600,7 @@ function render(){
   else if(state.ui.tab==='coef')renderCoef();
   else if(state.ui.tab==='settings')renderSettings();
   else renderData();
-  try{ applyCaliberTitles(); }catch(e){}
+  try{ applyCaliberTitles(); }catch(e){ reportErr(e,'page-五个视图'); }
   if(scrollSnap){
     const actNow=document.querySelector('main section.on');
     if(actNow){
@@ -6718,7 +6746,7 @@ function pv2SyncSticky(el){
         if(i===1)th.style.left=w0+'px';
       });
     }
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-统一取数入口'); }
 }
 /* 右键推演逻辑浮层:今年月=确定性因子分解;外推年=外推参数卡;历史=实际说明 */
 function pv2ShowLogic(td,e,nodeIdx,bks,src,curY){
@@ -7898,7 +7926,7 @@ function restoreOpenState(el,snap){
     try{
       const inp=el.querySelector('input['+snap.focus[0]+'="'+CSS.escape(snap.focus[1])+'"]');
       if(inp){ inp.focus({preventScroll:true}); const v=inp.value; inp.value=''; inp.value=v; }
-    }catch(e){}
+    }catch(e){ reportErr(e,'page-通用'); }
   }
 }
 
@@ -8918,7 +8946,7 @@ function xgSelectAllIn(td){
   try{
     const r=document.createRange(); r.selectNodeContents(td);
     const s=getSelection(); s.removeAllRanges(); s.addRange(r);
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-XGrid'); }
 }
 /* 逐格拍入:记 orig→写值→合成 blur(各页既有提交监听必然执行:解析/守恒分配/重算/重绘),重绘后按选择器重定位下一格。
    用合成事件而非真实焦点:不受窗口焦点状态影响;「未改动不提交」护栏保证后续真实 blur 只是无害空操作 */
@@ -9138,7 +9166,7 @@ function xgInit(){
   };
   /* 重算/重绘后按选择器把选区找回来(Excel:Delete/粘贴后选区还在) */
   window.xgReselect=function(sels){
-    try{ let k=0; sels.forEach(function(s){ const td=xgQ(s); if(td){ td.classList.add('xsel'); k++; } }); if(k)xgBarUpdate(); }catch(e){}
+    try{ let k=0; sels.forEach(function(s){ const td=xgQ(s); if(td){ td.classList.add('xsel'); k++; } }); if(k)xgBarUpdate(); }catch(e){ reportErr(e,'page-XGrid'); }
   };
   /* 活动格:选区里的锚点格(没有就取第一格) */
   window.xgActiveCell=function(){
@@ -9156,7 +9184,7 @@ function xgInit(){
     if(shift&&xgAnchor&&xgAnchor.tbl===tbl){ xgMarkRect(tbl,xgAnchor.r,xgAnchor.c,pN.r,pN.c); }
     else { xgSelCells().forEach(function(td){ td.classList.remove('xsel'); }); nx.classList.add('xsel'); xgAnchor={tbl:tbl,r:pN.r,c:pN.c}; xgBarUpdate(); }
     xgCursor={td:nx};
-    try{ nx.scrollIntoView({block:'nearest',inline:'nearest'}); }catch(e){}
+    try{ nx.scrollIntoView({block:'nearest',inline:'nearest'}); }catch(e){ reportErr(e,'page-XGrid'); }
   };
   /* --- 焦点:进格记 orig+全选,输入即替换 --- */
   document.addEventListener('focusin',function(e){
@@ -9891,7 +9919,7 @@ function aiValidateArgs(name,args){
   Object.keys(a).forEach(function(k){
     const pd=props[k];
     if(pd&&typeof a[k]==='string'&&(pd.type==='object'||pd.type==='array')&&/^\s*[\[{]/.test(a[k])){
-      try{ a[k]=JSON.parse(a[k]); }catch(e){}
+      try{ a[k]=JSON.parse(a[k]); }catch(e){ reportErr(e,'page-part'); }
     }
   });
   for(const k of Object.keys(a)){
@@ -9917,7 +9945,7 @@ function aiShrink(name,result){
         _省略:'仅前 '+rowCap+' 行,共 '+result.rows.length+' 行;请加过滤收窄'});
     if(r&&typeof r==='object'&&Array.isArray(r.取值)&&r.取值.length>60)
       r=Object.assign({},r,{取值:r.取值.slice(0,60),_省略:'仅前60个取值,用 contains 收窄'});
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-part'); }
   let s; try{ s=JSON.stringify(r); }catch(e){ s=String(r); }
   if(s.length>AI_BUDGET.toolResultChars)s=s.slice(0,AI_BUDGET.toolResultChars-12)+'…(已截断)';
   return '[工具 '+name+' 返回]\n'+s;
@@ -10049,7 +10077,7 @@ function aiParseToolCall(text){
   try{
     const o=JSON.parse(m[0]);
     if(o&&o.tool)return {tool:String(o.tool),args:(o.args&&typeof o.args==='object')?o.args:{}};
-  }catch(e){}
+  }catch(e){ reportErr(e,'page-part'); }
   return null;
 }
 let __aiStreamCb=null,__aiStreamSeq=0,__aiLlmOverride=null;
@@ -10089,8 +10117,8 @@ async function aiRunSpecialist(task,budget,ui2){
   const toolTrace=[];
   const messages=[];
   const ctx=[];
-  try{ ctx.push('【界面状态】'+JSON.stringify(aiToolBoardState())); }catch(e){}
-  try{ const mt=JSON.stringify(aiToolMeta()); ctx.push('【数据概览】'+(mt.length>AI_BUDGET.snapshotChars?mt.slice(0,AI_BUDGET.snapshotChars)+'…':mt)); }catch(e){}
+  try{ ctx.push('【界面状态】'+JSON.stringify(aiToolBoardState())); }catch(e){ reportErr(e,'page-part'); }
+  try{ const mt=JSON.stringify(aiToolMeta()); ctx.push('【数据概览】'+(mt.length>AI_BUDGET.snapshotChars?mt.slice(0,AI_BUDGET.snapshotChars)+'…':mt)); }catch(e){ reportErr(e,'page-part'); }
   if(ctx.length)messages.push({role:'user',content:ctx.join('\n')});
   const guardTxt=(task.guards&&task.guards.length)?('\n\n【本题硬约束(违反即废答)】\n'+task.guards.map(function(g){return '· '+g;}).join('\n')):'';
   messages.push({role:'user',content:task.subQuestion+guardTxt+'\n\n'+AI_CHECKLIST});
@@ -11456,7 +11484,7 @@ function renderChanTree(elOpt){
       if(ev.target.closest('g[data-ct-unlink],g[data-ct-toggle],g[data-ct-accept]'))return;
       ev.preventDefault();
       drag={from:g.dataset.ctDs!=null?'ds':'dir',key:g.dataset.ctDs!=null?g.dataset.ctDs:g.dataset.ctDir,px:+g.dataset.px,py:+g.dataset.py,hover:null};
-      try{ svgEl.setPointerCapture(ev.pointerId); }catch(e){}
+      try{ svgEl.setPointerCapture(ev.pointerId); }catch(e){ reportErr(e,'page-FSD-下游-对账面板'); }
       const ln=document.createElementNS('http://www.w3.org/2000/svg','path'); ln.id='ctDragLine';
       ln.setAttribute('fill','none'); ln.setAttribute('stroke','var(--accent)'); ln.setAttribute('stroke-width','2'); ln.setAttribute('stroke-dasharray','6 4'); ln.style.pointerEvents='none';
       svgEl.appendChild(ln); svgEl.style.cursor='grabbing';
@@ -14529,6 +14557,16 @@ window.__selftest=async function(arg){
        再按周拆分时余数只能塞进某一周 → 月合计出现 19/13/169/187 这种非 5 倍数。
        断言:承接月(备注含「承接拍数比例」)的 SO 与 SI 都是 roundTo 的倍数。 */
     sfStep('roundStepOk begin');
+    /* R10 门禁 errVisibleOk:上报一条 → 环形日志 +1、角标显示计数;清空后角标隐藏 */
+    let errVisibleOk=false;
+    try{
+      const n0=window.__errRing.length; reportErr(new Error('selftest 探针错误'),'selftest');
+      const b=document.getElementById('errBadge');
+      const shown=!!(b&&b.style.display!=='none'&&+b.textContent===window.__errRing.length);
+      errVisibleOk=window.__errRing.length===n0+1&&shown;
+      window.__errRing.length=0; if(b)b.style.display='none';
+      tms.errVisible={ring:n0+1,badge:shown};
+    }catch(e){ tms.errVisible='ERR:'+String(e&&e.message||e).slice(0,120); }
     /* R3 门禁 uidOk:①袋子里的键(去前缀)都是 uid 且落在某个单元上 ②改名回环:拍一个数+加监控 → renameChannel → 同一 uid、手拍仍在、监控仍在、数不变 → 改回
        ③老档迁移:按名字写进袋子的键,migrateBagsToUid 后变成 uid */
     let uidOk=false;
@@ -15779,9 +15817,9 @@ window.__selftest=async function(arg){
     (function(){ const c=calcCache(); delete c.budTo; delete c.budOv; delete c.pvExt; delete c.lyModels; })();
     sfStep('pendGroup done');
     window.__soToolOff=__soSnap.off; if(SHELL&&SHELL.soTool){ state.cfg.autoFlat=__soSnap.autoFlat; }
-    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&lineageOk&&uidOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
+    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&lineageOk&&uidOk&&errVisibleOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
       incOk:incOk,dosQOk:dosQOk,finOk:finOk,tapAuditOk:tapAuditOk,perfOk:perfOk,smSimOk:smSimOk,sumWatchOk:sumWatchOk,expPrevOk:expPrevOk,targetOk:targetOk,btOk:btOk,mkOk:mkOk,lockOk:lockOk,xgOk:xgOk,aiOk:aiOk,pvOk:pvOk,udOk:udOk,osOk:osOk,npPvOk:npPvOk,npLateOk:npLateOk,reconOk:reconOk,ctOk:ctOk,xgPvOk:xgPvOk,
-      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk, lineageOk:lineageOk, uidOk:uidOk,
+      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk, lineageOk:lineageOk, uidOk:uidOk, errVisibleOk:errVisibleOk,
       units:store?store.units.size:0, maxPeriod:store?store.maxPeriod:0, pend:pendingList().length,
       files:folderInfo&&folderInfo.files?folderInfo.files.length:0,
       retailUnits:retailStore?retailStore.units.size:0,

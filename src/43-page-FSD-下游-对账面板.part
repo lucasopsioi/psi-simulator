@@ -198,7 +198,7 @@ function renderChanTree(elOpt){
       if(ev.target.closest('g[data-ct-unlink],g[data-ct-toggle],g[data-ct-accept]'))return;
       ev.preventDefault();
       drag={from:g.dataset.ctDs!=null?'ds':'dir',key:g.dataset.ctDs!=null?g.dataset.ctDs:g.dataset.ctDir,px:+g.dataset.px,py:+g.dataset.py,hover:null};
-      try{ svgEl.setPointerCapture(ev.pointerId); }catch(e){}
+      try{ svgEl.setPointerCapture(ev.pointerId); }catch(e){ reportErr(e,'page-FSD-下游-对账面板'); }
       const ln=document.createElementNS('http://www.w3.org/2000/svg','path'); ln.id='ctDragLine';
       ln.setAttribute('fill','none'); ln.setAttribute('stroke','var(--accent)'); ln.setAttribute('stroke-width','2'); ln.setAttribute('stroke-dasharray','6 4'); ln.style.pointerEvents='none';
       svgEl.appendChild(ln); svgEl.style.cursor='grabbing';

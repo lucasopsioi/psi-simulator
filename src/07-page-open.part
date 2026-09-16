@@ -64,6 +64,34 @@ let state={
 };
 const UI_DEFAULTS=JSON.parse(JSON.stringify(state.ui));
 const SHELL=window.fsdShell||null;
+/* ===== 错误可见(2026-09-15 FDE 评审 R10)=====
+   此前 49 处 catch(e){ reportErr(e,'page-open'); } 静默吞错,用户看到「数不对」而不是「哪里错了」。现在:环形日志 + 头部角标 + 浮层,并经主进程追加到 userData/errors.log。
+   引擎(CORE)保持纯函数不上报;自检里刻意容错的 catch 也不动。 */
+window.__errRing=window.__errRing||[];
+function reportErr(e,where){
+  try{
+    const msg=String(e&&e.message||e||'').slice(0,300); const st=String(e&&e.stack||'').split('\n').slice(1,3).join(' | ').slice(0,300);
+    const rec={t:new Date().toISOString().slice(11,19),where:where||'',msg:msg,stack:st};
+    window.__errRing.push(rec); if(window.__errRing.length>50)window.__errRing.shift();
+    const b=document.getElementById('errBadge'); if(b){ b.textContent=String(window.__errRing.length); b.style.display=''; }
+    if(SHELL&&SHELL.errLog)SHELL.errLog(new Date().toISOString()+' ['+(where||'')+'] '+msg+(st?' :: '+st:''));
+    if(typeof console!=='undefined'&&console.warn)console.warn('[reportErr]',where||'',msg);
+  }catch(e2){}
+}
+window.addEventListener('error',function(ev){ reportErr(ev.error||ev.message,'window.onerror'); });
+window.addEventListener('unhandledrejection',function(ev){ reportErr(ev.reason,'unhandledrejection'); });
+function showErrBox(){
+  let box=document.getElementById('errBox');
+  if(!box){ box=document.createElement('div'); box.id='errBox'; box.className='xp'; box.style.cssText='position:fixed;right:16px;top:56px;z-index:99;max-width:640px;max-height:60vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.25)'; document.body.appendChild(box); }
+  const ring=window.__errRing.slice().reverse();
+  box.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b>最近错误</b><span class="muted">'+ring.length+' 条,完整日志在 errors.log</span>'
+    +'<button class="mini" id="errClear" style="margin-left:auto">清空</button><button class="mini" id="errClose">✕</button></div>'
+    +(ring.length?ring.map(function(r){ return '<div class="note" style="margin:3px 0"><b>'+esc(r.t)+'</b> <span class="muted">'+esc(r.where)+'</span><br>'+esc(r.msg)+(r.stack?'<br><span class="muted" style="font-size:11px">'+esc(r.stack)+'</span>':'')+'</div>'; }).join(''):'<div class="muted">没有错误</div>');
+  box.style.display='block';
+  box.querySelector('#errClose').onclick=function(){ box.style.display='none'; };
+  box.querySelector('#errClear').onclick=function(){ window.__errRing.length=0; const b=document.getElementById('errBadge'); if(b)b.style.display='none'; box.style.display='none'; };
+}
+document.addEventListener('DOMContentLoaded',function(){ const b=document.getElementById('errBadge'); if(b)b.onclick=showErrBox; });
 /* SO 推演辅助工具模式(2026-09-15 用户拍板 Q4:单独 exe)。同一份文件、同一套引擎,由 exe 身份决定开哪些视图:
    SO 工具只回答「每个渠道×型号未来卖多少」,矩阵只留 SO 行,导航只剩 SO 推演 / 待办 / 配置;PSI 全量不变。 */
 function soTool(){ if(window.__soToolForce)return true; if(window.__soToolOff)return false; return !!(SHELL&&SHELL.soTool); }   // __soToolOff:自检期间按 PSI 全量跑,两个 exe 同一套门禁同一份基线
@@ -151,36 +179,36 @@ let lsSaveTimer=null;
 function saveState(){
   /* 兜底存储改空闲写:同步 stringify 整个方案曾拖慢每次拍数(2026-09-01 用户:"每拍一个数要隔一秒") */
   clearTimeout(lsSaveTimer);
-  lsSaveTimer=setTimeout(function(){ try{ localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){} },800);
+  lsSaveTimer=setTimeout(function(){ try{ localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){ reportErr(e,'page-open'); } },800);
   if(SHELL&&SHELL.stateSave){
     clearTimeout(stateSaveTimer);
     stateSaveTimer=setTimeout(function(){
-      try{ SHELL.stateSave(JSON.parse(JSON.stringify(state))).catch(function(){}); }catch(e){}
+      try{ SHELL.stateSave(JSON.parse(JSON.stringify(state))).catch(function(){}); }catch(e){ reportErr(e,'page-open'); }
     },400);
   }
 }
 window.addEventListener('beforeunload',function(){
-  try{ clearTimeout(lsSaveTimer); localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){}
+  try{ clearTimeout(lsSaveTimer); localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){ reportErr(e,'page-open'); }
   if(SHELL&&SHELL.stateSaveNow){ clearTimeout(stateSaveTimer);
-    try{ SHELL.stateSaveNow(JSON.parse(JSON.stringify(state))); }catch(e){} }
+    try{ SHELL.stateSaveNow(JSON.parse(JSON.stringify(state))); }catch(e){ reportErr(e,'page-open'); } }
 });
 function saveData(){
   try{ if(rawText&&rawText.length<3500000) localStorage.setItem(LS_DATA,rawText);
-    else localStorage.removeItem(LS_DATA); }catch(e){}
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('fsd',rawText||'').catch(function(){}); }catch(e){} }
+    else localStorage.removeItem(LS_DATA); }catch(e){ reportErr(e,'page-open'); }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('fsd',rawText||'').catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 function saveData2(){
   try{ if(rawText2&&rawText2.length<3500000) localStorage.setItem(LS_DATA2,rawText2);
-    else localStorage.removeItem(LS_DATA2); }catch(e){}
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('retail',rawText2||'').catch(function(){}); }catch(e){} }
+    else localStorage.removeItem(LS_DATA2); }catch(e){ reportErr(e,'page-open'); }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('retail',rawText2||'').catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 function saveData4(){
   const txt=targetRows&&targetRows.length?JSON.stringify(targetRows):'';
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('target',txt).catch(function(){}); }catch(e){} }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('target',txt).catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 function saveData3(){
   try{ if(rawText3&&rawText3.length<3500000) localStorage.setItem(LS_DATA3,rawText3);
-    else localStorage.removeItem(LS_DATA3); }catch(e){}
-  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('audio',rawText3||'').catch(function(){}); }catch(e){} }
+    else localStorage.removeItem(LS_DATA3); }catch(e){ reportErr(e,'page-open'); }
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('audio',rawText3||'').catch(function(){}); }catch(e){ reportErr(e,'page-open'); } }
 }
 

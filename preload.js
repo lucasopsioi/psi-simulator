@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('fsdShell', {
   dataLoad: () => ipcRenderer.invoke('data-load'),
   getPaths: () => ipcRenderer.invoke('get-paths'),
   aiChat: (payload) => ipcRenderer.invoke('ai-chat', payload),
+  errLog: (line) => ipcRenderer.invoke('err-log', line),   // R10 错误落盘
   snapSave: (payload) => ipcRenderer.invoke('snap-save', payload),
   snapList: () => ipcRenderer.invoke('snap-list'),
   snapRead: (file) => ipcRenderer.invoke('snap-read', file),

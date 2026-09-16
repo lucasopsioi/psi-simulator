@@ -84,7 +84,7 @@ function render(){
   else if(state.ui.tab==='coef')renderCoef();
   else if(state.ui.tab==='settings')renderSettings();
   else renderData();
-  try{ applyCaliberTitles(); }catch(e){}
+  try{ applyCaliberTitles(); }catch(e){ reportErr(e,'page-五个视图'); }
   if(scrollSnap){
     const actNow=document.querySelector('main section.on');
     if(actNow){

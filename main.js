@@ -226,6 +226,15 @@ ipcMain.handle('save-xlsx', async (e, payload) => {
 });
 
 /* ---------- 方案版本快照:userData/snapshots,手动保存+恢复前自动留档;保留近 40 份 ---------- */
+/* R10:渲染进程的错误追加到 userData/errors.log(超过 1MB 轮转一份 .1) */
+ipcMain.handle('err-log', (_e, line) => {
+  try {
+    const p = path.join(app.getPath('userData'), 'errors.log');
+    try { if (fs.existsSync(p) && fs.statSync(p).size > 1024 * 1024) fs.renameSync(p, p + '.1'); } catch (e) {}
+    fs.appendFileSync(p, String(line || '').slice(0, 2000) + '\n');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+});
 ipcMain.handle('snap-save', (_e, payload) => {
   try {
     payload = payload || {};
