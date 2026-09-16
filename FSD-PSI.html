@@ -185,7 +185,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:
 </style>
 <script>
 /* 版本号单一定义处:发布新版只改这里(界面两处显示自动跟随),同时把 package.json 的 version 对齐 */
-window.APP_VER='V84';
+window.APP_VER='V85';
 </script>
 </head>
 <body>
@@ -14204,16 +14204,32 @@ window.__selftest=async function(arg){
       const restoreUi=function(){ const o=JSON.parse(uiSnap); Object.keys(state.ui).forEach(function(k){ if(!(k in o))delete state.ui[k]; }); Object.assign(state.ui,o); };
       const cyU=store?F.periodY(store.maxPeriod):0;
       /* 每个变体都从同一份初始 ui 出发:否则上一个变体设的键(如 pv2Yrs)会渗进下一个,基线互相污染 */
-      const setUi=function(tab,o){ restoreUi(); state.ui.tab=tab; Object.keys(o).forEach(function(k){ if(k==='expand'||k==='click')return;
+      /* 夹具补齐(R7):夹具本身没有目标表/监控项/锁量/新品,这些路径用「种子」临时造出来进基线,采完立刻拆掉,不影响别的变体 */
+      const seedUnit=function(){ let u0=null; if(D)D.list.forEach(function(it){ if(!u0&&!it.exempt&&!it.ignored&&it.sim&&it.sim.rows&&it.sim.rows.length)u0=it; }); return u0; };
+      const SEED={
+        targets:{on:function(){ const it=seedUnit(); if(!it)return; const u=it.u; importTargetRows([{line:u.line,product:u.product,country:u.country,channel:u.account,rawName:u.account,t:{9:200,10:150,11:200,12:200},note:''}],'基线目标'); },
+                 off:function(){ targetRows=null; Dt=null; saveData4(); recompute(); }},
+        watch:{on:function(){ const it=seedUnit(); if(it)addWatch('fsd',it.u.key); },
+               off:function(){ const it=seedUnit(); if(it){ removeWatch('fsd',it.u.key); delete state.watchBase[it.u.key]; } }},
+        lock:{on:function(){ const it=seedUnit(); if(!it)return; state.lockQty[mkKey(it.u)]={on:true,total:5000,byC:{}}; computeAll(); },
+              off:function(){ const it=seedUnit(); if(it)delete state.lockQty[mkKey(it.u)]; computeAll(); }},
+        np:{on:function(){ let anchor=null; (D?D.list:[]).forEach(function(it){ if(!anchor&&it.bl&&it.bl.base&&it.bl.conf!=='low')anchor=it.u.product; }); if(!anchor)return;
+                state.newProducts.push({id:'npBase',name:'基线新品',line:'平板',family:'Slate Tab',anchor:anchor,scale:1,launch:F.addWeeksP(store.maxPeriod,3),lifeWeeks:78,succ:null}); computeAll(); },
+            off:function(){ state.newProducts=state.newProducts.filter(function(x){ return x.id!=='npBase'; }); computeAll(); }}
+      };
+      const setUi=function(tab,o){ restoreUi(); state.ui.tab=tab; Object.keys(o).forEach(function(k){ if(k==='expand'||k==='click'||k==='seed')return;
         if(k==='pv2Yrs'&&o[k]==='NEXT'){ const y={}; y[cyU]=1; y[cyU+1]=1; state.ui.pv2Yrs=y; return; }   // 明年列(承接/外推路径)也要进基线
         state.ui[k]=JSON.parse(JSON.stringify(o[k])); }); };
-      const keyOf=function(tab,o){ return tab+Object.keys(o).filter(function(k){ return k!=='expand'&&k!=='pv2Open'&&k!=='click'; }).map(function(k){ return '.'+(k==='pv2Yrs'?'next':o[k]); }).join('')+(o.click?'.sim':''); };
+      const keyOf=function(tab,o){ return tab+Object.keys(o).filter(function(k){ return k!=='expand'&&k!=='pv2Open'&&k!=='click'&&k!=='seed'; }).map(function(k){ return '.'+(k==='pv2Yrs'?'next':o[k]); }).join('')+(o.click?'.sim':'')+(o.seed?'.seed-'+o.seed:''); };
       const VD=[
         ['watch',{}],['master',{}],['fin',{}],['overview',{}],['detail',{}],['confirm',{}],['retail',{}],['chantree',{}],['audio',{}],
         ['channels',{clSrc:'fsd'}],['channels',{clSrc:'retail'}],['channels',{clSrc:'audio'}],
         ['pv',{pvMode:'summary',smView:'tree',smSrc:'fsd'}],['pv',{pvMode:'monthend'}],['pv',{pvMode:'detail'}],
         ['monitor',{monTab:'watch'}],['monitor',{monTab:'targets'}],
         ['rules',{rulesTab:'settings'}],['rules',{rulesTab:'coef'}],
+        ['monitor',{monTab:'targets',seed:'targets'}],['monitor',{monTab:'watch',seed:'watch'}],
+        ['master',{seed:'lock'}],['pv',{pvSrc:'fsd',pv2View:'product',pv2Gran:'month',pv2Open:{},expand:1,seed:'lock'}],
+        ['newprod',{seed:'np'}],['pv',{pvSrc:'np',pv2View:'country',pv2Gran:'month',pv2Open:{},expand:1,seed:'np'}],
         ['monthend',{}],['targets',{}],['newprod',{}],['coef',{}],['settings',{}],
         ['summary',{smView:'tree',smSrc:'fsd'}],['summary',{smView:'tree',smSrc:'fsd',click:'.smSimBtn'}],
         ['summary',{smView:'flat',smSrc:'fsd'}],['summary',{smView:'tree',smSrc:'retail'}],
@@ -14231,12 +14247,14 @@ window.__selftest=async function(arg){
         const tab=v[0],o=v[1],key=keyOf(tab,o);
         step('view '+key);
         try{
+          if(o.seed&&SEED[o.seed])SEED[o.seed].on();
           setUi(tab,o); render();
           if(o.expand){ const eb=$('#pv2Exp'); if(eb&&eb.onclick)eb.onclick(); }
           if(o.click){ const cb=document.querySelector(o.click); if(cb)cb.click(); }
           const sec=document.getElementById('view-'+tab);
           viewDigests[key]=sec?digestSec(sec):{n:0,hash:'',lines:[],err:'no section'};
         }catch(e){ viewDigests[key]={n:0,hash:'',lines:[],err:String(e&&e.message||e).slice(0,160)}; }
+        if(o.seed&&SEED[o.seed]){ try{ SEED[o.seed].off(); }catch(e){} }
         if(o.click)delete state.ui.smSim;
       });
       restoreUi();
