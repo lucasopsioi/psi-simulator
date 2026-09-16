@@ -185,7 +185,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:
 </style>
 <script>
 /* 版本号单一定义处:发布新版只改这里(界面两处显示自动跟随),同时把 package.json 的 version 对齐 */
-window.APP_VER='V83';
+window.APP_VER='V84';
 </script>
 </head>
 <body>
@@ -429,38 +429,62 @@ C.parseTable=function(text){
   return r;
 };
 
+/* ===== 字典与契约(2026-09-15 FDE 评审 R2)=====
+   DICT:参与逻辑判断的业务字面量只在这里出现一次;SCHEMA:底表长表的列契约(必填/可选/别名/PSI 取值)。
+   validateGrid 只做判定不做解析;parseGrid 在契约不满足时拒绝整表并给出可执行的原因,而不是静默按位置猜列。 */
+C.DICT={SRC_FSD:'FSD',SRC_RETAIL:'下游',SRC_AUDIO:'音频专表',SRC_NP:'新品规划',GARNET_AUDIO:'音频与智能配件',BUY_REVIEW_IND:'FSD表·下游(间接)'};
+C.SCHEMA={
+  grid:{
+    fields:[
+      ['country',['countr','国家','地区'],false],
+      ['account',['account','channel','客户','账户','渠道'],true],
+      ['line',['productline','产品线','品类'],false],
+      ['model',['productmodel','model','型号'],true],
+      ['series',['productseries','series','系列'],false],
+      ['product',['product','产品'],false],
+      ['period',['period','期间','周期'],true],
+      ['psi',['psitype','psi','类型'],true],
+      ['qty',['qty','quantity','数量'],true]
+    ],
+    labels:{country:'国家',account:'账户/渠道',line:'产品线',model:'型号',series:'系列',product:'产品',period:'Period ID(周期)',psi:'PSI Type',qty:'QTY'},
+    positional:{8:['country','account','line','product','model','period','psi','qty'],9:['country','account','line','product','series','model','period','psi','qty']},
+    psi:['Inventory','Inventory1','Sell In','Purchase','Sell Out','SO1','Sell Through','DOS']
+  }
+};
+C.validateGrid=function(grid){
+  const out={ok:false,header:false,missing:[],colMap:{},cols:0,error:null};
+  if(!grid||!grid.length){ out.error='空表'; return out; }
+  const norm=function(x){ return String(x==null?'':x).toLowerCase().replace(/[^a-z0-9一-鿿]/g,''); };
+  const F0=C.SCHEMA.grid.fields; let hits=0;
+  grid[0].map(norm).forEach(function(cell,idx){
+    for(let k=0;k<F0.length;k++){ const f=F0[k][0]; if(out.colMap[f]!=null)continue;
+      if(F0[k][1].some(function(p){ return cell.indexOf(p)>=0; })){ out.colMap[f]=idx; hits++; return; } }
+  });
+  out.cols=grid[0].length;
+  if(hits>=3){
+    out.header=true;
+    out.missing=F0.filter(function(f){ return f[2]&&out.colMap[f[0]]==null; }).map(function(f){ return f[0]; });
+    if(out.missing.length){ out.error='识别到表头,但缺少必填列:'+out.missing.map(function(f){ return C.SCHEMA.grid.labels[f]; }).join('、')+'。请补齐列名(可用别名见「数据」页说明),不按位置猜。'; return out; }
+    out.ok=true; return out;
+  }
+  const pos=C.SCHEMA.grid.positional[out.cols];
+  if(!pos){ out.error='没有识别到表头(命中列名 '+hits+' 个 <3),且列数 '+out.cols+' 不是 8(FSD 表)或 9(下游表),无法按位置解析。请保留表头行。'; return out; }
+  Object.keys(out.colMap).forEach(function(k){ delete out.colMap[k]; });
+  pos.forEach(function(f,i){ out.colMap[f]=i; });
+  out.ok=true; return out;
+};
 /* 网格(二维数组,单元格可为数字/字符串)→ 标准行。xlsx sheet 与文本粘贴共用同一条链 */
 C.parseGrid=function(grid){
   const rep={total:0,used:0,badPeriod:0,badPsi:0,noKey:0,header:false,mode:'grid'};
   if(!grid||!grid.length) return {rows:[],report:rep};
   const norm=function(s){ return String(s==null?'':s).toLowerCase().replace(/[^a-z0-9一-鿿]/g,''); };
-  const KEY=[
-    ['country',['countr','国家','地区']],
-    ['account',['account','channel','客户','账户','渠道']],
-    ['line',['productline','产品线','品类']],
-    ['model',['productmodel','model','型号']],
-    ['series',['productseries','series','系列']],
-    ['product',['product','产品']],
-    ['period',['period','期间','周期']],
-    ['psi',['psitype','psi','类型']],
-    ['qty',['qty','quantity','数量']]
-  ];
-  const colMap={}; let hits=0;
-  grid[0].map(norm).forEach(function(cell,idx){
-    for(let k=0;k<KEY.length;k++){ const field=KEY[k][0],pats=KEY[k][1];
-      if(colMap[field]!=null) continue;
-      let hit=false;
-      for(let j=0;j<pats.length;j++){ if(cell.indexOf(pats[j])>=0){hit=true;break;} }
-      if(hit){ colMap[field]=idx; hits++; return; }
-    }
-  });
+  /* 契约校验(R2):缺必填列 / 无表头且列数不对 → 整表拒绝,report.error 说清缺什么 */
+  const vg=C.validateGrid(grid);
+  rep.contract={header:vg.header,missing:vg.missing,cols:vg.cols};
+  if(!vg.ok){ rep.error=vg.error; return {rows:[],report:rep}; }
+  const colMap=vg.colMap;
   let start=0;
-  if(hits>=3){ rep.header=true; start=1; }
-  else { Object.keys(colMap).forEach(function(k){delete colMap[k];});
-    const order=(grid[0].length>=9)
-      ?['country','account','line','product','series','model','period','psi','qty']   // 下游表 9 列
-      :['country','account','line','product','model','period','psi','qty'];           // FSD 表 8 列
-    order.forEach(function(f,i){ colMap[f]=i; }); }
+  if(vg.header){ rep.header=true; start=1; }
   /* PSI 类型映射(2026-09-02 用户:音频在 FSD 源用成了 SO1 而不是 SO TTL):
      SO1 / Sell Out1 = 直接客户自有 SO,单独存 so1 字段,不与 SO 相加、不参与推演;SO / SO TTL / Sell Out(TTL) = 渠道总 SO → so */
   const psiNorm=function(s){ const t=norm(s); if(!t) return null;
@@ -494,7 +518,10 @@ C.parseGrid=function(grid){
     const rawPsi=String(cell('psi')==null?'':cell('psi')).trim();
     const psi=psiNorm(rawPsi);
     (rep.psiTypes=rep.psiTypes||{})[rawPsi+'→'+(psi||'✗')]=((rep.psiTypes||{})[rawPsi+'→'+(psi||'✗')]||0)+1;   // 导入报告:每种 PSI 原文映射到什么(✗=丢弃)
-    if(!psi){ rep.badPsi++; continue; }
+    if(!psi){ rep.badPsi++;
+      /* 契约(R2):看够 50 行仍没有一个 PSI 能识别 → 整表拒绝(列对了但取值体系不对,比如整列是中文类别名) */
+      if(rep.total>50&&rep.badPsi===rep.total-rep.badPeriod){ rep.error='前 '+rep.total+' 行的 PSI Type 没有一个能识别(接受:'+C.SCHEMA.grid.psi.join(' / ')+'),整表拒绝。'; return {rows:[],report:rep}; }
+      continue; }
     const model=String(cell('model')||'').trim();
     const account=String(cell('account')||'').trim();
     if(!model||!account){ rep.noKey++; continue; }
@@ -2263,8 +2290,8 @@ C.lifecycleSI=function(u){
 C.budgetQuarterPivot=function(rows,endYear){
   const g={};
   rows.forEach(function(r){
-    if(r[6]==='下游')return;
-    if(r[6]==='FSD'&&r[0]==='音频与智能配件')return;
+    if(r[6]===C.DICT.SRC_RETAIL)return;
+    if(r[6]==='FSD'&&r[0]===C.DICT.GARNET_AUDIO)return;
     const k=r[0]+'\u0001'+r[2]+'\u0001'+r[4];
     let e=g[k]; if(!e)e=g[k]={bu:r[0],name:r[2],country:r[4],so:{Q1:0,Q2:0,Q3:0,Q4:0},si:{Q1:0,Q2:0,Q3:0,Q4:0},endInv:0,decSo:0,prevEnd:0,rrp:null};
     const y=+r[7],m=+r[9],q=r[8];
@@ -2338,8 +2365,8 @@ C.finRate=function(v){ const n=C.finNum(v); if(n==null)return null; return (n>1&
 C.finQuarterPivot=function(rows,endYear){
   const g={};
   rows.forEach(function(r){
-    if(r[6]==='下游')return;
-    if(r[6]==='FSD'&&r[0]==='音频与智能配件')return;
+    if(r[6]===C.DICT.SRC_RETAIL)return;
+    if(r[6]==='FSD'&&r[0]===C.DICT.GARNET_AUDIO)return;
     const k=r[0]+'\u0001'+r[2]+'\u0001'+r[4];
     let e=g[k]; if(!e)e=g[k]={bu:r[0],name:r[2],country:r[4],so:{Q1:0,Q2:0,Q3:0,Q4:0},si:{Q1:0,Q2:0,Q3:0,Q4:0},end:{Q1:0,Q2:0,Q3:0,Q4:0},
       mSo:{},prevEnd:0,rrp:null,products:{}};
@@ -3407,7 +3434,7 @@ function buyReviewList(){
     const Dx=pair[0]; if(!Dx)return;
     Dx.list.forEach(function(it){
       if(it.ignored||it.exempt)return;
-      if(pair[1]==='FSD表·下游(间接)'&&!isIndirectUnit(it.u))return;
+      if(pair[1]===F.DICT.BUY_REVIEW_IND&&!isIndirectUnit(it.u))return;
       if(state.buyMode[it.u.key])return;
       if(rstatOfCached(it.u).mode!=='oneshot')return;
       out.push({it:it,src:pair[1]});
@@ -3420,7 +3447,7 @@ function buyReviewBlockHtml(){
   const decided=[];
   [[Dr,'下游'],[Da,'音频专表'],[D,'FSD表·下游(间接)']].forEach(function(pair){
     const Dx=pair[0]; if(!Dx)return;
-    Dx.list.forEach(function(it){ if(pair[1]==='FSD表·下游(间接)'&&!isIndirectUnit(it.u))return; if(state.buyMode[it.u.key])decided.push({it:it,src:pair[1]}); });
+    Dx.list.forEach(function(it){ if(pair[1]===F.DICT.BUY_REVIEW_IND&&!isIndirectUnit(it.u))return; if(state.buyMode[it.u.key])decided.push({it:it,src:pair[1]}); });
   });
   if(!rows.length&&!decided.length)return '';
   let h='<div class="panel" style="border-left:4px solid var(--warn)"><h3>补货口径待审视 · 一次性铺货渠道'
@@ -4135,7 +4162,7 @@ function mkNorm(s){ return String(s==null?'':s).trim().toLowerCase(); }
    明年段 ovExt 同样:FSD 裸键,下游 'r|',音频 'a|',新品 'n|' */
 function ovKey(src,key){ return src==='retail'?('r|'+key):(src==='audio'?('a|'+key):key); }
 function srcNameOf(src){ return src==='fsd'?'FSD':(src==='retail'?'下游':(src==='np'?'新品规划':'音频专表')); }
-function ovExtKeyOf(srcName,k){ return srcName==='下游'?('r|'+k):(srcName==='音频专表'?('a|'+k):(srcName==='新品规划'?('n|'+k):k)); }
+function ovExtKeyOf(srcName,k){ return srcName===F.DICT.SRC_RETAIL?('r|'+k):(srcName===F.DICT.SRC_AUDIO?('a|'+k):(srcName===F.DICT.SRC_NP?('n|'+k):k)); }
 let __ovMigGen=-1;
 function ovMigrateSrc(){
   /* 旧方案里下游/音频单元的手拍存在裸键下:不属于任何 FSD 单元、但属于下游/音频单元的裸键迁到带源前缀 */
@@ -4200,7 +4227,7 @@ function lockExtAlloc(rows,endYear){
   Object.keys(__lockRes).forEach(function(mk){ const R=__lockRes[mk]; if(!R||!(R.total>0))return;
     const ix=mk.indexOf('||'); const prodN=mkNorm(mk.slice(0,ix)),modelN=mkNorm(mk.slice(ix+2));
     let curFA=0,curR=0; const extFA=[],extR=[];
-    rows.forEach(function(r,i){ if(mkNorm(r[1])!==prodN||mkNorm(r[17])!==modelN||r[6]==='新品规划')return; const isR=r[6]==='下游';
+    rows.forEach(function(r,i){ if(mkNorm(r[1])!==prodN||mkNorm(r[17])!==modelN||r[6]===F.DICT.SRC_NP)return; const isR=r[6]===F.DICT.SRC_RETAIL;
       if(+r[7]<=curYB){ if(isR)curR+=(+r[11]||0); else curFA+=(+r[11]||0); } else (isR?extR:extFA).push(i); });
     const resF=runAlloc(extFA,Math.max(0,R.remain-curFA),'锁量顺序分配(延伸段)');
     const budR=(R.retailBudget!=null?R.retailBudget:R.remain);
@@ -9602,8 +9629,8 @@ function aiToolNextYear(a){
   const agg={};   // 年|月 → {so,si,inv}
   let matched=0;
   rows.forEach(function(r){
-    if(r[6]==='下游')return;                       // 权威口径:下游明细不并入(源名='下游')
-    if(r[6]==='FSD'&&r[0]==='音频与智能配件')return;   // 音频以专表为准,FSD 内音频行剔除防双计
+    if(r[6]===F.DICT.SRC_RETAIL)return;                       // 权威口径:下游明细不并入(源名='下游')
+    if(r[6]==='FSD'&&r[0]===F.DICT.GARNET_AUDIO)return;   // 音频以专表为准,FSD 内音频行剔除防双计
     if(a.product&&r[1]!==a.product)return;
     if(a.line&&r[0]!==a.line)return;
     if(a.country&&r[4]!==a.country)return;
@@ -9726,8 +9753,8 @@ function aiToolScopeQuery(a){
   if(years!=='cur'){
     budgetRowsOv(nextY).forEach(function(r){
       if(+r[7]!==nextY)return;
-      if(r[6]==='下游')return;
-      if(r[6]==='FSD'&&r[0]==='音频与智能配件')return;
+      if(r[6]===F.DICT.SRC_RETAIL)return;
+      if(r[6]==='FSD'&&r[0]===F.DICT.GARNET_AUDIO)return;
       if(a.line&&r[0]!==a.line)return;
       if(a.family&&(r[3]||'')!==a.family)return;
       if(a.product&&r[1]!==a.product)return;
@@ -13683,7 +13710,7 @@ async function scanFolderKind(kind){
 let lastRetailRows=null;   // 原始下游行(含 rawAccount),渠道改名时就地重放
 function importRetailRows(rows,label){
   if(!rows||!rows.length){
-    retailReport='❌ '+label+'：没有解析到任何有效行（已有下游数据保持不动）';
+    retailReport='❌ '+label+'：'+(parsed.report&&parsed.report.error?parsed.report.error:'没有解析到任何有效行')+'（已有下游数据保持不动）';
     const rp=$('#report'); if(rp)rp.textContent=retailReport;
     return false;    // 非空才覆盖:解析失败不清已有数据
   }
@@ -13700,7 +13727,7 @@ function importRetailRows(rows,label){
 }
 function importAudioRows(rows,label){
   if(!rows||!rows.length){
-    audioReport='❌ '+label+'：没有解析到任何有效行（已有音频专表数据保持不动）';
+    audioReport='❌ '+label+'：'+(parsed.report&&parsed.report.error?parsed.report.error:'没有解析到任何有效行')+'（已有音频专表数据保持不动）';
     const rp=$('#report'); if(rp)rp.textContent=audioReport;
     return false;
   }
@@ -13715,7 +13742,7 @@ function importAudioRows(rows,label){
 function importAudioText(text,label){
   const parsed=F.parseTable(text);
   if(!parsed.rows.length){
-    audioReport='❌ '+label+'：没有解析到任何有效行（已有音频专表数据保持不动）';
+    audioReport='❌ '+label+'：'+(parsed.report&&parsed.report.error?parsed.report.error:'没有解析到任何有效行')+'（已有音频专表数据保持不动）';
     const rp=$('#report'); if(rp)rp.textContent=audioReport;
     return false;
   }
@@ -13727,7 +13754,7 @@ function importAudioText(text,label){
 function importRetailText(text,label){
   const parsed=F.parseTable(text);
   if(!parsed.rows.length){
-    retailReport='❌ '+label+'：没有解析到任何有效行（已有下游数据保持不动）';
+    retailReport='❌ '+label+'：'+(parsed.report&&parsed.report.error?parsed.report.error:'没有解析到任何有效行')+'（已有下游数据保持不动）';
     const rp=$('#report'); if(rp)rp.textContent=retailReport;
     return false;
   }
@@ -13822,7 +13849,7 @@ function importText(text,label){
   const parsed=F.parseTable(text);
   const rep=parsed.report;
   if(!parsed.rows.length){
-    $('#report').textContent='❌ 没有解析到任何有效行。检查是否包含 Period ID / PSI Type / QTY 列。（共 '+rep.total+' 行：周期无效 '+rep.badPeriod+'，PSI类型无效 '+rep.badPsi+'，缺账户/型号 '+rep.noKey+'）';
+    $('#report').textContent='❌ '+(rep.error?rep.error+'（':'没有解析到任何有效行。检查是否包含 Period ID / PSI Type / QTY 列。（')+'共 '+rep.total+' 行：周期无效 '+rep.badPeriod+'，PSI类型无效 '+rep.badPsi+'，缺账户/型号 '+rep.noKey+'）';
     return false;
   }
   rawText=text;
@@ -14562,8 +14589,8 @@ window.__selftest=async function(arg){
         const rowsL=budgetRowsOv(cyL+1);
         const ixL=bestMk.indexOf('||'); const prodL=bestMk.slice(0,ixL),modelL=bestMk.slice(ixL+2);
         let curFA=0,extFA=0,curR=0,extR=0,extRowsN=0;
-        rowsL.forEach(function(r){ if(r[1]!==prodL||String(r[17])!==modelL||r[6]==='新品规划')return;
-          const isR=r[6]==='下游'; const v=+r[11]||0;
+        rowsL.forEach(function(r){ if(r[1]!==prodL||String(r[17])!==modelL||r[6]===F.DICT.SRC_NP)return;
+          const isR=r[6]===F.DICT.SRC_RETAIL; const v=+r[11]||0;
           if(+r[7]<=cyL){ if(isR)curR+=v; else curFA+=v; } else { extRowsN++; if(isR)extR+=v; else extFA+=v; } });
         const thruOk=(rN===0||rFut<=remain+0.5)&&(curFA+extFA<=remain+0.5)&&(rN===0||curR+extR<=remain+0.5)&&extRowsN>0;
         lockOk=lockOk&&thruOk;
@@ -15027,7 +15054,7 @@ window.__selftest=async function(arg){
         const fAfter=rowsJ(D.byKey.get(K));
         const m2={fsdSame:fBefore===fAfter,rKey:!!state.ovSI['r|'+K],bare:!!state.ovSI[K]};
         clearOv();
-        const extRow=function(){ return JSON.stringify(budgetRowsOv(cy+1).filter(function(r){ return r[6]==='下游'&&r[4]===fu.country&&r[5]===fu.account&&String(r[17])===String(fu.model)&&+r[7]===cy+1&&+r[9]===3; }).map(function(r){ return [r[10],r[11],r[12]]; })); };
+        const extRow=function(){ return JSON.stringify(budgetRowsOv(cy+1).filter(function(r){ return r[6]===F.DICT.SRC_RETAIL&&r[4]===fu.country&&r[5]===fu.account&&String(r[17])===String(fu.model)&&+r[7]===cy+1&&+r[9]===3; }).map(function(r){ return [r[10],r[11],r[12]]; })); };
         const e0=extRow();
         idxF=showPv('fsd','month');
         const nkF2=Object.keys(idxF).filter(function(k){ const n2=idxF[k]; return n2.items.length===1&&n2.items[0].u.key===K&&n2.children.size===0; })[0];
@@ -15417,7 +15444,7 @@ window.__selftest=async function(arg){
         const soNext=uL?uL.rowsLong.filter(function(r){ return F.periodY(r.p)===cyN+1; }).reduce(function(s,r){ return s+r.so; },0):0;
         const soCur=uL?uL.rows.reduce(function(s,r){ return s+r.so; },0):-1;
         let budNext=0;
-        try{ buildBudgetRows(cyN+1).forEach(function(r){ if(r[6]==='新品规划'&&r[1]==='迟上新品'&&+r[7]===cyN+1)budNext+=(+r[10]||0); }); }catch(e){}
+        try{ buildBudgetRows(cyN+1).forEach(function(r){ if(r[6]===F.DICT.SRC_NP&&r[1]==='迟上新品'&&+r[7]===cyN+1)budNext+=(+r[10]||0); }); }catch(e){}
         npLateOk=!!(uL&&Dn.fwLong&&Dn.fwLong.length&&F.periodY(Dn.fwLong[Dn.fwLong.length-1])>=cyN+1&&soNext>0&&soCur===0&&budNext>0&&extSep);
         tms.npLate={ch:pnL?pnL.units.length:0,soNext:soNext,soCur:soCur,budNext:budNext,winEnd:Dn.fwLong?Dn.fwLong[Dn.fwLong.length-1]:null,extSep:extSep,extN:extN};
         state.newProducts=state.newProducts.filter(function(x){ return x.id!=='npLate'&&x.id!=='npLate2'; });

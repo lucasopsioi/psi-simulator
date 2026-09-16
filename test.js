@@ -1944,5 +1944,26 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(C.pickKLayer([L2], u, true).label, '产品线', 'pickKLayer only2 无产品层时回退 产品线');
 })();
 
+
+/* ---------- R2(2026-09-15):底表契约 ---------- */
+(function () {
+  const H = ['Country', 'Account', 'Product Line', 'Product', 'Product Model', 'Period ID', 'PSI Type', 'QTY'];
+  const row = ['哥伦比亚', 'CO-Claro', '手机', 'nimbus 13', 'Vela-L23', '2026W30', 'Sell Out', 12];
+  const good = C.parseGrid([H, row]);
+  eq([good.rows.length, good.report.header, good.report.error || null], [1, true, null], '契约: 完整表头正常解析');
+  const H2 = H.slice(); H2[6] = '类别';   // PSI Type 列改了名
+  const bad = C.parseGrid([H2, row]);
+  ok(bad.rows.length === 0 && /PSI Type/.test(bad.report.error || ''), '契约: 表头缺 PSI 列 → 整表拒绝并点名', bad.report.error);
+  const H3 = H.slice(); H3[5] = '期间';
+  eq(C.parseGrid([H3, row]).rows.length, 1, '契约: 别名(期间=Period)照常接受');
+  eq(C.parseGrid([row]).rows.length, 1, '契约: 无表头 8 列按位置解析');
+  const seven = C.parseGrid([row.slice(1)]);
+  ok(seven.rows.length === 0 && /列数 7/.test(seven.report.error || ''), '契约: 无表头 7 列 → 拒绝并说明', seven.report.error);
+  const rows = [H]; for (let i = 0; i < 60; i++) rows.push(['CO', 'A', 'L', 'P', 'M' + i, '2026W30', 'Foo', 1]);
+  const np = C.parseGrid(rows);
+  ok(np.rows.length === 0 && /PSI Type 没有一个能识别/.test(np.report.error || ''), '契约: PSI 全不识别 → 拒绝', np.report.error);
+  eq(C.DICT.GARNET_AUDIO, '音频与智能配件', 'DICT: 音频线名只此一处');
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
