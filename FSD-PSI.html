@@ -185,7 +185,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:
 </style>
 <script>
 /* 版本号单一定义处:发布新版只改这里(界面两处显示自动跟随),同时把 package.json 的 version 对齐 */
-window.APP_VER='V85';
+window.APP_VER='V86';
 </script>
 </head>
 <body>
@@ -323,12 +323,13 @@ C.carryTaps=function(futureWeeks,rawOf,ovSO,on,tail){
       inSeg=true;
       const isTail=!!(tail&&tail[p]); if(isTail)segTail=true;
       if(!isTail&&r.so!=null&&r.so>0){ segOv+=ov; segRaw+=r.so; }
-      const e={p:p,so:ov,src:'override'}; if(isTail)e.tail=true;
+      const e={p:p,so:ov,src:'override',f:{override:true,raw:ov,how:isTail?'清尾':'手拍'}}; if(isTail)e.tail=true;
       out.push(e); return;
     }
     endSeg();
     if(r.so==null){ out.push({p:p,so:null,src:r.src}); return; }
     const e={p:p,so:r.so*carry,src:r.src}; if(carry!==1)e.carry=+carry.toFixed(3);
+    if(r.f){ e.f=Object.assign({},r.f,{carry:carry,raw:r.so*carry}); }
     out.push(e);
   });
   endSeg();
@@ -350,7 +351,7 @@ C.quantizeFc=function(fc,step){
   const idx=[],raw=[];
   fc.forEach(function(f,i){ if(f.src==='override'||f.so==null)return; idx.push(i); raw.push(f.so); });
   const q=C.quantizeSeq(raw,step);
-  idx.forEach(function(i,k){ fc[i].so=q[k]; });
+  idx.forEach(function(i,k){ fc[i].so=q[k]; if(fc[i].f)fc[i].f.plan=q[k]; });
   return fc;
 };
 C.fmt=function(v){ return v==null?'—':Number(v).toLocaleString('en-US'); };
@@ -1329,6 +1330,20 @@ C.CALIBER={
   futSOPlan:  {label:'未来SO(计划)',     f:'Σ推演周计划 SO(压回前)',                                impl:'fc.so'}
 };
 C.calTitle=function(id){ const c=C.CALIBER[id]; return c?(c.label+' = '+c.f):''; };
+/* 血缘文案(R5):一格 SO 怎么来的。r=模拟行(含 lin/so/soPlan/capped/siSrc/buySrc/tail) */
+C.lineageText=function(r){
+  if(!r)return '';
+  const L=r.lin; const n1=function(v){ return v==null?'—':(Math.round(v*100)/100).toString(); };
+  if(!L)return r.soSrc==='override'?'手拍':'';
+  if(L.override)return (L.how||'手拍')+' '+n1(L.raw)+(r.capped?(' → 库存/锁量压回 '+n1(r.so)):'');
+  const parts=[L.how||'',' 基线 '+n1(L.base)];
+  if(L.scale!=null&&L.scale!==1)parts.push(' × 档位 '+n1(L.scale));
+  parts.push(' × 系数 '+n1(L.k)+' × 增速 '+n1(L.g));
+  if(L.carry!=null&&L.carry!==1)parts.push(' × 承接 '+n1(L.carry));
+  parts.push(' = '+n1(L.raw)+' → 取整 '+n1(L.plan!=null?L.plan:r.soPlan));
+  if(r.capped)parts.push(' → 约束后 '+n1(r.so)+'('+(r.tail?'清尾':(r.siSrc==='tapcover'||r.buySrc==='tapcover'?'进货补足后仍不足':'库存/锁量压回'))+')');
+  return parts.join('');
+};
 /* ===== 统一时间立方(2026-09-04 看板收敛 阶段2)=====
    推演编辑的 分桶/单元序列/聚合/桶DOS 原文提升为引擎函数——所有看板、导出、AI 统一从这里取数;
    页面里旧名 pv2Buckets/pv2ItemVals/pv2Agg/pv2BucketDos 只是别名。纯函数、可单测(test.js)。 */
@@ -2076,24 +2091,27 @@ C.buildForecastForUnit=function(o){
   } else if(o.cls&&o.cls.status==='auto'){ mode='self'; srcU=u; }
   const mean=srcU?C.meanWeeklyRef(srcU,o.refYear):0;
   const bl=o.baseline||null;   // 平销引擎结果 {base,delta,conf}
+  /* 血缘(2026-09-15 FDE 评审 R5):每周原始 SO 同时带出四因子 f={base,scale,k,g},后续 carryTaps 记 carry/raw、quantizeFc 记 plan,
+     模拟记 so/capped。任何一格都能反推:基线 × 档位 × 系数 × 增速 × 承接 = 原始 → 取整 = 计划 → 约束 = 实际。 */
   const rawOf=function(p,i){
     if(mode==null) return {so:null,src:'none'};
-    if(mode==='skip') return {so:0,src:'skip'};
+    if(mode==='skip') return {so:0,src:'skip',f:{base:0,scale:1,k:1,g:1,how:'停售'}};
     const w=C.periodW(p);
-    if(mode==='base') return {so:Math.max(0,base*kBase(w)),src:'base'};
+    if(mode==='base') return {so:Math.max(0,base*kBase(w)),src:'base',f:{base:base,scale:1,k:kBase(w),g:1,how:'基础周销'}};
     /* 平销模式:平销 b̂ × 漂移 × 季节 × 增速(与「参考去年」双轨,用户逐产品选用) */
     if(mode==='flat'){
       if(!bl||bl.base==null) return {so:null,src:'none'};
       /* 大促周且用户设了爆发系数覆盖 → 用 平销×爆发倍数 替代周季节系数 */
       const kk=(o.burst!=null&&o.promoW&&o.promoW[w])?o.burst:kBase(w);
-      return {so:Math.max(0,bl.base*Math.pow(1+(bl.delta||0),i+1)*kk*g),src:'flat'};
+      const bDrift=bl.base*Math.pow(1+(bl.delta||0),i+1);
+      return {so:Math.max(0,bDrift*kk*g),src:'flat',f:{base:bDrift,scale:1,k:kk,g:g,how:'平销'+((bl.delta||0)?'×漂移':'')}};
     }
     const rp=C.refPeriodOf(p,o.refYear);
     const rw=srcU.weeks.get(rp);
     const ref=rw?rw.so:null;
     const refValid=ref!=null&&(srcU.audio?ref>0:true);
-    if(refValid) return {so:Math.max(0,ref*scale*g*kEff(w)),src:'ref'};
-    return {so:Math.max(0,mean*scale*g*kBase(w)),src:'fill'};
+    if(refValid) return {so:Math.max(0,ref*scale*g*kEff(w)),src:'ref',f:{base:ref,scale:scale,k:kEff(w),g:g,how:'去年同周'}};
+    return {so:Math.max(0,mean*scale*g*kBase(w)),src:'fill',f:{base:mean,scale:scale,k:kBase(w),g:g,how:'去年均值补估'}};
   };
   return C.quantizeFc(C.carryTaps(o.futureWeeks,rawOf,o.ovSO,o.carryTaps,o.tail),step);
 };
@@ -2198,7 +2216,7 @@ C.simulateUnit=function(o){
     inv1=inv1+si-st;
     inv=Math.max(0,afterSO2+si);
     const dos=daily>0?Math.round(inv/daily):null;
-    rows.push({p:f.p,si:si,st:st,so:so,inv:inv,inv1:inv1,dos:dos,daily:daily,siSrc:siSrc,soSrc:f.src,capped:capped,carry:f.carry,soPlan:f.so,tail:!!f.tail});
+    rows.push({p:f.p,si:si,st:st,so:so,inv:inv,inv1:inv1,dos:dos,daily:daily,lin:f.f||null,siSrc:siSrc,soSrc:f.src,capped:capped,carry:f.carry,soPlan:f.so,tail:!!f.tail});
   });
   return {rows:rows,yearEnd:rows.length?rows[rows.length-1]:null,blocked:false};
 };
@@ -2524,20 +2542,21 @@ C.buildRetailForecast=function(o){
   const bl=o.baseline||null;
   const useBl=!!(o.preferBaseline&&bl&&bl.base!=null&&(bl.conf==='high'||bl.conf==='mid'));
   const rawOf=function(p,i){
-    if(o.tail) return {so:Math.max(0,avg||0),src:'tail'};
+    if(o.tail) return {so:Math.max(0,avg||0),src:'tail',f:{base:avg||0,scale:1,k:1,g:1,how:'清尾·近4周均'}};
     const w=C.periodW(p);
     /* 平销优先(全局开关):平销 b̂ × 漂移 × 季节 × 增速;低置信单元自动回退原有链;大促周爆发覆盖优先 */
     if(useBl){
       const kk=(o.burst!=null&&o.promoW&&o.promoW[w])?o.burst:kBase(w);
-      return {so:Math.max(0,bl.base*Math.pow(1+(bl.delta||0),i+1)*kk*g),src:'flat'};
+      const bDrift=bl.base*Math.pow(1+(bl.delta||0),i+1);
+      return {so:Math.max(0,bDrift*kk*g),src:'flat',f:{base:bDrift,scale:1,k:kk,g:g,how:'平销'}};
     }
     const rp=C.refPeriodOf(p,o.refYear);
     const rw=u.weeks.get(rp);
     const ref=rw?rw.so:null;
     const refValid=ref!=null&&(u.audio?ref>0:true);
-    if(refValid) return {so:Math.max(0,ref*g*kEff(w)),src:'ref'};
-    if(avg!=null&&avg>0) return {so:Math.max(0,avg*g*kBase(w)),src:'avg'};
-    return {so:0,src:'noso'};
+    if(refValid) return {so:Math.max(0,ref*g*kEff(w)),src:'ref',f:{base:ref,scale:1,k:kEff(w),g:g,how:'去年同周'}};
+    if(avg!=null&&avg>0) return {so:Math.max(0,avg*g*kBase(w)),src:'avg',f:{base:avg,scale:1,k:kBase(w),g:g,how:'近4周均'}};
+    return {so:0,src:'noso',f:{base:0,scale:1,k:1,g:1,how:'无销量'}};
   };
   return C.quantizeFc(C.carryTaps(o.futureWeeks,rawOf,o.ovSO,o.carryTaps,o.tail),step);
 };
@@ -2643,7 +2662,7 @@ C.simulateRetail=function(o){
     const daily=q.length?s/q.length/7:0;
     inv=Math.max(0,inv+buy-so);
     const dos=daily>0?Math.round(inv/daily):null;
-    rows.push({p:f.p,so:so,buy:buy,inv:inv,dos:dos,daily:daily,
+    rows.push({p:f.p,so:so,buy:buy,inv:inv,dos:dos,daily:daily,lin:f.f||null,
       soSrc:f.src,capped:so<soPlan,soPlan:soPlan,buySrc:buySrc,carry:f.carry,tail:!!f.tail});
   });
   return {rows:rows,yearEnd:rows.length?rows[rows.length-1]:null,blocked:false};
@@ -6722,9 +6741,20 @@ function pv2ShowLogic(td,e,nodeIdx,bks,src,curY){
     inner='<div class="muted" style="font-size:11px;margin-bottom:4px">确定性因子分解(直接读推演引擎)</div>'+aiExplainHtml(r);
   }
   if(savedLang==null)delete state.ai.lang; else state.ai.lang=savedLang;
+  /* 四因子(R5):这个桶里每周的 SO 是怎么乘出来的;单元多于 4 个只列前 4 个并注明 */
+  const linHtml=(function(){
+    if(bk.mode!=='sim'||src==='np')return '';
+    const its=node.items.slice(0,4); if(!its.length)return '';
+    let h2='<div style="margin-top:8px"><b>四因子</b> <span class="muted">基线 × 档位 × 系数 × 增速 × 承接 = 原始 → 取整 = 计划 → 约束 = 实际'+(node.items.length>4?'（共 '+node.items.length+' 单元,列前 4 个）':'')+'</span>';
+    its.forEach(function(it){ const rows=((it.sim&&it.sim.rows)||[]).filter(function(r){ return (bk.weeks||[]).indexOf(r.p)>=0; });
+      if(!rows.length)return;
+      h2+='<div class="note" style="margin-top:4px"><b>'+esc(it.u.account+' · '+(it.u.model||it.u.product))+'</b><br>'
+        +rows.map(function(r){ return esc(F.weekLabel(r.p))+'：'+esc(F.lineageText(r)||'—')+' ⇒ <b>'+F.fmt(r.so)+'</b>'; }).join('<br>')+'</div>'; });
+    return h2+'</div>';
+  })();
   box.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b>推演逻辑</b>'
     +'<span class="muted" style="font-size:11px">'+esc(pathTxt)+'</span>'
-    +'<button class="mini" style="margin-left:auto" onclick="document.getElementById(\'pvXp\').style.display=\'none\'">\u2715</button></div>'+inner;
+    +'<button class="mini" style="margin-left:auto" onclick="document.getElementById(\'pvXp\').style.display=\'none\'">\u2715</button></div>'+inner+linHtml;
   box.style.display='block';
   const bw=Math.min(520,window.innerWidth-40);
   box.style.maxWidth=bw+'px';
@@ -7180,7 +7210,8 @@ function renderDetail(elOpt){
       return '<td class="hist">'+F.fmt(so)+'</td>'; },
     function(p,i,fs){ const f=it.fc[i]; const cls=f.src==='override'?' ov':(f.src==='fill'?' fill':'');
       if(f.so==null)return '<td class="'+fs+' muted" title="待确认推演方式">待确认</td>';
-      return '<td class="'+fs+cls+'" contenteditable data-kind="so" data-p="'+p+'" title="'+({ref:'参考去年同周',fill:'去年均值补估',base:'基础周销×系数',override:'手工改写',skip:'停售'}[f.src]||'')+'">'+F.fmt(f.so)+'</td>'; });
+      const rs=(it.sim&&it.sim.rows)?it.sim.rows[i]:null; const lt=rs?F.lineageText(rs):'';
+      return '<td class="'+fs+cls+'" contenteditable data-kind="so" data-p="'+p+'" title="'+esc(lt||({ref:'参考去年同周',fill:'去年均值补估',base:'基础周销×系数',override:'手工改写',skip:'停售'}[f.src]||''))+'">'+F.fmt(f.so)+'</td>'; });
   h+=mkRow('INV 渠道总库存',function(p){ return '<td class="hist">'+F.fmt(u.weeks.get(p).inv)+'</td>'; },
     function(p,i,fs){ const r=simRow(i); return '<td class="'+fs+'">'+(r?F.fmt(r.inv):'—')+'</td>'; });
   h+=mkRow('INV1 FSD自有',function(p){ return '<td class="hist">'+F.fmt(u.weeks.get(p).inv1)+'</td>'; },
@@ -14454,6 +14485,21 @@ window.__selftest=async function(arg){
        再按周拆分时余数只能塞进某一周 → 月合计出现 19/13/169/187 这种非 5 倍数。
        断言:承接月(备注含「承接拍数比例」)的 SO 与 SI 都是 roundTo 的倍数。 */
     sfStep('roundStepOk begin');
+    /* R5 门禁:血缘必须自洽——全部单元全部推演周,(基线×档位×系数×增速×承接) == 原始;逐单元 quantizeSeq(原始) == 计划;实际 ≤ 计划 */
+    let lineageOk=false;
+    try{
+      let n=0,bad=0,badQ=0,badCap=0; const step=state.cfg.roundTo||5;
+      [D,Dr,Da].forEach(function(Dx){ if(!Dx)return; Dx.list.forEach(function(it){
+        const rows=(it.sim&&it.sim.rows)||[]; const raws=[],plans=[];
+        rows.forEach(function(r){ const L=r.lin; if(!L||L.override)return; n++;
+          const prod=L.base*(L.scale==null?1:L.scale)*L.k*L.g*(L.carry==null?1:L.carry);
+          if(Math.abs(prod-L.raw)>1e-6*Math.max(1,Math.abs(L.raw)))bad++;
+          if(L.plan!=null){ raws.push(L.raw); plans.push(L.plan); }
+          if(r.so>L.plan+1e-9&&!(r.siSrc==='tapcover'||r.buySrc==='tapcover'))badCap++; });
+        if(raws.length){ const q=F.quantizeSeq(raws,step); for(let i=0;i<q.length;i++){ if(q[i]!==plans[i]){ badQ++; break; } } }
+      }); });
+      lineageOk=n>0&&bad===0&&badQ===0&&badCap===0; tms.lineage={weeks:n,badProduct:bad,badQuant:badQ,badCap:badCap};
+    }catch(e){ tms.lineage='ERR:'+String(e&&e.message||e).slice(0,160); }
     let roundStepOk=false;
     sfStep('roundStep begin');
     const __tR0=performance.now();
@@ -15654,9 +15700,9 @@ window.__selftest=async function(arg){
     (function(){ const c=calcCache(); delete c.budTo; delete c.budOv; delete c.pvExt; delete c.lyModels; })();
     sfStep('pendGroup done');
     window.__soToolOff=__soSnap.off; if(SHELL&&SHELL.soTool){ state.cfg.autoFlat=__soSnap.autoFlat; }
-    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
+    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&lineageOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
       incOk:incOk,dosQOk:dosQOk,finOk:finOk,tapAuditOk:tapAuditOk,perfOk:perfOk,smSimOk:smSimOk,sumWatchOk:sumWatchOk,expPrevOk:expPrevOk,targetOk:targetOk,btOk:btOk,mkOk:mkOk,lockOk:lockOk,xgOk:xgOk,aiOk:aiOk,pvOk:pvOk,udOk:udOk,osOk:osOk,npPvOk:npPvOk,npLateOk:npLateOk,reconOk:reconOk,ctOk:ctOk,xgPvOk:xgPvOk,
-      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk,
+      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk, lineageOk:lineageOk,
       units:store?store.units.size:0, maxPeriod:store?store.maxPeriod:0, pend:pendingList().length,
       files:folderInfo&&folderInfo.files?folderInfo.files.length:0,
       retailUnits:retailStore?retailStore.units.size:0,

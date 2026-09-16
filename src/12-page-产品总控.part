@@ -1,0 +1,710 @@
+/* ===== 产品总控：型号级操盘台 =====
+   口径:权威 SO/SI 源 = FSD直签全集(剔除音频行) + 音频专表;下游渠道表只是渠道明细,不并入总量。
+   每型号一行:锁量/平销/爆发系数/国家占比/当前PSI;展开后型号与每个国家都有
+   分月 SO·SI·月末INV·月末DOS 四行网格(SO/SI 可拍数,守恒分配到 单元×周)。 */
+function mkAggOf(items,mFsd,mAud,months,meF,meA,fiF,fiA,extCtx){
+  let inv=0,daily=0,futSO=0,futSI=0,man=0;
+  const mo={},moSI={},meInv={},meDaily={};
+  const conf={high:0,mid:0,low:0,none:0};
+  items.forEach(function(x){
+    const it=x.it;
+    inv+=((it.cur.curInv!=null?it.cur.curInv:it.cur.curInv1)||0);
+    daily+=(it.cur.dailySO||0);
+    if(it.bl&&it.bl.base!=null)conf[it.bl.conf||'low']++; else conf.none++;
+    const ovo=state.ovSO[ovKey(x.src,it.u.key)],ovi=state.ovSI[ovKey(x.src,it.u.key)];
+    if((ovo&&Object.keys(ovo).length)||(ovi&&Object.keys(ovi).length))man++;
+    const mof=x.src==='fsd'?mFsd:mAud;
+    (it.sim?it.sim.rows:[]).forEach(function(rr){
+      const m=mof[rr.p]; if(m==null)return;
+      const si=x.src==='fsd'?(rr.si||0):(rr.buy||0);
+      mo[m]=(mo[m]||0)+(rr.so||0); moSI[m]=(moSI[m]||0)+si;
+      futSO+=(rr.so||0); futSI+=si;
+    });
+    const meMap=x.src==='fsd'?meF:meA, fi=x.src==='fsd'?fiF:fiA;
+    months.forEach(function(m){
+      const me=meMap[m]; if(!me)return;
+      const rr=it.sim&&it.sim.rows?it.sim.rows[fi[me.p]]:null;
+      if(!rr)return;
+      meInv[m]=(meInv[m]||0)+(rr.inv||0);
+      meDaily[m]=(meDaily[m]||0)+(rr.daily||0);
+    });
+  });
+  /* 该月完整 SO(已发生周实际+未发生周推演):月末DOS 分母(2026-09-02 统一口径) */
+  const moFull={}; const yCurA=store?F.periodY(store.maxPeriod):0;
+  items.forEach(function(x){ const it=x.it; months.forEach(function(m){ moFull[m]=(moFull[m]||0)+F.unitMonthSO(it.u,it.sim?it.sim.rows:null,yCurA,m); }); });
+  /* 明年外推段(预算口径,含 ovExt 手工覆盖):nxSO/nxSI/nxInv 按月号 1-12 */
+  const nxSO={},nxSI={},nxInv={},nxSoOv={},nxSiOv={};
+  if(extCtx){
+    items.forEach(function(x){
+      const u=x.it.u;
+      const eb=x.src==='fsd'?extCtx.extF:extCtx.extA;
+      if(!eb)return;
+      const e=eb.get(pv2UKey(u.country,u.account,u.model));
+      if(!e)return;
+      for(let m=1;m<=12;m++){
+        const o=e[extCtx.nextY+'-'+m]; if(!o)continue;
+        nxSO[m]=(nxSO[m]||0)+o.so; nxSI[m]=(nxSI[m]||0)+o.si;
+        nxInv[m]=(nxInv[m]||0)+o.inv;
+        if(o.soOv)nxSoOv[m]=1;
+        if(o.siOv)nxSiOv[m]=1;
+      }
+    });
+  }
+  return {moFull:moFull,n:items.length,inv:inv,daily:daily,futSO:futSO,futSI:futSI,mo:mo,moSI:moSI,
+    meInv:meInv,meDaily:meDaily,conf:conf,man:man,
+    nxSO:nxSO,nxSI:nxSI,nxInv:nxInv,nxSoOv:nxSoOv,nxSiOv:nxSiOv};
+}
+function renderMaster(){
+  const el=$('#view-master');
+  if(!D||!D.list.length){ emptyHint(el); return; }
+  const ui=state.ui;
+  if(!ui.mkOpen)ui.mkOpen={};
+  /* 双源月份坐标(FSD 与音频专表各自的未来周/月末周,按自然月对齐) */
+  const mFsd={},mAud={},monthsSet={};
+  D.fw.forEach(function(p){ const m=F.monthOfP(p); mFsd[p]=m; monthsSet[m]=1; });
+  if(Da)Da.fw.forEach(function(p){ const m=F.monthOfP(p); mAud[p]=m; monthsSet[m]=1; });
+  const months=Object.keys(monthsSet).map(Number).sort(function(a,b){return a-b;});
+  const meF={},meA={},fiF={},fiA={};
+  D.monthEnds.forEach(function(me){ meF[me.m]=me; });
+  if(Da)Da.monthEnds.forEach(function(me){ meA[me.m]=me; });
+  D.fw.forEach(function(p,i){ fiF[p]=i; });
+  if(Da)Da.fw.forEach(function(p,i){ fiA[p]=i; });
+  mkBaseTotals(D.layers,(audioStore&&audioStore.units.size)?layersOfCached('audio',audioStore,F.periodY(audioStore.maxPeriod)-1):null);
+  const baseTot=calcCache().mkBase||{};
+  /* 明年外推列(默认开;可关):权威双源各取外推层,含 ovExt 手工覆盖 */
+  if(ui.mkNext==null)ui.mkNext=true;
+  const curYm=F.periodY(store.maxPeriod);
+  const extCtx=ui.mkNext?{nextY:curYm+1,
+    extF:pv2ExtByKey('fsd',curYm+1),
+    extA:(audioStore&&audioStore.units.size)?pv2ExtByKey('audio',curYm+1):null}:null;
+  /* 聚合到 产品×型号(权威源) */
+  const map=new Map();
+  const add=function(it,src){
+    if(src==='fsd'&&it.u.audio)return;
+    const mk=mkKey(it.u);
+    let r=map.get(mk);
+    if(!r){ r={mk:mk,product:it.u.product,model:it.u.model==null?'':String(it.u.model),line:it.u.line,
+      audio:src==='audio',items:[],units:[],ctry:{}}; map.set(mk,r); }
+    r.items.push({it:it,src:src}); r.units.push(it.u);
+    (r.ctry[it.u.country]=r.ctry[it.u.country]||[]).push({it:it,src:src});
+  };
+  D.list.forEach(function(it){ add(it,'fsd'); });
+  if(Da&&Da.list)Da.list.forEach(function(it){ add(it,'audio'); });
+  const rowsAll=[];
+  map.forEach(function(r){ r.agg=mkAggOf(r.items,mFsd,mAud,months,meF,meA,fiF,fiA,extCtx); rowsAll.push(r); });
+  /* 历史国家占比:近26个自然周有效SO(权威源) */
+  const histShareOf=function(r){
+    if(r.__hs)return r.__hs;
+    const by={}; let tot=0;
+    r.items.forEach(function(x){
+      const u=x.it.u;
+      const stx=x.src==='fsd'?store:audioStore;
+      if(!stx)return;
+      const mi=F.weekIndex(stx.maxPeriod);
+      u.periods.forEach(function(p){
+        if(mi-F.weekIndex(p)>=26)return;
+        const so=u.weeks.get(p).so;
+        if(u.audio?(so==null||so<=0):(so==null))return;
+        by[u.country]=(by[u.country]||0)+(so||0); tot+=(so||0);
+      });
+    });
+    r.__hs={by:by,tot:tot}; return r.__hs;
+  };
+  const burstCalcOf=function(r){
+    const c=calcCache(); if(!c.burst)c.burst=new Map();
+    let v=c.burst.get(r.mk);
+    if(v===undefined){
+      v=F.burstOf(r.units,function(u,p){ return !!promoWSetOf(u)[F.periodW(p)]; },state.cfg.blHead||8);
+      c.burst.set(r.mk,v);
+    }
+    return v;
+  };
+  const lockOf=function(mk){ return state.lockQty[mk]||null; };
+  const lockResOf=function(mk){ return (__lockRes&&__lockRes[mk])||null; };
+  /* 音频型号锁量为展示口径(专表无自动补货,不做压缩),现算已发/余量 */
+  const lockViewOf=function(r){
+    const L=lockOf(r.mk); if(!L||!L.on||!(+L.total>0))return null;
+    const R=lockResOf(r.mk);
+    if(R)return R;
+    const snt=lockSentOf(r.mk);
+    const total=+L.total||0;
+    return {total:total,sent:snt.sent,remain:Math.max(0,total-snt.sent),over:snt.sent>total,
+      allocMis:false,gap:null,scaled:false,viewOnly:true};
+  };
+  /* 筛选/排序 */
+  const lines=[]; rowsAll.forEach(function(r){ if(lines.indexOf(r.line)<0)lines.push(r.line); }); lines.sort();
+  let rows=rowsAll;
+  if(ui.mkLine)rows=rows.filter(function(r){ return r.line===ui.mkLine; });
+  if(ui.mkLock==='locked')rows=rows.filter(function(r){ const L=lockOf(r.mk); return L&&L.on; });
+  else if(ui.mkLock==='unlocked')rows=rows.filter(function(r){ const L=lockOf(r.mk); return !(L&&L.on); });
+  else if(ui.mkLock==='gap')rows=rows.filter(function(r){ const R=lockResOf(r.mk); return R&&R.gap!=null; });
+  const q=(ui.mkQ||'').trim().toLowerCase();
+  if(q)rows=rows.filter(function(r){ return (r.product+' '+r.model).toLowerCase().indexOf(q)>=0; });
+  const st=ui.mkSort||{col:'inv',dir:-1};
+  const sv=function(r){ return st.col==='futSO'?r.agg.futSO:(st.col==='futSI'?r.agg.futSI:(st.col==='so4'?(r.agg.daily*7):r.agg.inv)); };
+  rows=rows.slice().sort(function(a,b){ return (sv(b)-sv(a))*(st.dir<0?1:-1); });
+  /* KPI */
+  let nLock=0,nGap=0,nOver=0,nMan=0;
+  rowsAll.forEach(function(r){
+    const R=lockViewOf(r);
+    if(R){ nLock++; if(R.gap!=null)nGap++; if(R.over)nOver++; }
+    if(r.agg.man)nMan++;
+  });
+  const dosOfAgg=function(inv,daily){ return daily>0?Math.round(inv/daily):null; };
+  let h='<div class="cards">'
+    +'<div class="kpi"><div class="v">'+rowsAll.length+'</div><div class="t">产品型号(权威源)</div></div>'
+    +'<div class="kpi"><div class="v">'+nLock+'</div><div class="t">已锁量型号</div></div>'
+    +'<div class="kpi"><div class="v"'+(nGap?' style="color:var(--warn)"':'')+'>'+nGap+'</div><div class="t">锁量后供应断档</div></div>'
+    +'<div class="kpi"><div class="v"'+(nOver?' style="color:var(--warn)"':'')+'>'+nOver+'</div><div class="t">已发超锁量</div></div>'
+    +'<div class="kpi"><div class="v">'+nMan+'</div><div class="t">含手工拍数型号</div></div></div>';
+  h+='<div class="panel"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+    +'<b>产品总控</b><span class="muted">SO 权威源=FSD直签全集(音频行以专表计)·下游表不并入总量</span>'
+    +'<select id="mkLineSel" class="mkIn" style="width:auto"><option value="">全部产品线</option>'
+    +lines.map(function(l){ return '<option value="'+esc(l)+'"'+(ui.mkLine===l?' selected':'')+'>'+esc(l)+'</option>'; }).join('')+'</select>'
+    +'<select id="mkLockSel" class="mkIn" style="width:auto">'
+    +'<option value="">全部锁量状态</option>'
+    +'<option value="locked"'+(ui.mkLock==='locked'?' selected':'')+'>已锁量</option>'
+    +'<option value="unlocked"'+(ui.mkLock==='unlocked'?' selected':'')+'>未锁量</option>'
+    +'<option value="gap"'+(ui.mkLock==='gap'?' selected':'')+'>供应断档</option></select>'
+    +'<input id="mkQ" class="mkIn" style="width:170px" placeholder="搜产品/型号" value="'+esc(ui.mkQ||'')+'">'
+    +'<button class="'+(ui.mkNext?'act':'ghost')+'" id="btnMkNext" title="显示/隐藏明年(预算外推口径,可拍)12个月列">+明年</button>'
+    +'<button class="ghost" id="btnMkExport">导出总控表</button>'
+    +'<button class="ghost" id="btnMkLong" title="生成与「月度SO实际数」同列位的长表(历史实际+未来推演),粘回你的销量推演 Excel 后 SUMIFS 直接取数">导出销量推演长表</button>'
+    +'<button class="ghost" id="btnMkNp" title="跳到新品规划页添加未上市产品(锚品×缩放,虚拟单元)">+新品</button>'
+    +'<span class="muted" style="margin-left:auto">点行展开:调节项+分月 SI/SO/库存/DOS+分国家</span></div>';
+  h+='<div class="tblwrap" style="max-height:66vh"><table><thead><tr>'
+    +'<th></th><th class="l">产品线</th><th class="l" style="min-width:190px">产品 / 型号</th><th>国家</th>'
+    +'<th data-mksc="inv" style="cursor:pointer">当前INV'+(st.col==='inv'?(st.dir<0?' ▼':' ▲'):'')+'</th>'
+    +'<th>当前DOS</th>'
+    +'<th data-mksc="so4" style="cursor:pointer">近4周周均SO'+(st.col==='so4'?(st.dir<0?' ▼':' ▲'):'')+'</th>'
+    +'<th title="平销引擎 b̂ 的型号合计(台/周,权威源各单元求和)">平销Σ</th>'
+    +'<th title="大促周均销 ÷ 平销周均销(近52周,首销期剔除);括号内为当前生效值(手工改写优先)">爆发系数</th>'
+    +'<th data-mksc="futSO" style="cursor:pointer">未来SO'+(st.col==='futSO'?(st.dir<0?' ▼':' ▲'):'')+'</th>'
+    +'<th data-mksc="futSI" style="cursor:pointer">未来SI要货'+(st.col==='futSI'?(st.dir<0?' ▼':' ▲'):'')+'</th>'
+    +'<th class="l" style="min-width:200px">锁量(大区总量)</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    const a=r.agg;
+    const L=lockOf(r.mk);
+    const R=lockViewOf(r);
+    const dv=dosOfAgg(a.inv,a.daily);
+    const burstC=burstCalcOf(r);
+    const burstU=state.burst[r.mk]!=null?state.burst[r.mk]:burstC;
+    const lc=state.lifecycle[r.product]||null;
+    const nC=Object.keys(r.ctry).length;
+    let chips='';
+    if(r.audio)chips+=' <span class="chip audio">音频专表</span>';
+    if(R)chips+=' <span class="chip lockc">已锁量</span>';
+    if(R&&R.over)chips+=' <span class="chip gapc" title="生命周期已发货 '+F.fmt(R.sent)+' 已超锁量总量 '+F.fmt(R.total)+'">超发</span>';
+    if(R&&R.allocMis)chips+=' <span class="chip gapc" title="国家分配合计与大区锁量总量不一致">分配≠总量</span>';
+    if(R&&R.gap!=null)chips+=' <span class="chip gapc" title="锁量压缩后可用库存撑不住推演SO,该周起出现供应断档">断供@'+F.weekLabel(R.gap)+'</span>';
+    if(R&&R.retailScaled)chips+=' <span class="chip lockc" title="下游渠道同型号今年自动Purchase总量 '+F.fmt(R.retailFut)+' 超过 直接渠道自有库存INV1 '+F.fmt(R.retailInv1)+' + 锁量余量 '+F.fmt(R.remain)+',已按比例压缩(手拍原样保留'+(R.retailCf?';含国家配额层':'')+')">下游Purchase×'+(R.retailF!=null?R.retailF:'配额')+'</span>';
+    if(R&&((R.extF!=null&&R.extF<1)||(R.extRetailF!=null&&R.extRetailF<1)))chips+=' <span class="chip lockc" title="明年延伸段自动SI/Purchase超过锁量余量(扣除今年已排),已按比例压缩并重链库存(看过明年列后才有此标)">明年压缩'+(R.extF!=null&&R.extF<1?'×'+R.extF:'')+(R.extRetailF!=null&&R.extRetailF<1?'·下游×'+R.extRetailF:'')+'</span>';
+    if(lc&&lc.eolSI)chips+=' <span class="chip skip">停购@'+F.weekLabel(lc.eolSI)+'</span>';
+    if(a.conf.low+a.conf.none>a.conf.high+a.conf.mid)chips+=' <span class="chip base" title="多数单元平销置信度低(有效平销周不足)">平销低置信</span>';
+    if(a.man)chips+=' <span class="chip manc" title="'+a.man+' 个单元含 SO/SI 手工拍数">手工×'+a.man+'</span>';
+    const open=!!ui.mkOpen[r.mk];
+    h+='<tr class="mkRow" data-mk="'+esc(r.mk)+'" style="cursor:pointer">'
+      +'<td>'+(open?'▾':'▸')+'</td>'
+      +'<td class="l">'+esc(r.line)+'</td>'
+      +'<td class="l"><b>'+esc(r.product)+'</b>'+(r.model?' <span class="muted">'+esc(r.model)+'</span>':'')+chips+'</td>'
+      +'<td>'+nC+'<span class="muted">/'+a.n+'单元</span></td>'
+      +'<td>'+F.fmt(a.inv)+'</td>'
+      +'<td'+dosRiskCls(dv)+'>'+(dv!=null?F.fmt(dv):(a.inv>0?'∞':'—'))+'</td>'
+      +'<td>'+(a.daily>0?F.fmt(Math.round(a.daily*7)):'—')+'</td>'
+      +'<td>'+(baseTot[r.mk]!=null?F.fmt(Math.round(baseTot[r.mk]))+'<span class="muted">/周</span>':'—')
+      +' <span class="muted" title="平销置信度:高/中/低(+无)">'+a.conf.high+'/'+a.conf.mid+'/'+(a.conf.low+a.conf.none)+'</span></td>'
+      +'<td>'+(burstC!=null?('×'+burstC):'—')
+      +(state.burst[r.mk]!=null?' <span class="chip manc" title="手工改写生效">用×'+state.burst[r.mk]+'</span>'
+        :(burstC!=null?' <span class="muted">(未启用)</span>':''))+'</td>'
+      +'<td>'+F.fmt(a.futSO)+'</td>'
+      +'<td>'+F.fmt(a.futSI)+'</td>'
+      +'<td class="l" data-mkstop="1">'
+      +'<label style="cursor:pointer"><input type="checkbox" class="mkLockChk" data-mk="'+esc(r.mk)+'"'+(L&&L.on?' checked':'')+'> 锁量</label> '
+      +'<input class="mkIn mkLockTot" data-mk="'+esc(r.mk)+'" placeholder="总量" title="填大区锁量总量即自动启用锁量;清空=停用" value="'+(L&&L.total!=null?L.total:'')+'">'
+      +(R?' <span class="muted" title="已发=生命周期累计实际SI(从第一次有SI的周起跨年累计'+(R.firstP?',首SI '+F.periodY(R.firstP)%100+'W'+F.periodW(R.firstP):'')+(R.lastP?',末SI '+F.periodY(R.lastP)%100+'W'+F.periodW(R.lastP):'')+');余=锁量总量−已发">已发'+F.fmt(R.sent)+' · 余'+F.fmt(R.remain)+'</span>':'')
+      +'</td></tr>';
+    if(open){
+      const hs=histShareOf(r);
+      const shr=state.countryShare[r.mk]||{};
+      h+='<tr><td colspan="12" style="background:var(--hist);padding:10px 14px">';
+      /* 调节区 */
+      h+='<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+        +'<span><b>调节</b><span class="muted">(回车确认,清空恢复自动)</span></span>'
+        +'<span title="型号级增速倍数,优先于产品线/系族/全局大盘增速;作用于该型号全部单元自动推演">增速 <input class="mkIn mkGrow" data-mk="'+esc(r.mk)+'" placeholder="'+(function(){ const g=state.modelGrowth[r.mk]; return g!=null?'':'默认'; })()+'" value="'+(state.modelGrowth[r.mk]!=null?state.modelGrowth[r.mk]:'')+'">×</span>'
+        +'<span title="改写型号平销总量(台/周):按各单元现有平销占比等比缩放到此总量">平销改写 <input class="mkIn mkBlov" data-mk="'+esc(r.mk)+'" placeholder="'+(baseTot[r.mk]!=null?Math.round(baseTot[r.mk]):'')+'" value="'+(state.blOv[r.mk]!=null?state.blOv[r.mk]:'')+'">台/周</span>'
+        +'<span title="改写大促爆发系数:各国家/渠道大促周按 平销×此倍数 推演(填了才生效,不填沿用周历系数)">爆发改写 <input class="mkIn mkBurst" data-mk="'+esc(r.mk)+'" placeholder="'+(burstC!=null?burstC:'')+'" value="'+(state.burst[r.mk]!=null?state.burst[r.mk]:'')+'">×</span>'
+        +'</div>';
+      /* 年度基准:25实际/26整年口径/27外推 —— 平销SO(周均)/累计SO/累计SI/年末库存/年末DOS */
+      (function(){
+        const hist={};
+        const uy={};   /* 每年有记录的单元集:两年单元数差异大 ⇒ 同比含构成效应(新品/停售/渠道进出) */
+        const invEnd={},invEndP={};
+        r.items.forEach(function(x){
+          const u=x.it.u;
+          u.periods.forEach(function(p2){
+            const y=F.periodY(p2),w=u.weeks.get(p2);
+            (uy[y]=uy[y]||{})[u.key]=1;
+            const okSo=u.audio?(w.so!=null&&w.so>0):(w.so!=null);
+            const hh=hist[y]=hist[y]||{so:0,si:0,dec:0};
+            if(okSo){ hh.so+=(w.so||0); if(F.monthOfP(p2)===12)hh.dec+=(w.so||0); (hh.wk=hh.wk||{})[p2]=1; }
+            hh.si+=(w.si||0);
+            const iv=w.inv!=null?w.inv:w.inv1;
+            if(iv!=null){ const kk=y+'|'+u.key;
+              if(p2>=(invEndP[kk]||0)){ invEndP[kk]=p2;
+                (invEnd[y]=invEnd[y]||{})[u.key]=iv; } }
+          });
+        });
+        const invSum=function(y){ const o2=invEnd[y]; if(!o2)return null;
+          let s2=0; Object.keys(o2).forEach(function(k){ s2+=o2[k]; }); return s2; };
+        const a2=r.agg;
+        const yPrev=curYm-1;
+        const hPrev=hist[yPrev]||{so:0,si:0,dec:0};
+        /* 今年整年口径 = 今年历史实际 + 推演段 */
+        const hCur=hist[curYm]||{so:0,si:0,dec:0};
+        const curSO=hCur.so+a2.futSO, curSI=hCur.si+a2.futSI;
+        const curEnd=a2.meInv[12]!=null?a2.meInv[12]:null;
+        const curDec=(a2.mo[12]||0)+hCur.dec;
+        let nxSOt=0,nxSIt=0;
+        for(let m=1;m<=12;m++){ nxSOt+=(a2.nxSO[m]||0); nxSIt+=(a2.nxSI[m]||0); }
+        const nxEnd=a2.nxInv[12]!=null?a2.nxInv[12]:null;
+        const nCur=r.items.length;
+        const rowB=function(lab,so2,si2,end2,dec2,nU,yy,nWk){
+          const dos2=F.monthDos(end2,dec2,F.monthDaysOf(yy,12));   // 年末DOS=年末库存÷(12月SO÷12月天数)
+          const warn2=(nU!=null&&nU>0&&nCur>0&&Math.abs(nCur-nU)/Math.max(nU,nCur)>0.2);
+          return '<tr><td class="l">'+lab+'</td><td title="年累计SO÷'+nWk+'周">'+(so2>0&&nWk>0?F.fmt(Math.round(so2/nWk)):'—')+'</td>'
+            +'<td>'+F.fmt(Math.round(so2))+'</td><td>'+F.fmt(Math.round(si2))+'</td>'
+            +'<td>'+(end2!=null?F.fmt(Math.round(end2)):'—')+'</td>'
+            +'<td'+dosRiskClsOct(dos2===Infinity?null:dos2,false,dos2===Infinity,12)+' title="年末库存÷(12月SO÷'+F.monthDaysOf(yy,12)+'天)">'+F.dosText(dos2)+'</td>'
+            +'<td'+(warn2?' style="color:var(--warn)" title="该年参与单元数与今年差异>20%:两年同比里掺着构成效应(渠道进出/新品/停售),不是纯水平变化;对比前先看这一列"':'')+'>'+(nU!=null?nU:'—')+'</td></tr>';
+        };
+        h+='<div class="tblwrap" style="margin-top:4px;max-width:760px"><table><thead><tr>'
+          +'<th class="l" title="年末DOS=年末库存÷(当年12月SO÷12月天数),12月天数=周四在12月的周数×7">年度基准</th><th title="年累计SO÷该年周数(实际年=有SO记录的周数;今年/外推年=ISO年周数 52 或 53)">平销SO(台/周)</th><th>累计SO</th><th>累计SI</th><th>年末库存</th><th>年末DOS</th>'
+          +'<th title="该年有记录(或参与推演)的 渠道×型号 数。两年差异大=同比含构成效应(新品/停售/渠道进出),不是纯水平变化">单元数</th></tr></thead><tbody>'
+          +rowB((yPrev%100)+'年·实际',hPrev.so,hPrev.si,invSum(yPrev),hPrev.dec,Object.keys(uy[yPrev]||{}).length,yPrev,Object.keys(hPrev.wk||{}).length)
+          +rowB((curYm%100)+'年·实际+推演',curSO,curSI,curEnd,curDec,nCur,curYm,F.weeksInISOYear(curYm))
+          +(extCtx?rowB((extCtx.nextY%100)+"\u2032"+'年·外推',nxSOt,nxSIt,nxEnd,a2.nxSO[12]||0,nCur,extCtx.nextY,F.weeksInISOYear(extCtx.nextY)):'')
+          +'</tbody></table></div>';
+      })();
+      /* 型号级分月网格 */
+      h+=mkGridHtml(r,null,months,meF,meA,'型号合计(全部国家)',null,extCtx);
+      /* 国家块 */
+      const cs=Object.keys(r.ctry).map(function(c){
+        return {c:c,agg:mkAggOf(r.ctry[c],mFsd,mAud,months,meF,meA,fiF,fiA,extCtx)};
+      }).sort(function(x,y){ return y.agg.inv-x.agg.inv; });
+      const maxShare=Math.max.apply(null,cs.map(function(x){ return hs.tot>0?(hs.by[x.c]||0)/hs.tot:0; }).concat([0.01]));
+      cs.forEach(function(x){
+        const ca=x.agg;
+        const shH=hs.tot>0?Math.round((hs.by[x.c]||0)/hs.tot*100):0;
+        const cdv=dosOfAgg(ca.inv,ca.daily);
+        h+='<div class="mkCtry"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:6px">'
+          +'<b>'+esc(x.c)+'</b>'
+          +'<span title="近26周有效SO占比"><span class="mkBar" style="width:'+Math.max(2,Math.round((hs.tot>0?(hs.by[x.c]||0)/hs.tot:0)/maxShare*60))+'px"></span> 历史占比 '+shH+'%</span>'
+          +'<span title="改写该国未来SO分配权重(%):在总控拍型号月度SO时按此权重分国家;不填按历史占比">占比改写 <input class="mkIn mkShare" data-mk="'+esc(r.mk)+'" data-c="'+esc(x.c)+'" value="'+(shr[x.c]!=null?shr[x.c]:'')+'" placeholder="'+shH+'" style="width:54px">%</span>'
+          +'<span title="该国锁量分配(台):生命周期已发+未来SI不超过此数;需配合上方大区锁量总量生效;不填的国家只受总量约束">锁量分配 <input class="mkIn mkAlloc" data-mk="'+esc(r.mk)+'" data-c="'+esc(x.c)+'" value="'+(((lockOf(r.mk)||{}).byC||{})[x.c]!=null?lockOf(r.mk).byC[x.c]:'')+'" style="width:70px">台</span>'
+          +'<span>当前INV <b>'+F.fmt(ca.inv)+'</b></span>'
+          +'<span'+dosRiskCls(cdv)+'>当前DOS <b>'+(cdv!=null?F.fmt(cdv):(ca.inv>0?'∞':'—'))+'</b></span>'
+          +'<span class="muted">'+ca.n+' 渠道单元</span></div>';
+        h+=mkGridHtml(r,x.c,months,meF,meA,null,ca,extCtx);
+        h+='</div>';
+      });
+      h+='</td></tr>';
+    }
+  });
+  h+='</tbody></table></div></div>';
+  el.innerHTML=h;
+  bindMaster(el,rowsAll,map,months,{mFsd:mFsd,mAud:mAud,meF:meF,meA:meA,fiF:fiF,fiA:fiA,extCtx:extCtx},histShareOf);
+}
+/* 分月四行网格(SO/SI 可拍;月末INV/DOS 跟随) */
+function mkGridHtml(r,country,months,meF,meA,title,aggOpt,extCtx){
+  const a=aggOpt||r.agg;
+  const nxY=extCtx?extCtx.nextY:null;
+  const nxM=[]; if(nxY)for(let m=1;m<=12;m++)if(a.nxSO[m]!=null||a.nxSI[m]!=null||a.nxInv[m]!=null)nxM.push(m);
+  let h='<div class="tblwrap" style="margin-top:4px"><table><thead><tr><th class="l" style="min-width:150px">'
+    +(title?esc(title):'指标 \\ 月份')+'</th>';
+  months.forEach(function(m){ h+='<th'+(m===10?' class="oct"':'')+'>'+m+'月</th>'; });
+  nxM.forEach(function(m){ h+='<th class="pv2Ext" title="'+nxY+'年·预算外推口径,可拍">'+(nxY%100)+"\u2032"+m+'月</th>'; });
+  h+='</tr></thead><tbody>';
+  const cattr=country?' data-mkc="'+esc(country)+'"':'';
+  const ovMk=function(flag){ return flag?' style="box-shadow:inset 0 0 0 99px var(--ov)"':''; };
+  h+='<tr><td class="l">推演SI要货<span class="muted">(可拍)</span></td>';
+  months.forEach(function(m){
+    h+='<td class="ov" contenteditable data-mk="'+esc(r.mk)+'" data-mkm="'+m+'" data-mkk="si"'+cattr+'>'+F.fmt(a.moSI[m]||0)+'</td>'; });
+  nxM.forEach(function(m){
+    h+='<td class="pv2Ext" contenteditable data-mk="'+esc(r.mk)+'" data-mky="'+nxY+'" data-mkm="'+m+'" data-mkk="si"'+cattr+ovMk(a.nxSiOv[m])+' title="'+nxY+'年'+m+'月·外推可拍">'+F.fmt(Math.round(a.nxSI[m]||0))+'</td>'; });
+  h+='</tr><tr><td class="l">推演SO<span class="muted">(可拍)</span></td>';
+  months.forEach(function(m){
+    h+='<td class="ov" contenteditable data-mk="'+esc(r.mk)+'" data-mkm="'+m+'" data-mkk="so"'+cattr+'>'+F.fmt(a.mo[m]||0)+'</td>'; });
+  nxM.forEach(function(m){
+    h+='<td class="pv2Ext" contenteditable data-mk="'+esc(r.mk)+'" data-mky="'+nxY+'" data-mkm="'+m+'" data-mkk="so"'+cattr+ovMk(a.nxSoOv[m])+' title="'+nxY+'年'+m+'月·外推可拍">'+F.fmt(Math.round(a.nxSO[m]||0))+'</td>'; });
+  h+='</tr><tr><td class="l">月末INV</td>';
+  months.forEach(function(m){
+    h+='<td'+(m===10?' class="oct"':'')+'>'+(a.meInv[m]!=null?F.fmt(a.meInv[m]):'—')+'</td>'; });
+  nxM.forEach(function(m){
+    h+='<td class="pv2Ext">'+(a.nxInv[m]!=null?F.fmt(Math.round(a.nxInv[m])):'—')+'</td>'; });
+  h+='</tr><tr><td class="l">月末DOS</td>';
+  const yCurG=F.periodY(store.maxPeriod);
+  months.forEach(function(m){
+    const inv=a.meInv[m],soM=(a.moFull&&a.moFull[m]!=null)?a.moFull[m]:0;
+    const dv=F.monthDos(inv,soM,F.monthDaysOf(yCurG,m));
+    h+='<td'+dosRiskClsOct(dv===Infinity?null:dv,m===10,dv===Infinity,m)+' title="月末DOS=月末库存÷(该月SO÷该月天数 '+F.monthDaysOf(yCurG,m)+'天);该月SO='+F.fmt(Math.round(soM))+'(已发生周实际+未发生周推演)">'+F.dosText(dv)+'</td>'; });
+  nxM.forEach(function(m){
+    const inv=a.nxInv[m],so=a.nxSO[m]||0;
+    const dv=F.monthDos(inv,so,F.monthDaysOf(yCurG+1,m));
+    h+='<td'+dosRiskClsOct(dv===Infinity?null:dv,false,dv===Infinity,m)+' title="外推月DOS=月末库存÷(月SO÷该月天数 '+F.monthDaysOf(yCurG+1,m)+'天)">'+F.dosText(dv)+'</td>'; });
+  h+='</tr><tr><td class="l">操作</td>';
+  months.forEach(function(m){
+    h+='<td><button class="mini" data-mkrestore="'+m+'" data-mk="'+esc(r.mk)+'"'+cattr+' title="清除该月'+(country?'该国':'该型号全部')+' SO/SI 手工拍数,恢复公式推演">恢复公式</button></td>'; });
+  nxM.forEach(function(m){
+    h+='<td><button class="mini" data-mkyrestore="'+m+'" data-mky="'+nxY+'" data-mk="'+esc(r.mk)+'"'+cattr+' title="清除'+nxY+'年'+m+'月该层级外推手工拍数">恢复</button></td>'; });
+  h+='</tr></tbody></table></div>';
+  return h;
+}
+function bindMaster(el,rowsAll,mkMap,months,ctx,histShareOf){
+  const ui=state.ui;
+  const sel1=$('#mkLineSel'); if(sel1)sel1.onchange=function(){ ui.mkLine=this.value; render(); };
+  const sel2=$('#mkLockSel'); if(sel2)sel2.onchange=function(){ ui.mkLock=this.value; render(); };
+  const qi=$('#mkQ'); if(qi)qi.oninput=function(){ ui.mkQ=this.value; render(); };
+  el.querySelectorAll('th[data-mksc]').forEach(function(th){
+    th.onclick=function(){
+      const c=th.dataset.mksc;
+      const cur=ui.mkSort||{col:'inv',dir:-1};
+      ui.mkSort=(cur.col===c)?{col:c,dir:-cur.dir}:{col:c,dir:-1};
+      render(); };
+  });
+  el.querySelectorAll('tr.mkRow').forEach(function(tr){
+    tr.onclick=function(e){
+      if(e.target.closest('[data-mkstop]')||e.target.closest('input')||e.target.closest('button'))return;
+      const mk=tr.dataset.mk;
+      if(ui.mkOpen[mk])delete ui.mkOpen[mk]; else ui.mkOpen[mk]=1;
+      render(); };
+  });
+  /* 锁量开关/总量/国家分配 */
+  el.querySelectorAll('.mkLockChk').forEach(function(c){
+    c.onclick=function(e){ e.stopPropagation(); };
+    c.onchange=function(){
+      const mk=c.dataset.mk;
+      const L=state.lockQty[mk]||{total:null,byC:{}};
+      L.on=c.checked; if(!L.byC)L.byC={};
+      state.lockQty[mk]=L;
+      recompute();
+    };
+  });
+  const numCommit=function(inp,fn){
+    inp.onclick=function(e){ e.stopPropagation(); };
+    inp.onkeydown=function(e){ if(e.key==='Enter')inp.blur(); };
+    inp.onchange=function(){
+      const t=inp.value.trim();
+      const v=t===''?null:F.parseCellNum(t);
+      if(t!==''&&(v==null||v<0)){ alert('请输入非负数字。'); render(); return; }
+      fn(v);
+    };
+  };
+  el.querySelectorAll('.mkLockTot').forEach(function(inp){
+    numCommit(inp,function(v){
+      const mk=inp.dataset.mk;
+      const L=state.lockQty[mk]||{on:false,byC:{}};
+      L.total=v; if(!L.byC)L.byC={};
+      L.on=v!=null&&v>0;   // 填数即锁,清空即停
+      state.lockQty[mk]=L;
+      recompute();
+    });
+  });
+  el.querySelectorAll('.mkAlloc').forEach(function(inp){
+    numCommit(inp,function(v){
+      const mk=inp.dataset.mk,c2=inp.dataset.c;
+      const L=state.lockQty[mk]||{on:true,total:null,byC:{}};
+      if(!L.byC)L.byC={};
+      if(v==null)delete L.byC[c2]; else L.byC[c2]=v;
+      state.lockQty[mk]=L;
+      recompute();
+    });
+  });
+  el.querySelectorAll('.mkGrow').forEach(function(inp){
+    numCommit(inp,function(v){
+      const mk=inp.dataset.mk;
+      if(v==null)delete state.modelGrowth[mk]; else state.modelGrowth[mk]=v;
+      recompute();
+    });
+  });
+  el.querySelectorAll('.mkBlov').forEach(function(inp){
+    numCommit(inp,function(v){
+      const mk=inp.dataset.mk;
+      if(v==null||v<=0)delete state.blOv[mk]; else state.blOv[mk]=v;
+      recompute();
+    });
+  });
+  el.querySelectorAll('.mkBurst').forEach(function(inp){
+    numCommit(inp,function(v){
+      const mk=inp.dataset.mk;
+      if(v==null||v<=0)delete state.burst[mk]; else state.burst[mk]=Math.min(10,Math.max(1,v));
+      recompute();
+    });
+  });
+  el.querySelectorAll('.mkShare').forEach(function(inp){
+    numCommit(inp,function(v){
+      const mk=inp.dataset.mk,c2=inp.dataset.c;
+      if(!state.countryShare[mk])state.countryShare[mk]={};
+      if(v==null)delete state.countryShare[mk][c2]; else state.countryShare[mk][c2]=v;
+      if(!Object.keys(state.countryShare[mk]).length)delete state.countryShare[mk];
+      saveState(); render();
+    });
+  });
+  /* 分月 SO/SI 拍数:模型级按 国家权重(改写>历史占比)→国内现值 两层守恒分配;国家级按现值守恒分配 */
+  const cellsOf=function(r,m,metric,country){
+    const out=[];
+    r.items.forEach(function(x){
+      if(country&&x.it.u.country!==country)return;
+      const mof=x.src==='fsd'?ctx.mFsd:ctx.mAud;
+      (x.it.sim?x.it.sim.rows:[]).forEach(function(rr){
+        if(mof[rr.p]!==m)return;
+        out.push({key:ovKey(x.src,x.it.u.key),p:rr.p,country:x.it.u.country,
+          cur:metric==='so'?(rr.so||0):(x.src==='fsd'?(rr.si||0):(rr.buy||0))});
+      });
+    });
+    return out;
+  };
+  el.querySelectorAll('td[data-mkm]').forEach(function(td){
+    td.addEventListener('focus',function(){ td.dataset.orig=td.textContent; });
+    td.addEventListener('click',function(e){ e.stopPropagation(); });
+    td.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){ e.preventDefault(); td.blur(); }
+      else if(e.key==='Escape'){ td.textContent=td.dataset.orig||td.textContent; td.blur(); }
+    });
+    td.addEventListener('blur',function(){
+      if(td.textContent===(td.dataset.orig!=null?td.dataset.orig:td.textContent))return;
+      const undoM=function(msg){ if(td.dataset.orig!=null)td.textContent=td.dataset.orig; if(msg)xgFlash(msg); };
+      const v=F.parseCellNum(td.textContent);
+      if(v==null||v<0){ undoM('请输入非负数字'); return; }
+      const mk=td.dataset.mk,m=+td.dataset.mkm,metric=td.dataset.mkk,country=td.dataset.mkc||null;
+      const r=mkMap.get(mk); if(!r){ undoM(); return; }
+      if(td.dataset.mky){
+        /* 明年外推月拍数:按外推现值(含已有覆盖)守恒分配到 单元×该月,写 ovExt;库存链自动重算 */
+        const nxY=+td.dataset.mky;
+        const cellsE=[];
+        r.items.forEach(function(x){
+          if(country&&x.it.u.country!==country)return;
+          const eb=x.src==='fsd'?(ctx.extCtx&&ctx.extCtx.extF):(ctx.extCtx&&ctx.extCtx.extA);
+          if(!eb)return;
+          const k2=pv2UKey(x.it.u.country,x.it.u.account,x.it.u.model);
+          const e2=eb.get(k2); if(!e2)return;
+          const o2=e2[nxY+'-'+m]; if(!o2)return;
+          cellsE.push({k:ovExtKeyOf(x.src==='fsd'?'FSD':'音频专表',k2),ym:nxY+'-'+m,cur:metric==='so'?o2.so:o2.si});
+        });
+        if(!cellsE.length){ undoM('该层级在外推层没有数据'); return; }
+        let curSum=0; cellsE.forEach(function(c){ curSum+=c.cur; });
+        if(curSum<=0){
+          const hs2=histShareOf(r);
+          cellsE.forEach(function(c){
+            const cn=c.k.split('\u0001')[0];
+            c.cur=(hs2.by[cn]||0)+0.01;   // 现值全0:按国家历史占比兜底
+          });
+        }
+        const alE=distStep(Math.round(v),cellsE.map(function(c){ return c.cur; }),'fsd');
+        const undE=[];
+        cellsE.forEach(function(c,i2){
+          const o=state.ovExt[c.k]&&state.ovExt[c.k][c.ym];
+          undE.push({bag:'ovExt',key:c.k,ym:c.ym,field:metric,old:(o&&o[metric]!=null)?o[metric]:null});
+          (state.ovExt[c.k]=state.ovExt[c.k]||{});
+          (state.ovExt[c.k][c.ym]=state.ovExt[c.k][c.ym]||{})[metric]=alE[i2];
+        });
+        pushUndo(undE);
+        ovExtGen++;
+        recompute();
+        return;
+      }
+      const cells=cellsOf(r,m,metric,country);
+      if(!cells.length){ undoM('该月没有可分配的推演周'); return; }
+      const bag=metric==='so'?state.ovSO:state.ovSI;
+      const shr=state.countryShare[mk];
+      if(!country&&shr&&Object.keys(shr).length){
+        const ctys={}; cells.forEach(function(c){ (ctys[c.country]=ctys[c.country]||[]).push(c); });
+        const names=Object.keys(ctys);
+        const hs=histShareOf(r);
+        const ws=names.map(function(c){
+          if(shr[c]!=null)return Math.max(0,+shr[c]);
+          return hs.tot>0?(hs.by[c]||0)/hs.tot*100:0;
+        });
+        const bagNameM=metric==='so'?'ovSO':'ovSI';
+        pushUndo(cells.map(function(c){ return undoTakeOv(bagNameM,c.key,c.p); }));
+        const al=distStep(Math.round(v),ws,'fsd');
+        names.forEach(function(c,i){
+          const cs2=ctys[c];
+          const a2=distStep(al[i],cs2.map(function(x){ return x.cur; }),'fsd');
+          cs2.forEach(function(x,j){ if(!bag[x.key])bag[x.key]={}; bag[x.key][x.p]=a2[j]; });
+        });
+      } else {
+        const bagNameM=metric==='so'?'ovSO':'ovSI';
+        pushUndo(cells.map(function(c){ return undoTakeOv(bagNameM,c.key,c.p); }));
+        const al=distStep(Math.round(v),cells.map(function(c){ return c.cur; }),(typeof src!=='undefined')?src:'fsd');
+        cells.forEach(function(c,i){ if(!bag[c.key])bag[c.key]={}; bag[c.key][c.p]=al[i]; });
+      }
+      recompute();
+    });
+  });
+  const nxBtn=$('#btnMkNext');
+  if(nxBtn)nxBtn.onclick=function(){ ui.mkNext=!ui.mkNext; render(); };
+  el.querySelectorAll('button[data-mkyrestore]').forEach(function(b){
+    b.onclick=function(e){
+      e.stopPropagation();
+      const mk=b.dataset.mk,m=+b.dataset.mkyrestore,nxY=+b.dataset.mky,country=b.dataset.mkc||null;
+      const r=mkMap.get(mk); if(!r)return;
+      if(!confirm(nxY+'年'+m+'月:清除'+(country?country:'该型号全部国家')+'的外推手工拍数、恢复外推公式?'))return;
+      let hit=0;
+      r.items.forEach(function(x){
+        if(country&&x.it.u.country!==country)return;
+        const k2=ovExtKeyOf(x.src==='fsd'?'FSD':'音频专表',pv2UKey(x.it.u.country,x.it.u.account,x.it.u.model));
+        const o=state.ovExt[k2]; if(!o)return;
+        const ym=nxY+'-'+m;
+        if(o[ym]){ delete o[ym]; hit++; if(!Object.keys(o).length)delete state.ovExt[k2]; }
+      });
+      if(hit)ovExtGen++;
+      recompute();
+    };
+  });
+  el.querySelectorAll('button[data-mkrestore]').forEach(function(b){
+    b.onclick=function(e){
+      e.stopPropagation();
+      const mk=b.dataset.mk,m=+b.dataset.mkrestore,country=b.dataset.mkc||null;
+      const r=mkMap.get(mk); if(!r)return;
+      if(!confirm(m+'月：清除'+(country?country:'该型号全部国家')+'的 SO/SI 手工拍数、恢复公式推演？'))return;
+      r.items.forEach(function(x){
+        if(country&&x.it.u.country!==country)return;
+        const mof=x.src==='fsd'?ctx.mFsd:ctx.mAud;
+        (x.it.sim?x.it.sim.rows:[]).forEach(function(rr){
+          if(mof[rr.p]!==m)return;
+          [state.ovSO,state.ovSI].forEach(function(bag){
+            const o=bag[x.it.u.key];
+            if(o&&o[rr.p]!=null){ delete o[rr.p]; if(!Object.keys(o).length)delete bag[x.it.u.key]; }
+          });
+        });
+      });
+      recompute();
+    };
+  });
+  const be=$('#btnMkExport');
+  if(be)be.onclick=function(){
+    const headers=['产品线','产品','型号','层级','国家','权威源','渠道单元数','当前INV','当前DOS','近4周周均SO',
+      '平销Σ(台/周)','爆发系数(算)','爆发系数(用)','增速改写','平销改写(台/周)',
+      '锁量','锁量总量','生命周期已发','锁量余量','供应断档周',
+      '未来SO合计','未来SI要货合计']
+      .concat(months.map(function(m){ return [m+'月SO',m+'月SI要货',m+'月末INV',m+'月末DOS']; })
+        .reduce(function(x,y){ return x.concat(y); },[]))
+      .concat((ctx.extCtx?[1,2,3,4,5,6,7,8,9,10,11,12]:[]).map(function(m){
+        var yy=ctx.extCtx.nextY%100;
+        return [yy+"'"+m+'月SO',yy+"'"+m+'月SI',yy+"'"+m+'月末INV',yy+"'"+m+'月DOS']; })
+        .reduce(function(x,y){ return x.concat(y); },[]));
+    const baseTot=calcCache().mkBase||{};
+    const data=[];
+    rowsAll.forEach(function(r){
+      const a=r.agg;
+      const L=state.lockQty[r.mk];
+      const R=(__lockRes&&__lockRes[r.mk])||null;
+      const bc=(function(){ const c=calcCache(); return c.burst?c.burst.get(r.mk):null; })();
+      const mrow=function(tag,cname,ag,extra){
+        return [r.line,r.product,r.model,tag,cname,r.audio?'音频专表':'FSD直签',ag.n,ag.inv,
+          (ag.daily>0?Math.round(ag.inv/ag.daily):''),(ag.daily>0?Math.round(ag.daily*7):''),
+          extra?(baseTot[r.mk]!=null?Math.round(baseTot[r.mk]):''):'',
+          extra?(bc!=null?bc:''):'',extra?(state.burst[r.mk]!=null?state.burst[r.mk]:''):'',
+          extra?(state.modelGrowth[r.mk]!=null?state.modelGrowth[r.mk]:''):'',
+          extra?(state.blOv[r.mk]!=null?state.blOv[r.mk]:''):'',
+          extra?((L&&L.on)?'是':''):'',extra&&L&&L.on?(L.total!=null?L.total:''):'',
+          extra&&R?R.sent:'',extra&&R?R.remain:'',extra&&R&&R.gap!=null?F.weekLabel(R.gap):'',
+          ag.futSO,ag.futSI]
+          .concat(months.map(function(m){
+            const inv=ag.meInv[m]; const yC=F.periodY(store.maxPeriod); const dv=F.monthDos(inv,(ag.moFull&&ag.moFull[m])||0,F.monthDaysOf(yC,m));
+            return [ag.mo[m]||0,ag.moSI[m]||0,inv!=null?inv:'',dv==null?'':(dv===Infinity?'∞':dv)];
+          }).reduce(function(x,y){ return x.concat(y); },[]))
+          .concat((ctx.extCtx?[1,2,3,4,5,6,7,8,9,10,11,12]:[]).map(function(m){
+            const inv=ag.nxInv?ag.nxInv[m]:null,so=(ag.nxSO&&ag.nxSO[m])||0; const dv=F.monthDos(inv,so,F.monthDaysOf(F.periodY(store.maxPeriod)+1,m));
+            return [Math.round((ag.nxSO&&ag.nxSO[m])||0),Math.round((ag.nxSI&&ag.nxSI[m])||0),
+              inv!=null?Math.round(inv):'',dv==null?'':(dv===Infinity?'∞':dv)];
+          }).reduce(function(x,y){ return x.concat(y); },[]));
+      };
+      data.push(mrow('型号','',a,true));
+      Object.keys(r.ctry).sort().forEach(function(c){
+        data.push(mrow('国家',c,mkAggOf(r.ctry[c],ctx.mFsd,ctx.mAud,months,ctx.meF,ctx.meA,ctx.fiF,ctx.fiA),false));
+      });
+    });
+    exportTable('产品总控',headers,data);
+  };
+  const bl2=$('#btnMkLong');
+  if(bl2)bl2.onclick=function(){ exportMkLong(rowsAll,ctx); };
+  const np2=$('#btnMkNp');
+  if(np2)np2.onclick=function(){
+    state.ui.tab='newprod'; render();
+    const e2=$('#npName'); if(e2)e2.focus();
+  };
+}
+/* 销量推演长表:列位与用户「月度SO实际数」页一致(F=产品线,I=产品型号,J=月份序列,K=Measure,L=QTY),
+   粒度=国家×型号×月;历史月=底表实际,当月与未来月=权威源推演;粘回其推演 Excel 后原 SUMIFS 直接取数 */
+async function exportMkLong(rowsAll,ctx){
+  if(!store||!store.units.size){ alert('尚未载入数据。'); return; }
+  const curY=F.periodY(store.maxPeriod);
+  const mSerial=function(y,m){ return Math.round((Date.UTC(y,m-1,1)-Date.UTC(1899,11,30))/86400000); };
+  const headers=['占位A','占位B','占位C','占位D','占位E','产品线','产品族','国家','产品型号','月份','Measure','QTY'];
+  const data=[];
+  rowsAll.forEach(function(r){
+    const fam=F.familyOf(r.product);
+    const famName=fam?fam.family:'';
+    const modelName=r.model||r.product;
+    Object.keys(r.ctry).sort().forEach(function(c){
+      /* 按月累计:SI/SO=历史实际+未来推演;INV=月末周库存(历史无记录留空) */
+      const si={},so={},invEnd={};
+      r.ctry[c].forEach(function(x){
+        const u=x.it.u;
+        u.periods.forEach(function(p){
+          if(F.periodY(p)!==curY)return;
+          const m=F.monthOfP(p),w=u.weeks.get(p);
+          si[m]=(si[m]||0)+(w.si||0);
+          so[m]=(so[m]||0)+(w.so||0);
+        });
+        const mof=x.src==='fsd'?ctx.mFsd:ctx.mAud;
+        (x.it.sim?x.it.sim.rows:[]).forEach(function(rr){
+          const m=mof[rr.p]; if(m==null)return;
+          si[m]=(si[m]||0)+(x.src==='fsd'?(rr.si||0):(rr.buy||0));
+          so[m]=(so[m]||0)+(rr.so||0);
+        });
+        const meMap=x.src==='fsd'?ctx.meF:ctx.meA, fi=x.src==='fsd'?ctx.fiF:ctx.fiA;
+        for(let m=1;m<=12;m++){
+          const meFut=meMap[m];
+          if(meFut){
+            const rr=x.it.sim&&x.it.sim.rows?x.it.sim.rows[fi[meFut.p]]:null;
+            if(rr&&rr.inv!=null)invEnd[m]=(invEnd[m]||0)+(rr.inv||0);
+          } else {
+            const pe=F.monthEndPeriodOf(curY,m);
+            const w=u.weeks.get(pe);
+            const iv=w?(w.inv!=null?w.inv:w.inv1):null;
+            if(iv!=null)invEnd[m]=(invEnd[m]||0)+iv;
+          }
+        }
+      });
+      for(let m=1;m<=12;m++){
+        const js=mSerial(curY,m);
+        data.push(['','','','','',r.line,famName,c,modelName,js,'Sell In',si[m]!=null?si[m]:0]);
+        data.push(['','','','','',r.line,famName,c,modelName,js,'Sell Out',so[m]!=null?so[m]:0]);
+        data.push(['','','','','',r.line,famName,c,modelName,js,'Inventory',invEnd[m]!=null?invEnd[m]:'']);
+      }
+    });
+  });
+  const guide=[
+    ['「销量推演」对接说明'],
+    [''],
+    ['1. 本表列位与你的「月度SO实际数」页一致:F=产品线,I=产品型号,J=月份(Excel 日期序列值=当月1日),K=Measure,L=QTY。'],
+    ['   直接整表替换(或粘贴到)「月度SO实际数」页数据区 → 销量推演页的 SUMIFS 自动取到全年:历史月=底表实际,当月与未来月=本软件推演。'],
+    ['2. Measure 只有 Sell In / Sell Out / Inventory 三种写法。你推演表 E 列若含多余空格(如「Sell   out」),SUMIFS 会匹配不上——建议把推演表 E 列统一改成与本表一致的写法。'],
+    ['3. 粒度=国家×产品型号×月。你的 SUMIFS 只按 型号+月份+Measure 求和,自动把各国家加总;要看单一国家,在 SUMIFS 追加 H 列(国家)条件即可。'],
+    ['4. 口径:权威源=FSD直签全集(音频行以专表计)+音频专表;下游渠道表不并入,避免重复计数。当月=已发生周实际+剩余周推演;推演含你的手工拍数、锁量压缩与爆发系数改写。'],
+    ['5. DOS 不导出:你推演表的 DOS 行由 INV×当月天数÷当月SO 公式自算(28/35 天与本软件周四归月的周数口径一致),粘贴后自动成立。'],
+    ['6. 历史月末 Inventory 底表无记录时留空;音频线 SO=0 为未报量口径。无型号编码的产品以产品名充当型号名。'],
+    ['7. 本次导出共 '+data.length+' 行,覆盖 '+curY+' 年 1-12 月。']
+  ];
+  if(SHELL&&SHELL.saveXlsx){
+    const res=await saveXlsxHooked({name:'销量推演长表-'+curY+'.xlsx',
+      sheets:[{name:'月度SO实际数',rows:[headers].concat(data)},{name:'对接说明',rows:guide}]});
+    if(res&&res.ok)alert('销量推演长表已导出('+data.length+' 行,含对接说明 sheet):'+res.path);
+    else if(res&&!res.canceled)alert('导出失败: '+(res.error||''));
+  } else {
+    exportTableRaw('销量推演长表-'+curY,headers,data);
+  }
+}
+

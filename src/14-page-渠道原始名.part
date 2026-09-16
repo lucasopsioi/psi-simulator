@@ -1,0 +1,16 @@
+/* ===== 渠道原始名:导出时映射名旁并列底表原名(FBA/FBM 等多对一合并时逗号并列) ===== */
+function rawNamesOfUnit(u){
+  return (u.rawNames&&u.rawNames.length)?u.rawNames.join('，'):(u.account||'');
+}
+function rawNameMapOf(src){
+  const stx=src==='fsd'?store:(src==='retail'?retailStore:audioStore);
+  const acc={};
+  if(stx)stx.units.forEach(function(u){
+    let s=acc[u.account]; if(!s)s=acc[u.account]={};
+    (u.rawNames&&u.rawNames.length?u.rawNames:[u.account]).forEach(function(n){ s[n]=1; });
+  });
+  const out={};
+  Object.keys(acc).forEach(function(a){ out[a]=Object.keys(acc[a]).join('，'); });
+  return out;
+}
+

@@ -1,0 +1,234 @@
+/* ===== 产品经营(财经口径):公式照抄经营数据表(C.finCompute),量来自预算底表口径(财经Q表同源) ===== */
+let finGen=0;
+function finKey(name,country){ return name+'\u0001'+country; }
+function finParamsOf(name,country,rrpDef){
+  const ov=state.finParams[finKey(name,country)]||{};
+  const cd=Object.assign({},F.FIN_DRIFT_DEF[country]||{},state.finCountry[country]||{});
+  const q4=function(arr,def){ const o=[]; for(let i=0;i<4;i++){ const v=(arr&&arr[i]!=null)?arr[i]:def; o.push(v==null?null:+v); } return o; };
+  const pick=function(a,b){ return a!=null?a:(b!=null?b:null); };
+  return {rrp:q4(ov.rrp,rrpDef!=null?rrpDef:null),vat:pick(ov.vat,cd.vat),ch:pick(ov.ch,cd.ch),neg:q4(ov.neg,cd.neg),fx:q4(ov.fx,cd.fx),
+    zero:q4(ov.zero,null),r1:pick(ov.r1,null),r2:pick(ov.r2,null),r3:pick(ov.r3,null),
+    from:{rrp:(ov.rrp&&ov.rrp.some(function(v){ return v!=null; }))?'row':(rrpDef!=null?'set':''),
+      vat:ov.vat!=null?'row':(cd.vat!=null?'c':''),ch:ov.ch!=null?'row':(cd.ch!=null?'c':''),
+      neg:(ov.neg&&ov.neg.some(function(v){ return v!=null; }))?'row':(cd.neg!=null?'c':''),
+      fx:(ov.fx&&ov.fx.some(function(v){ return v!=null; }))?'row':(cd.fx!=null?'c':''),
+      zero:(ov.zero&&ov.zero.some(function(v){ return v!=null; }))?'row':''}};
+}
+function finRowsOf(endYear){
+  const c=calcCache();
+  const tag=endYear+'|'+ovExtGen+'|'+simGen+'|'+finGen;
+  if(c.fin&&c.fin.tag===tag)return c.fin.rows;
+  const rows=budgetRowsOv(endYear);
+  const pv=F.finQuarterPivot(rows,endYear);
+  const out=pv.map(function(r){ const pm=finParamsOf(r.name,r.country,r.rrp); return {r:r,pm:pm,c:F.finCompute(r,pm)}; });
+  c.fin={tag:tag,rows:out};
+  return out;
+}
+/* 参数写入:field ∈ rrp/neg/fx/zero(带季 qi) | vat/ch/r1/r2/r3;null=清掉回落默认 */
+function finSet(name,country,field,qi,val){
+  const k=finKey(name,country);
+  const o=state.finParams[k]||(state.finParams[k]={});
+  if(qi!=null){ if(!Array.isArray(o[field]))o[field]=[null,null,null,null]; o[field][qi]=val; if(o[field].every(function(v){ return v==null; }))delete o[field]; }
+  else { if(val==null)delete o[field]; else o[field]=val; }
+  if(!Object.keys(o).length)delete state.finParams[k];
+  finGen++; saveState();
+}
+function finApplyImport(parsed,pvRows){
+  const byKey={}; pvRows.forEach(function(x){ byKey[finKey(x.r.name,x.r.country)]=x; });
+  let matched=0,unmatched=[],cN=0; const cSeen={};
+  parsed.rows.forEach(function(p){
+    const k=finKey(p.name,p.country);
+    const o={};
+    if(p.rrp.some(function(v){ return v!=null&&v>0; }))o.rrp=p.rrp.map(function(v){ return (v!=null&&v>0)?v:null; });
+    if(p.vat!=null)o.vat=p.vat;
+    if(p.ch!=null)o.ch=p.ch;
+    if(p.neg.some(function(v){ return v!=null; }))o.neg=p.neg.slice();
+    if(p.fx!=null&&p.fx>0)o.fx=[p.fx,p.fx,p.fx,p.fx];
+    if(p.zero!=null&&p.zero>0)o.zero=[p.zero,p.zero,p.zero,p.zero];
+    if(p.r1!=null)o.r1=p.r1;
+    if(Object.keys(o).length)state.finParams[k]=Object.assign({},state.finParams[k]||{},o);
+    if(byKey[k])matched++; else if(unmatched.indexOf(p.name+'·'+p.country)<0)unmatched.push(p.name+'·'+p.country);
+    /* 国家默认:该国第一行的 增值税率/渠长/汇率(负向投入按产品差异大,不当国家默认) */
+    if(!cSeen[p.country]){ cSeen[p.country]=1; const cd=state.finCountry[p.country]||{}; let ch2=false;
+      if(p.vat!=null&&cd.vat==null){ cd.vat=p.vat; ch2=true; } if(p.ch!=null&&cd.ch==null){ cd.ch=p.ch; ch2=true; } if(p.fx!=null&&p.fx>0&&cd.fx==null){ cd.fx=p.fx; ch2=true; }
+      if(ch2){ state.finCountry[p.country]=cd; cN++; } }
+  });
+  finGen++; saveState();
+  return {n:parsed.rows.length,matched:matched,unmatched:unmatched,countries:cN,cols:parsed.cols,skipped:parsed.skipped};
+}
+function renderFin(){
+  const el=$('#view-fin');
+  const stx=retailStore||store||audioStore;
+  if(!stx||!(D||Dr||Da)){ el.innerHTML='<div class="panel">尚未载入底表/未推演。先在「数据」页载入底表,这里按财经口径逐季算 SIP→NSIP→递延→收入→销毛率。</div>'; return; }
+  const ui=state.ui;
+  const curY=F.periodY(stx.maxPeriod);
+  const endYear=(ui.fnY===curY||ui.fnY===curY+1)?ui.fnY:curY+1;
+  ui.fnY=endYear;
+  const all=finRowsOf(endYear);
+  const bus=[],cs=[];
+  all.forEach(function(x){ if(bus.indexOf(x.r.bu)<0)bus.push(x.r.bu); if(cs.indexOf(x.r.country)<0)cs.push(x.r.country); });
+  bus.sort(); cs.sort();
+  const q=(ui.fnQ||'').toLowerCase();
+  const rows=all.filter(function(x){
+    if(!msMatch(ui.fnBU,x.r.bu))return false;
+    if(!msMatch(ui.fnC,x.r.country))return false;
+    if(ui.fnNonZero!==false&&!(x.c.year.siK>0||x.c.year.soK>0||x.c.year.endInvK>0||x.c.year.prevEndK>0))return false;
+    if(q&&(x.r.bu+' '+x.r.name+' '+x.r.country+' '+x.r.products.join(' ')).toLowerCase().indexOf(q)<0)return false;
+    return true;
+  });
+  const view=ui.fnView||'all';   // all=四季总览 | Q1..Q4 单季明细
+  const fmt1=function(v){ return v==null?'—':(Math.round(v*10)/10).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1}); };
+  const fmt0=function(v){ return v==null?'—':Math.round(v).toLocaleString('en-US'); };
+  const fmtP=function(v){ return v==null?'—':(v*100).toFixed(1)+'%'; };
+  const fmtDos=function(v){ return v==null?'—':(v===Infinity?'∞':String(v)); };
+  const fmtIn=function(v,kind){ if(v==null)return ''; if(kind==='p')return (Math.round(v*10000)/100)+'%'; return String(Math.round(v*1000)/1000); };
+  /* KPI */
+  let revY=0,gmAmtY=0,defY=0,siY=0,missN=0,revN=0;
+  rows.forEach(function(x){ const y=x.c.year; if(y.rev!=null){ revY+=y.rev; revN++; } if(y.gmAmt!=null)gmAmtY+=y.gmAmt; if(y.deferAmt!=null)defY+=y.deferAmt; siY+=y.siK; if(y.missQ)missN++; });
+  let h='<div class="cards">'
+    +'<div class="kpi"><div class="v">'+fmt0(revY)+'</div><div class="t">'+endYear+' 年收入合计(KUSD,'+revN+' 行可算)</div></div>'
+    +'<div class="kpi"><div class="v">'+fmt0(gmAmtY)+'</div><div class="t">销毛额合计(KUSD,参考=收入×销毛率)</div></div>'
+    +'<div class="kpi"><div class="v">'+(revY>0?fmtP(gmAmtY/revY):'—')+'</div><div class="t">加权销毛率(Σ销毛额÷Σ收入)</div></div>'
+    +'<div class="kpi"><div class="v">'+fmt0(defY)+'</div><div class="t">递延金额合计(KUSD,四季度累计)</div></div>'
+    +'<div class="kpi"><div class="v">'+fmt1(siY)+'</div><div class="t">SI 全年合计(K 台)</div></div>'
+    +'<div class="kpi'+(missN?' warn':'')+'"><div class="v">'+missN+'</div><div class="t">参数缺失/异常行(RRP/汇率/Floor 等)</div></div>'
+    +'</div>';
+  h+='<div class="bar">'
+    +'<label>年份 <select id="fnY" class="mkIn" style="width:auto"><option value="'+curY+'"'+(endYear===curY?' selected':'')+'>'+curY+'(今年)</option><option value="'+(curY+1)+'"'+(endYear===curY+1?' selected':'')+'>'+(curY+1)+'(预算年)</option></select></label>'
+    +msHtml('fnBU','BU',bus,ui.fnBU)+msHtml('fnC','国家',cs,ui.fnC)
+    +'<input type="text" id="fnQ" class="mkIn" style="width:150px" placeholder="搜传播名/产品/国家" value="'+esc(ui.fnQ||'')+'">'
+    +'<label title="没有量也没有库存的行(纯参数行)默认隐藏"><input type="checkbox" id="fnNZ"'+(ui.fnNonZero!==false?' checked':'')+'> 只看有量的行</label>'
+    +'<span style="border-left:1px solid var(--line);margin:0 4px"></span>'
+    +'<button class="'+(view==='all'?'act':'ghost')+'" data-fnv="all">四季总览</button>'
+    +F.FIN_Q.map(function(qq){ return '<button class="'+(view===qq?'act':'ghost')+'" data-fnv="'+qq+'" title="该季全链路:RRP→SIP→NSIP→递延→收入→销毛率,参数格可直接改">'+qq+' 明细</button>'; }).join('')
+    +'<span style="border-left:1px solid var(--line);margin:0 4px"></span>'
+    +'<button class="ghost" id="fnImp">'+(ui.fnImpOpen?'收起导入':'导入经营数据表参数')+'</button>'
+    +'<button class="ghost" id="fnCty">'+(ui.fnCtyOpen?'收起国家参数':'国家参数(税率/渠长/汇率)')+'</button>'
+    +'<button class="ghost" id="fnExp">导出 Excel</button>'
+    +'</div>';
+  /* 导入面板 */
+  if(ui.fnImpOpen){
+    h+='<div class="panel"><h3>导入经营数据表参数 <span class="muted">(把「经营数据表_公式版.txt」或 Markdown 版整表粘贴进来,或选文件;按 传播名+国家 写入 RRP Q1-Q4/增值税率/渠长/负向投入 Q1-Q4/汇率/Floor/其他成本率)</span></h3>'
+      +'<div class="bar"><input type="file" id="fnFile" accept=".txt,.md,.tsv,.csv,.text"><span class="note">或粘贴到下方 →</span><button class="act" id="fnParse">解析并写入参数</button>'
+      +(ui.fnImpMsg?'<span class="note">'+esc(ui.fnImpMsg)+'</span>':'')+'</div>'
+      +'<textarea id="fnTxt" style="width:100%;min-height:120px;font-family:Consolas,monospace;font-size:12px" placeholder="BU\t传播名\t国家\t26年年底库存\tSO Q1 …(整表连表头一起粘)"></textarea>'
+      +'<div class="note">对不上的行(传播名·国家)会列出来——传播名要与「设置」页「RRP 价格与预算名」里的预算名逐字一致。汇率格是公式(如 =(18+17)/2*1.03)也能算。SO/SI/库存不从表里取,永远用软件推演。</div></div>';
+  }
+  /* 国家参数面板 */
+  if(ui.fnCtyOpen){
+    const cAll={}; Object.keys(F.FIN_DRIFT_DEF).forEach(function(c){ cAll[c]=1; }); cs.forEach(function(c){ cAll[c]=1; }); Object.keys(state.finCountry).forEach(function(c){ cAll[c]=1; });
+    h+='<div class="panel"><h3>国家默认参数 <span class="muted">(行没单独填时用;内置默认来自你的经营数据表各国行,可改;负向投入按产品差异大,请在单季明细里逐行填)</span></h3>'
+      +'<div class="tblwrap" style="max-height:40vh"><table style="min-width:0"><thead><tr><th class="l">国家</th><th>增值税率</th><th>渠长</th><th>负向投入(默认)</th><th>本币汇率(对美元)</th><th></th></tr></thead><tbody>';
+    Object.keys(cAll).sort().forEach(function(c){
+      const d=F.FIN_DRIFT_DEF[c]||{}; const o=state.finCountry[c]||{};
+      const cell=function(f,kind){ const v=o[f]!=null?o[f]:(d[f]!=null?d[f]:null); return '<td class="ov" contenteditable data-fnc="'+esc(c)+'" data-fnf="'+f+'" data-fnk="'+kind+'" title="'+(o[f]!=null?'自定义':(d[f]!=null?'内置默认(附件)':'未设'))+'"'+(o[f]!=null?' style="box-shadow:inset 0 0 0 99px var(--ov)"':'')+'>'+fmtIn(v,kind)+'</td>'; };
+      h+='<tr><td class="l">'+esc(c)+'</td>'+cell('vat','p')+cell('ch','p')+cell('neg','p')+cell('fx','n')+'<td><button class="mini fnCRst" data-c="'+esc(c)+'"'+(Object.keys(o).length?'':' disabled')+'>恢复默认</button></td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+  }
+  /* 主表 */
+  const CAP=ui.fnLimit||400;
+  const tdE=function(x,field,qi,kind,v,extra){   // 可编辑参数格
+    return '<td class="ov" contenteditable data-fnn="'+esc(x.r.name)+'" data-fncy="'+esc(x.r.country)+'" data-fnf="'+field+'"'+(qi!=null?' data-fnq="'+qi+'"':'')+' data-fnk="'+kind+'"'+(extra||'')+'>'+fmtIn(v,kind)+'</td>';
+  };
+  const srcMark=function(x,f){ const fr=x.pm.from[f]; return fr==='row'?' style="box-shadow:inset 0 0 0 99px var(--ov)" title="本行自定义"':(fr==='c'?' title="国家默认"':(fr==='set'?' title="来自设置页 RRP"':' style="color:var(--warn)" title="缺参数"')); };
+  h+='<div class="tblwrap" style="max-height:62vh"><table><thead>';
+  if(view==='all'){
+    h+='<tr><th class="l" rowspan="2">BU</th><th class="l" rowspan="2">传播名</th><th class="l" rowspan="2">国家</th>'
+      +F.FIN_Q.map(function(qq){ return '<th colspan="5">'+qq+'</th>'; }).join('')+'<th colspan="7">全年</th></tr><tr>'
+      +F.FIN_Q.map(function(){ return '<th title="季 SI(K 台)">SI</th><th title="季末库存÷(季末月SO÷该月天数)">DOS</th><th title="IF(DOS>90,季末库存/DOS×(DOS−90),0),K 台">递延</th><th title="NSIP×(SI−递延量),KUSD">收入</th><th title="(NSIP×(1−其他成本率)−Floor)÷NSIP">销毛率</th>'; }).join('')
+      +'<th>SI(K)</th><th title="四季度收入之和(照表 SUM)">收入(KUSD)</th><th title="收入×销毛率 参考">销毛额</th><th title="照表:四季度销毛率之和(=SUM(BO:BR))">销毛率Σ(照表)</th><th title="Σ销毛额÷Σ收入">加权销毛率</th><th>年底库存(K)</th><th>年底DOS</th></tr>';
+  } else {
+    h+='<tr><th class="l">BU</th><th class="l">传播名</th><th class="l">国家</th><th>SO(K)</th><th>SI(K)</th><th>季末库存(K)</th><th title="季末库存÷(季末月SO÷该月天数)">DOS</th>'
+      +'<th title="可改;默认取设置页 RRP">RRP(本币)</th><th title="可改;默认国家参数">增值税率</th><th title="可改;默认国家参数">渠长</th><th title="RRP/(1+增值税率)×(1−渠长)">SIP</th><th title="可改;默认国家参数(附件上一代产品投入)">负向投入</th><th title="可改;默认国家参数">汇率</th><th title="SIP×(1−负向投入)/汇率">NSIP(USD)</th>'
+      +'<th title="IF(DOS>90,季末库存/DOS×(DOS−90),0)">递延量(K)</th><th title="NSIP×递延量">递延金额(KUSD)</th><th title="SI−递延量">确认量(K)</th><th title="NSIP×(SI−递延量)">收入(KUSD)</th>'
+      +'<th title="可改;单位 USD/台">Floor(USD)</th><th title="可改;基于 NSIP,三项合计">其他成本率</th><th title="(NSIP×(1−其他成本率)−Floor)÷NSIP">销毛率</th><th title="收入×销毛率(表内无公式,参考)">销毛额(KUSD)</th><th class="l">提示</th></tr>';
+  }
+  h+='</thead><tbody>';
+  const qi=F.FIN_Q.indexOf(view);
+  rows.slice(0,CAP).forEach(function(x){
+    const y=x.c.year;
+    h+='<tr><td class="l">'+esc(x.r.bu)+'</td><td class="l ell" title="'+esc(x.r.products.join(' / '))+'">'+esc(x.r.name)+'</td><td class="l">'+esc(x.r.country)+'</td>';
+    if(view==='all'){
+      F.FIN_Q.forEach(function(qq){ const c=x.c.q[qq];
+        h+='<td>'+fmt1(c.siK)+'</td><td>'+fmtDos(c.dos)+'</td><td'+(c.defer>0?' class="dosMid"':'')+'>'+fmt1(c.defer)+'</td><td'+(c.rev!=null&&c.rev<0?' class="dosLow"':'')+' title="'+esc(c.flags.join(';'))+'">'+fmt1(c.rev)+'</td><td>'+fmtP(c.gm)+'</td>'; });
+      h+='<td>'+fmt1(y.siK)+'</td><td>'+fmt1(y.rev)+'</td><td>'+fmt1(y.gmAmt)+'</td><td>'+fmtP(y.gmSum)+'</td><td>'+fmtP(y.gmW)+'</td><td>'+fmt1(y.endInvK)+'</td><td>'+fmtDos(y.endDos)+'</td></tr>';
+    } else {
+      const c=x.c.q[view];
+      h+='<td>'+fmt1(c.soK)+'</td><td>'+fmt1(c.siK)+'</td><td>'+fmt1(c.invK)+'</td><td>'+fmtDos(c.dos)+'</td>'
+        +tdE(x,'rrp',qi,'n',c.rrp,srcMark(x,'rrp'))+tdE(x,'vat',null,'p',x.pm.vat,srcMark(x,'vat'))+tdE(x,'ch',null,'p',x.pm.ch,srcMark(x,'ch'))
+        +'<td>'+fmt1(c.sip)+'</td>'+tdE(x,'neg',qi,'p',c.neg,srcMark(x,'neg'))+tdE(x,'fx',qi,'n',c.fx,srcMark(x,'fx'))+'<td>'+fmt1(c.nsip)+'</td>'
+        +'<td'+(c.defer>0?' class="dosMid"':'')+'>'+fmt1(c.defer)+'</td><td>'+fmt1(c.deferAmt)+'</td><td'+(c.recog<0?' class="dosLow"':'')+'>'+fmt1(c.recog)+'</td><td'+(c.rev!=null&&c.rev<0?' class="dosLow"':'')+'>'+fmt1(c.rev)+'</td>'
+        +tdE(x,'zero',qi,'n',c.zero,srcMark(x,'zero'))+tdE(x,'r1',null,'p',x.pm.r1,(x.pm.r1!=null?' style="box-shadow:inset 0 0 0 99px var(--ov)"':''))+'<td>'+fmtP(c.gm)+'</td><td>'+fmt1(c.gmAmt)+'</td>'
+        +'<td class="l note">'+esc(c.flags.join(';'))+'</td></tr>';
+    }
+  });
+  h+='</tbody></table></div>';
+  if(rows.length>CAP)h+='<div class="bar"><span class="note">已显示 '+CAP+' / '+rows.length+' 行</span><button class="ghost" id="fnMore">再显示 400 行</button></div>';
+  h+='<div class="note" style="margin-top:8px"><b>公式(逐季,照经营数据表)</b>:SIP = RRP÷(1+增值税率)×(1−渠长) · NSIP = SIP×(1−负向投入)÷汇率 · 递延量 = IF(DOS>90, 季末库存÷DOS×(DOS−90), 0) · 收入(KUSD) = NSIP×(SI(K)−递延量) · 销毛率 = (NSIP×(1−其他成本率)−Floor)÷NSIP · 全年 = 四季度之和。'
+    +'量的口径 = 财经Q表(FSD 直签+音频专表+新品规划,剔下游明细),K 台;季末库存 = 季末月的月末库存;<b>季度 DOS = 季末库存÷(季末月 SO÷该月天数)</b>(与推演编辑季列一致)。'
+    +'<br><b>待你拍板的口径点</b>:① DOS=∞(有库存无 SO)按公式极限 = 全部季末库存递延;② 递延量大于当季 SI 时收入为负(照表,不截 0);③ 销毛率全年照表是四季度之和,旁边另给收入加权值;④ 销毛额及之后的费用/贡献利润列表内无公式,只给 收入×销毛率 参考;⑤ 空白渠长/其他成本率按 0(照 Excel 空格)。</div>';
+  el.innerHTML=h;
+  /* 绑定 */
+  const yS=$('#fnY'); if(yS)yS.onchange=function(){ ui.fnY=+this.value; render(); };
+  bindMs(el,'fnBU',function(a){ ui.fnBU=a; render(); });
+  bindMs(el,'fnC',function(a){ ui.fnC=a; render(); });
+  const qI=$('#fnQ'); if(qI)qI.oninput=function(){ ui.fnQ=this.value; render(); };
+  const nz=$('#fnNZ'); if(nz)nz.onchange=function(){ ui.fnNonZero=this.checked; render(); };
+  el.querySelectorAll('button[data-fnv]').forEach(function(b){ b.onclick=function(){ ui.fnView=b.dataset.fnv; render(); }; });
+  const bi=$('#fnImp'); if(bi)bi.onclick=function(){ ui.fnImpOpen=!ui.fnImpOpen; ui.fnImpMsg=''; render(); };
+  const bc=$('#fnCty'); if(bc)bc.onclick=function(){ ui.fnCtyOpen=!ui.fnCtyOpen; render(); };
+  const mb=$('#fnMore'); if(mb)mb.onclick=function(){ ui.fnLimit=CAP+400; render(); };
+  const ff=$('#fnFile'); if(ff)ff.onchange=function(){ const f=this.files&&this.files[0]; if(!f)return; const rd=new FileReader(); rd.onload=function(){ const ta=$('#fnTxt'); if(ta)ta.value=String(rd.result||''); }; rd.readAsText(f,'utf-8'); };
+  const bp=$('#fnParse'); if(bp)bp.onclick=function(){
+    const ta=$('#fnTxt'); const txt=ta?ta.value:'';
+    if(!txt.trim()){ alert('先粘贴经营数据表内容或选文件。'); return; }
+    const parsed=F.parseFinParamsText(txt);
+    if(parsed.error){ ui.fnImpMsg='解析失败:'+parsed.error; render(); return; }
+    const r=finApplyImport(parsed,all);
+    ui.fnImpMsg='已写入 '+r.n+' 行参数(与本页行对上 '+r.matched+' 行'+(r.unmatched.length?';对不上 '+r.unmatched.length+' 行:'+r.unmatched.slice(0,8).join('、')+(r.unmatched.length>8?'…':''):'')+';国家默认新增 '+r.countries+' 国;列定位 '+r.cols.shape+')';
+    render();
+  };
+  const be=$('#fnExp'); if(be)be.onclick=function(){
+    const H=['BU','传播名','国家'],data=[];
+    if(view==='all'){
+      F.FIN_Q.forEach(function(qq){ H.push(qq+' SI(K)',qq+' DOS',qq+' 递延量(K)',qq+' 收入(KUSD)',qq+' 销毛率'); });
+      H.push('全年SI(K)','全年收入(KUSD)','全年销毛额(KUSD,参考)','全年销毛率Σ(照表)','加权销毛率','年底库存(K)','年底DOS');
+      rows.forEach(function(x){ const y=x.c.year; const row=[x.r.bu,x.r.name,x.r.country];
+        F.FIN_Q.forEach(function(qq){ const c=x.c.q[qq]; row.push(+c.siK.toFixed(3),c.dos==null?'':(c.dos===Infinity?'∞':c.dos),+c.defer.toFixed(3),c.rev==null?'':+c.rev.toFixed(3),c.gm==null?'':+c.gm.toFixed(4)); });
+        row.push(+y.siK.toFixed(3),y.rev==null?'':+y.rev.toFixed(3),y.gmAmt==null?'':+y.gmAmt.toFixed(3),y.gmSum==null?'':+y.gmSum.toFixed(4),y.gmW==null?'':+y.gmW.toFixed(4),+y.endInvK.toFixed(3),y.endDos==null?'':(y.endDos===Infinity?'∞':y.endDos));
+        data.push(row); });
+    } else {
+      H.push('SO(K)','SI(K)','季末库存(K)','DOS','RRP','增值税率','渠长','SIP','负向投入','汇率','NSIP','递延量(K)','递延金额(KUSD)','确认量(K)','收入(KUSD)','Floor','其他成本率','销毛率','销毛额(KUSD,参考)','提示');
+      rows.forEach(function(x){ const c=x.c.q[view];
+        data.push([x.r.bu,x.r.name,x.r.country,+c.soK.toFixed(3),+c.siK.toFixed(3),+c.invK.toFixed(3),c.dos==null?'':(c.dos===Infinity?'∞':c.dos),c.rrp==null?'':c.rrp,c.vat,c.ch==null?'':c.ch,c.sip==null?'':+c.sip.toFixed(3),c.neg==null?'':c.neg,c.fx==null?'':c.fx,c.nsip==null?'':+c.nsip.toFixed(4),
+          +c.defer.toFixed(3),c.deferAmt==null?'':+c.deferAmt.toFixed(3),+c.recog.toFixed(3),c.rev==null?'':+c.rev.toFixed(3),c.zero==null?'':c.zero,c.rates,c.gm==null?'':+c.gm.toFixed(4),c.gmAmt==null?'':+c.gmAmt.toFixed(3),c.flags.join(';')]); });
+    }
+    exportTableRaw('产品经营-'+endYear+'-'+(view==='all'?'四季总览':view+'明细'),H,data);
+  };
+  /* 参数格编辑(行级) */
+  el.querySelectorAll('td[data-fnn]').forEach(function(td){
+    td.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); td.blur(); } });
+    td.addEventListener('blur',function(){
+      const d=td.dataset; const t=(td.textContent||'').trim();
+      const v=t===''?null:(d.fnk==='p'?F.finRate(t):F.finNum(t));
+      if(t!==''&&v==null){ render(); return; }
+      finSet(d.fnn,d.fncy,d.fnf,d.fnq!=null?+d.fnq:null,v);
+      render();
+    });
+  });
+  /* 国家默认编辑 */
+  el.querySelectorAll('td[data-fnc]').forEach(function(td){
+    td.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); td.blur(); } });
+    td.addEventListener('blur',function(){
+      const d=td.dataset; const t=(td.textContent||'').trim();
+      const v=t===''?null:(d.fnk==='p'?F.finRate(t):F.finNum(t));
+      if(t!==''&&v==null){ render(); return; }
+      const o=state.finCountry[d.fnc]||(state.finCountry[d.fnc]={});
+      if(v==null)delete o[d.fnf]; else o[d.fnf]=v;
+      if(!Object.keys(o).length)delete state.finCountry[d.fnc];
+      finGen++; saveState(); render();
+    });
+  });
+  el.querySelectorAll('.fnCRst').forEach(function(b){ b.onclick=function(){ delete state.finCountry[b.dataset.c]; finGen++; saveState(); render(); }; });
+}

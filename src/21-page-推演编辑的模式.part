@@ -1,0 +1,45 @@
+/* ===== 推演编辑的模式(2026-09-10 看板收敛 阶段4b)=====
+   推演明细 / 推演汇总 / 月末DOS 三个页签,看的都是同一批推演结果的不同切面,过去要在四个页签之间来回跳。
+   现在并进推演编辑:顶部一排模式按钮,矩阵是默认模式,其余三个把原函数渲染到子容器——数值与交互全部原样,
+   门禁断言每个模式与被吸收的旧页逐格相同。矩阵本体一行未改。 */
+const PV_MODES=[
+  ['grid','拍数矩阵','任意层级 SI/SO/库存/DOS 四行矩阵,可直接拍数'],
+  ['summary','汇总','产品线→产品→国家→渠道 四层聚合,含分月与各月末DOS'],
+  ['monthend','月末风险','单元平铺看各月末 DOS,按红线标色'],
+  ['detail','单元明细','单个渠道×型号的逐周 SI/ST/SO/库存,与推演方式面板']
+];
+function pvModesList(){ return soTool()?PV_MODES.filter(function(x){ return x[0]==='grid'||x[0]==='detail'; }):PV_MODES; }
+/* SO 工具的指标开关(2026-09-15 用户):SO 常显;SI / 库存 / DOS 勾哪个显哪个,默认都不显 */
+const PV_ROWS_OPT=[['si','SI要货'],['inv','库存'],['dos','DOS']];
+function pvRowsOn(){ const o=state.ui.pvRows||{}; return {si:!!o.si,inv:!!o.inv,dos:!!o.dos}; }
+function pvRowsBarHtml(){
+  if(!soTool()||pvMode()!=='grid')return '';
+  const on=pvRowsOn();
+  return '<span class="note" style="margin-left:14px">同屏指标：<b>SO</b></span>'+PV_ROWS_OPT.map(function(x){
+    return '<button class="'+(on[x[0]]?'act':'ghost')+' mini" data-pvrow="'+x[0]+'" title="勾上后每个层级多显示一行 '+x[1]+'">'+x[1]+'</button>'; }).join('');
+}
+function pvMode(){ const m=state.ui.pvMode; return pvModesList().some(function(x){ return x[0]===m; })?m:'grid'; }
+function pvModeClear(){ const h=document.getElementById('pvModeBody'); if(h)h.innerHTML=''; }   // 走旧页签时清空子容器,同 id 控件不许有两份
+function pvModeBarHtml(){
+  return '<div class="bar" id="pvModeBar">'+pvModesList().map(function(m){
+    return '<button class="'+(pvMode()===m[0]?'act':'ghost')+'" data-pvmode="'+m[0]+'" title="'+m[2]+'">'+m[1]+'</button>';
+  }).join('')+pvRowsBarHtml()+'<span class="note">'+(soTool()?'拍数在「拍数矩阵」· 单元明细看逐周来路':'同一批推演结果的四个切面 · 拍数在「拍数矩阵」')+'</span></div>';
+}
+function bindPvModeBar(el){
+  el.querySelectorAll('[data-pvmode]').forEach(function(b){
+    b.onclick=function(){ state.ui.pvMode=b.dataset.pvmode; render(); }; });
+  el.querySelectorAll('[data-pvrow]').forEach(function(b){
+    b.onclick=function(){ if(!state.ui.pvRows)state.ui.pvRows={}; state.ui.pvRows[b.dataset.pvrow]=!state.ui.pvRows[b.dataset.pvrow]; render(); }; });
+}
+/* 非矩阵模式:只出模式条 + 子容器,交给原函数渲染 */
+function renderPivotModes(){
+  const el=$('#view-pv');
+  const m=pvMode();
+  el.innerHTML=pvModeBarHtml()+'<div id="pvModeBody"></div>';
+  bindPvModeBar(el);
+  const body=$('#pvModeBody');
+  ['#view-summary','#view-monthend','#view-detail'].forEach(function(id){ const s2=$(id); if(s2)s2.innerHTML=''; });
+  if(m==='summary')renderSummary(body);
+  else if(m==='monthend')renderMonthEnd(body);
+  else renderDetail(body);
+}

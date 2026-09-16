@@ -1,0 +1,22 @@
+/* ===== 通用:重渲染时保持 details 折叠状态与输入焦点（填表不被打断） ===== */
+function snapshotOpenState(el){
+  const open={};
+  el.querySelectorAll('details[data-sec]').forEach(function(d){ if(d.open)open[d.dataset.sec]=1; });
+  const ae=document.activeElement;
+  const focusAttr=(ae&&ae.tagName==='INPUT'&&ae.dataset)?
+    (ae.dataset.exmodel!=null?['data-exmodel',ae.dataset.exmodel]
+     :(ae.dataset.exline!=null?['data-exline',ae.dataset.exline]
+     :(ae.dataset.chidx!=null?['data-chidx',ae.dataset.chidx]:null))):null;
+  return {open:open,focus:focusAttr};
+}
+function restoreOpenState(el,snap){
+  if(!snap)return;
+  el.querySelectorAll('details[data-sec]').forEach(function(d){ if(snap.open[d.dataset.sec])d.open=true; });
+  if(snap.focus){
+    try{
+      const inp=el.querySelector('input['+snap.focus[0]+'="'+CSS.escape(snap.focus[1])+'"]');
+      if(inp){ inp.focus({preventScroll:true}); const v=inp.value; inp.value=''; inp.value=v; }
+    }catch(e){}
+  }
+}
+

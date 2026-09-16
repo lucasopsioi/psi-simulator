@@ -1,0 +1,82 @@
+/* ===== 通用:风险勾选（人工圈选风险产品→导出清单;勾选随方案持久保存） ===== */
+/* FSD 库存页 + 音频专板 两处勾选行合并为一张表(音频与其他产业底表分离,免手工拼表) */
+function exportMergedRiskSel(){
+  const rowsF=(D&&state.riskSel.fsd)?Object.keys(state.riskSel.fsd).map(function(k){ return D.byKey.get(k); }).filter(Boolean):[];
+  const rowsA=(Da&&state.riskSel.audio)?Object.keys(state.riskSel.audio).map(function(k){ return Da.byKey.get(k); }).filter(Boolean):[];
+  if(!rowsF.length&&!rowsA.length){ alert('FSD 库存页与音频专板均无勾选行。请先在两处表格勾选需要导出的产品。'); return; }
+  const headers=['数据源','国家','账户/客户','产品线','产品','型号','INV1','INV','近4周均SO','当前DOS','系统DOS','年内ST','预计可ST','年底预剩INV1','ST判定','状态','最近报量周'];
+  const data=[];
+  rowsF.forEach(function(it){ const u=it.u,s=it.stp;
+    const v=ST_VERDICT[s.verdict]?ST_VERDICT[s.verdict][0]:'';
+    const st=it.exempt?'免推演':(it.cls&&it.cls.status==='stock'?'纯库存管控':((!it.dec&&it.cls.status!=='auto')?'待确认':''));
+    data.push(['FSD',u.country,u.account,u.line,u.product,u.model,
+      it.cur.curInv1||0,it.cur.curInv||0,
+      it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'',
+      it.cur.dosCalc!=null?it.cur.dosCalc:'',
+      it.cur.sysDos!=null?it.cur.sysDos:'',
+      s.ytdST,s.canST,s.endLeft,v,st,'']);
+  });
+  const yA=audioStore?F.periodY(audioStore.maxPeriod):0;
+  rowsA.forEach(function(it){ const u=it.u;
+    let ytd=0;
+    if(it.histST)it.histST.forEach(function(v2,p){ if(F.periodY(p)===yA&&v2>0)ytd+=v2; });
+    data.push(['音频专表',u.country,u.account,u.line,u.product,u.model,
+      it.cur.curInv1||0,it.cur.curInv||0,
+      it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'',
+      it.cur.dosCalc!=null?it.cur.dosCalc:((it.cur.curInv>0)?'∞':''),
+      it.cur.sysDos!=null?it.cur.sysDos:'',
+      Math.round(ytd),'','','',it.ignored?'已豁免':'',
+      it.cur.lastSOP?F.weekLabel(it.cur.lastSOP):'']);
+  });
+  exportTable('风险勾选清单-FSD+音频合并',headers,data);
+}
+function riskBarHtml(kind){
+  const n=Object.keys(state.riskSel[kind]||{}).length;
+  return '<span style="display:inline-flex;gap:6px;align-items:center;background:var(--chip);border-radius:8px;padding:4px 10px">'
+    +'<span class="note">已勾选 <b id="riskCnt-'+kind+'">'+n+'</b> 项</span>'
+    +'<button class="ghost" data-riskexp="'+kind+'">导出勾选清单</button>'
+    +((kind==='fsd'||kind==='audio')
+      ?'<button class="ghost" data-riskmerge="1" title="FSD 库存页与音频专板两处勾选行合并为一张表(含数据源列)">导出勾选·FSD+音频合并</button>':'')
+    +'<button class="mini" data-riskclr="'+kind+'">清空勾选</button></span>';
+}
+function riskCkHtml(kind,key){
+  const on=!!(state.riskSel[kind]&&state.riskSel[kind][key]);
+  return '<td class="l noSort" style="width:26px"><input type="checkbox" class="riskCk" data-kind="'+kind+'" data-k="'+esc(key)+'"'+(on?' checked':'')+'></td>';
+}
+function riskThHtml(kind){
+  return '<th class="l noSort" title="全选 / 取消当前筛选结果" style="width:26px"><input type="checkbox" class="riskAll" data-kind="'+kind+'"></th>';
+}
+function bindRiskSel(el,kind,rowsKeys,exportFn){
+  el.querySelectorAll('input.riskCk[data-kind="'+kind+'"]').forEach(function(ck){
+    ck.addEventListener('click',function(e){ e.stopPropagation(); });
+    ck.addEventListener('change',function(){
+      const k=ck.dataset.k;
+      if(ck.checked)state.riskSel[kind][k]=1; else delete state.riskSel[kind][k];
+      const c=document.getElementById('riskCnt-'+kind);
+      if(c)c.textContent=Object.keys(state.riskSel[kind]).length;
+      saveState();
+    });
+  });
+  const all=el.querySelector('input.riskAll[data-kind="'+kind+'"]');
+  if(all){
+    all.addEventListener('click',function(e){ e.stopPropagation(); });
+    all.addEventListener('change',function(){
+      if(all.checked)rowsKeys.forEach(function(k){ state.riskSel[kind][k]=1; });
+      else rowsKeys.forEach(function(k){ delete state.riskSel[kind][k]; });
+      saveState(); render();
+    });
+  }
+  const expBtn=el.querySelector('button[data-riskexp="'+kind+'"]');
+  if(expBtn)expBtn.onclick=function(){
+    const keys=Object.keys(state.riskSel[kind]);
+    if(!keys.length){ alert('尚未勾选任何产品，请先在最左列勾选。'); return; }
+    exportFn(keys);
+  };
+  const clrBtn=el.querySelector('button[data-riskclr="'+kind+'"]');
+  if(clrBtn)clrBtn.onclick=function(){
+    if(!confirm('清空全部勾选？'))return;
+    state.riskSel[kind]={}; saveState(); render(); };
+  const mBtn=el.querySelector('button[data-riskmerge]');
+  if(mBtn)mBtn.onclick=function(){ exportMergedRiskSel(); };
+}
+

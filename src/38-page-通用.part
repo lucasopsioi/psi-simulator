@@ -1,0 +1,77 @@
+/* ===== 通用:折线图（纯SVG,折线/平滑切换,悬停读数） =====
+   series:[{name,color,dash,vals:[num|null],right}]  xs:[period,...] */
+function renderChartInto(host,xs,series,smooth){
+  if(!xs.length){ host.innerHTML=''; return; }
+  const W=Math.max(660,xs.length*14+100),H=250,pl=48,pr=52,pt=14,pb=30;
+  let lMax=0,rMax=0;
+  series.forEach(function(s){ s.vals.forEach(function(v){ if(v==null)return;
+    if(s.right){ if(v>rMax)rMax=v; } else { if(v>lMax)lMax=v; } }); });
+  lMax=lMax||1; rMax=rMax||1;
+  const X=function(i){ return pl+(W-pl-pr)*(xs.length<=1?0:i/(xs.length-1)); };
+  const Y=function(v,r){ const m=r?rMax:lMax; return pt+(H-pt-pb)*(1-v/m); };
+  const path=function(s){
+    let d='',run=[];
+    const flush=function(){
+      if(run.length<2){ run=[]; return; }
+      if(!smooth){ run.forEach(function(pt2,j){ d+=(j?'L':'M')+pt2[0].toFixed(1)+' '+pt2[1].toFixed(1); }); }
+      else {
+        d+='M'+run[0][0].toFixed(1)+' '+run[0][1].toFixed(1);
+        for(let j=0;j<run.length-1;j++){
+          const p0=run[Math.max(0,j-1)],p1=run[j],p2=run[j+1],p3=run[Math.min(run.length-1,j+2)];
+          const c1=[p1[0]+(p2[0]-p0[0])/6,p1[1]+(p2[1]-p0[1])/6];
+          const c2=[p2[0]-(p3[0]-p1[0])/6,p2[1]-(p3[1]-p1[1])/6];
+          d+='C'+c1[0].toFixed(1)+' '+c1[1].toFixed(1)+' '+c2[0].toFixed(1)+' '+c2[1].toFixed(1)+' '+p2[0].toFixed(1)+' '+p2[1].toFixed(1);
+        }
+      }
+      run=[];
+    };
+    s.vals.forEach(function(v,i){ if(v==null){ flush(); return; } run.push([X(i),Y(v,s.right)]); });
+    flush();
+    return d;
+  };
+  let g='';
+  for(let i=1;i<=4;i++){ const y=pt+(H-pt-pb)*i/4;
+    g+='<line x1="'+pl+'" y1="'+y+'" x2="'+(W-pr)+'" y2="'+y+'" stroke="var(--line)" stroke-width="1"/>'; }
+  const step=Math.max(1,Math.ceil(xs.length/16));
+  let xl='';
+  xs.forEach(function(p,i){ if(i%step)return;
+    xl+='<text x="'+X(i).toFixed(1)+'" y="'+(H-8)+'" font-size="10" fill="var(--sub)" text-anchor="middle">'
+      +String(F.periodY(p)).slice(2)+F.weekLabel(p)+'</text>'; });
+  let yl='';
+  for(let i=0;i<=4;i++){ const y=pt+(H-pt-pb)*i/4;
+    yl+='<text x="'+(pl-6)+'" y="'+(y+3)+'" font-size="10" fill="var(--sub)" text-anchor="end">'+F.fmt(Math.round(lMax*(1-i/4)))+'</text>';
+    if(rMax>1)yl+='<text x="'+(W-pr+6)+'" y="'+(y+3)+'" font-size="10" fill="var(--sub)">'+F.fmt(Math.round(rMax*(1-i/4)))+'</text>'; }
+  let paths='';
+  series.forEach(function(s){ const d=path(s); if(!d)return;
+    paths+='<path d="'+d+'" fill="none" stroke="'+s.color+'" stroke-width="2"'+(s.dash?' stroke-dasharray="'+s.dash+'"':'')+' opacity="'+(s.right?0.55:0.95)+'"/>'; });
+  const legend=series.map(function(s){
+    return '<span style="margin-right:14px"><i style="display:inline-block;width:14px;height:3px;background:'+s.color+';vertical-align:3px'+(s.dash?';opacity:.7':'')+'"></i> '+esc(s.name)+(s.right?'(右轴)':'')+'</span>'; }).join('');
+  host.innerHTML='<div class="bar" style="margin-bottom:4px"><span class="note">'+legend+'</span>'
+    +'<label class="note" style="margin-left:auto"><input type="checkbox" class="chartSmoothChk"'+(smooth?' checked':'')+'> 平滑曲线</label></div>'
+    +'<div style="overflow-x:auto;position:relative" class="chartWrap">'
+    +'<svg width="'+W+'" height="'+H+'" style="display:block">'
+    +g+yl+xl+paths
+    +'<line class="hoverLine" x1="0" y1="'+pt+'" x2="0" y2="'+(H-pb)+'" stroke="var(--accent)" stroke-width="1" opacity="0"/>'
+    +'</svg><div class="chartTip" style="position:absolute;display:none;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;pointer-events:none;z-index:9;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25)"></div></div>';
+  const wrap=host.querySelector('.chartWrap'),svg=wrap.querySelector('svg'),
+        hl=svg.querySelector('.hoverLine'),tip=wrap.querySelector('.chartTip');
+  svg.addEventListener('mousemove',function(ev){
+    const r=svg.getBoundingClientRect();
+    const mx=ev.clientX-r.left;
+    let idx=Math.round((mx-pl)/((W-pl-pr)/(xs.length<=1?1:xs.length-1)));
+    idx=Math.max(0,Math.min(xs.length-1,idx));
+    const x=X(idx);
+    hl.setAttribute('x1',x); hl.setAttribute('x2',x); hl.setAttribute('opacity','0.6');
+    let t='<b>'+F.periodY(xs[idx])+' '+F.weekLabel(xs[idx])+'</b> '+F.weekRangeLabel(xs[idx]);
+    series.forEach(function(s){ const v=s.vals[idx];
+      t+='<br><span style="color:'+s.color+'">●</span> '+esc(s.name)+' '+(v==null?'—':F.fmt(Math.round(v))); });
+    tip.innerHTML=t;
+    tip.style.display='block';
+    tip.style.left=Math.min(x+12,W-170)+'px';
+    tip.style.top='8px';
+  });
+  svg.addEventListener('mouseleave',function(){ hl.setAttribute('opacity','0'); tip.style.display='none'; });
+  const chk=host.querySelector('.chartSmoothChk');
+  chk.onchange=function(){ state.chartSmooth=chk.checked; saveState(); renderChartInto(host,xs,series,chk.checked); };
+}
+

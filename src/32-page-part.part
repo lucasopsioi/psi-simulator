@@ -1,0 +1,1052 @@
+/* ============================================================
+   AI 解读:专家 Agent + 编排(移植自 Salesboard ai-orchestrator,按本软件口径重写专家与工具)
+   两个专家:取数口径专家(数据从哪来/公式是什么) + 推演解释专家(某月 SO 为什么高/低,怎么算出来的)。
+   核心设计:
+   · 解释的地基是**确定性因子分解**(aiExplainCell,纯函数):把任何 型号×国家×月 的推演值拆成
+     手工拍数/平销×增速×周季节/爆发系数/锁量压缩/断供钳制/退市衰减/低置信回退 —— 不配模型也能查;
+   · LLM(本地 LM Studio / DeepSeek / Claude,设置页配)只负责自然语言问答与叙述,所有数字必须来自工具返回;
+   · 溯源硬门禁:答案里的数字回查工具返回原文,查无出处替换为「?」(编造数字在代码层拦死);
+   · 问答内容绝不落盘;默认端点 127.0.0.1 本机模型,数据不出本机。
+   ============================================================ */
+const AI_BUDGET={maxToolRounds:5,maxToolCallsTotal:16,reqChars:12000,snapshotChars:1600,
+  toolResultChars:4000,toolResultRows:24,subTokens:8000,synthTokens:8000};
+/* ---- 全局口径卡(两个专家都必须遵守) ---- */
+const AI_CALIBER_GLOBAL=[
+  '【全局口径·必须遵守】',
+  '1 SO/SI 权威源 = FSD直签全集(剔除音频行) + 音频专表;下游渠道表只是渠道明细,任何总量都不并入它,否则重复计数。',
+  '2 周→月归属按该 ISO 周周四所在月;月末库存取月末周;DOS=库存÷日均SO(近4周窗,音频跳零),月末DOS=月末库存÷当时日均。',
+  '3 音频线 SO=0 是「未报量」不是零销,一律跳过;其它产品线 0 是真实零销。缺数是 null 不补零。',
+  '4 手工拍数(ovSO/ovSI)优先级最高,永不被公式覆盖;「恢复公式」才会清除。锁量只压规则SI,手工SI原样保留。',
+  '5 所有数字必须来自工具返回;查不到就说「数据未包含」,绝不编造、绝不凭记忆填值;用户口头给的数字未经工具核实不作事实。',
+  '6 免推演(低库存)与纯库存管控(无SO列)单元不参与推演,聚合口径与看板一致。',
+  '7 工具参数取值必须先用 options 查到精确写法,拼错会静默返回空。',
+].join('\n');
+/* ---- 口径文档(检索用分节;取数口径专家的事实源) ---- */
+const AI_CALIBER_DOC=[
+  {id:'src',t:'数据源与权威口径',x:'三张底表:FSD表(直签渠道全集,含真FSD/其它直签/部分间接,音频行也会出现)、下游渠道表(FSD下面的间接渠道明细)、音频专表(音频线人工报量,该线权威源)。总量口径=FSD(剔音频行)+音频专表;下游表只看渠道明细与间接渠道监控,不并入总量。第四源=国家SO目标回填表(folder4),只用于目标跟踪。'},
+  {id:'month',t:'周月归属与月末',x:'周→月按该ISO周的周四所在月(monthOfP);月末库存=该自然月最后一天所在ISO周的库存;跨年周归当年最后一周。他的销量推演Excel里DOS公式用28/35天,正是4或5个ISO周×7天,与本软件同口径。'},
+  {id:'dos',t:'DOS 计算与标红',x:'当前DOS=当前库存÷日均SO(日均=近4个有效SO周均值÷7,音频跳零);月末DOS=推演月末库存÷当时滚动日均。标红规则:通用红线(默认200/琥珀150)+9-12月各自红线,设置页可调,全看板生效。Eshop渠道不参与DOS考核。系统底表自带DOS列一律不用。'},
+  {id:'bl',t:'平销引擎(baselineOf)',x:'对每个 渠道×型号 的历史SO剔除:首销期(默认8周)/真衰退尾段/大促周(国家周历∪渠道大促∪周系数>1.25)/缺货周(双条件:SO<0.7×中位 且 周初库存<2×中位)后取中位数b̂,加 Theil-Sen 周漂移(限-3%~+1%);置信:有效周≥10高/6-9中/<6低,低置信自动回退近4周均。型号平销Σ=权威源各单元b̂求和。'},
+  {id:'fc',t:'未来SO推演公式',x:'每周SO=基准×(1+漂移)^i×周季节系数k×增速g;基准=平销b̂(或近4周均/去年同周,按单元决策);g优先级:单元手工>型号增速>系族>产品线>全局大盘;k来自分层季节系数(可在系数页微调)。手工拍数(ovSO)直接覆盖该周。'},
+  {id:'burst',t:'爆发系数',x:'爆发系数=近52周大促周均销÷平销周均销(首销期剔除,夹逼1-10)。总控里改写后,大促周(国家周历∪渠道大促周)的推演SO=平销×爆发系数,替代周季节系数k;不改写则沿用k。'},
+  {id:'lock',t:'锁量',x:'锁量按 产品||型号:大区总量(全生命周期 AATP)+可选国家配额。已发=生命周期累计实际SI(从该型号第一次有SI的周起跨年累计到最后一次SI,权威源=FSD直签+音频专表,2026-09-01 纠正:此前只累计本年);余量=总量-已发。两层压缩:先按国家配额压该国规则SI,再按大区总余量整体压;手工SI永不压。压缩后重跑模拟并开capSO:SO≤期初库存+当周到货,超出即断供标记(chips 断供@周)。2026-09-02 贯通(用户口径:FSD=直接渠道加总=总量,下游=其拆分,下游从直接渠道自有库存拿货):下游同型号今年自动Purchase总量 ≤ min(锁量余量[勾选后+直接渠道自有库存INV1], 锁量总量−下游生命周期累计Purchase)(2026-09-02 用户:Purchase 就是 SI,不能大于剩余待SI;锁量总量是全生命周期天花板,包含下游库存与INV1;填了国家配额先按该国压;下游底表型号与 FSD 对不上的单元按该产品全部锁量型号的预算合计兜底);明年延伸段 FSD+音频按 余量−今年已排、下游按 INV1+余量−今年已排 压缩并重链月末库存,pv明年列/财经Q表/底表同一份。对账机制见下游渠道页「FSD ⇄ 下游 对账」。'},
+  {id:'si',t:'SI补货推演',x:'FSD源:DOS低于触发线(补货参数trigger)时补到目标DOS(target),按渠道补货周期与学习到的补货规律;间接渠道停自动补货(仍可手工)。下游/音频 Purchase 也自动推演(2026-09-01 起):补货策略先按渠道历史学习判型——水位型(该渠道历史每到某绝对库存台数就SI一批,触发看库存台数,补到历史进货后水位)或DOS门槛型(DOS<trigger补到target),判型看哪个信号在历史SI事件上更集中;回退链=渠道×型号自身>同渠道×同产业聚合(各产业策略不同不拉齐,如同一渠道音频DOS90/手机DOS60/穿戴DOS120)>产品线默认;整个历史仅1-2次显著SI的一次性铺货渠道停用自动补货,在待确认页单独审视拍板(维持一次性/按规则补);全年各月不卡固定DOS线,按该渠道×型号回测的历史月末画像(各历史年1-12月末DOS中位;回退 同渠道×同产业→该产业去年实际→无约束)做「月末补到位」:高于画像不进货,低于画像按剩余周均摊补上,水位型渠道用绝对库存水平——大促前囤货、大促后消化的 SI 节奏由此复现;画像按该渠道正常经营水位夹紧(平销周库存中位=平销库存,÷平销日均=平销DOS,月末只许在平销DOS 0.6~1.5 倍内浮动),自动进货后库存不超 平销库存×1.5 / 平销DOS×1.5×前瞻需求(至少留30天);补货看接下来 8 周计划SO(前瞻需求),不用全年平销或被大促放大的滚动均值;三源单周进货不超该渠道历史单周最大进货×1.2(渠道没吃过的量客户没预算);手拍 SO 会按 拍值÷公式值 的比例承接到其后各期直到下一次拍数(含延伸段);FSD直签仍走设置页年末收官梯度(要货管理纪律);间接渠道=下游渠道(同一概念,2026-09-01 用户拍板):FSD表内标记为间接的单元与下游表单元同口径——同款学习链推演其进货(策略判型/月末画像/平销水位/前瞻需求/进货能力上限);末次SI后停购,手拍覆盖优先;音频受锁量余量约束(锁量总量扣除FSD未来SI后的余量)。月度SI=该月各周SI合计。锁量与EOL会钳制SI。'},
+  {id:'eol',t:'生命周期退市',x:'末次SI周(eolSI)后停购,SO按几何衰减ρ(从历史退市品学习,系族>线>全局);退市库存不清零,按残值水位(学习值,兜底免推演阈值)×1.5告警。承接:新品接量=老品让出量×0.7。'},
+  {id:'ov',t:'手工拍数与恢复',x:'任何页拍的SO/SI都写入 ovSO/ovSI(单元×周),全局生效且永不被公式覆盖。总控/汇总的月度拍数按现值占比守恒分配到 单元×周(总控还支持国家权重两层分配)。恢复公式=清除对应手工;Excel式选区也有批量恢复。'},
+  {id:'np',t:'新品规划',x:'新品是虚拟单元,与底表物理隔离:锚品渠道级平销×缩放(+承接),首SI周逐渠道可改,起量=手设>历史学习>类型默认,大促上市加成α1.8/首批×1.3;上市4周自动复盘,偏差>30%红提示。'},
+  {id:'target',t:'国家SO目标闭环',x:'目标表(第四源)口径:月底库存=上月底-该月目标;月底DOS=月底库存÷(该月目标/28)。跟踪:已结束月看达成与实际DOS vs 承诺,进行中月看时间进度;年底按系族基线红线。'},
+  {id:'budget',t:'预算底表与销量长表',x:'预算底表:单元×月长表(17列),今年=看板推演原样,明年=平销外推+轻补货循环,SUMIFS进年度预算表。销量推演长表:列位对齐「月度SO实际数」(F产品线/I型号/J月序列/K Measure/L QTY),历史月=底表实际,未来=权威源推演。'},
+  {id:'st',t:'ST口径',x:'历史ST由INV1变动推导(上周INV1+本周SI-本周INV1),底表自带ST列忽略;FSD库存=单池口径(Δinv=SI-SO,ST视为内部转移)。ST→SO激活效率按电渠(当周-次周)/线下(1-3周铺货期)分窗口评估。'},
+  {id:'exempt',t:'免推演与纯库存',x:'库存≤阈值(按线/型号设置)的单元免推演:不确认/不推演/不算DOS风险。从无SO记录(整列缺失)的单元=纯库存管控(典型:纯Inventory1直签库存表),只参与库存/ST管控。'},
+  {id:'scope',t:'框表分析口径',x:'AI 分析用 scopeQuery 按问题框定底表切片:过滤(产品线/系族/产品/型号/国家)×年份×分组。今年=整月口径(已发生实际+剩余周推演,权威源);明年=预算外推(平销×漂移×季节×增速+轻补货,剔下游明细与FSD源音频行);同比%与合计由工具算好。系族用产品映射表(familyOf),分组最多两维(如 国家×型号)。'},
+].map(function(s){ return {id:s.id,title:s.t,text:'【'+s.t+'】'+s.x}; });
+/* ---- 专家注册表 ---- */
+const AI_AGENTS={
+  caliber:{id:'caliber',name:'取数与口径专家',
+    tools:['caliberDoc','meta','options','simQuery','boardState'],
+    prompt:['你是本软件(FSD PSI 推演)的取数与口径专家,负责回答「这个数从哪来/怎么算/口径是什么/为什么两处对不上」。',
+      '流程:先用 caliberDoc 检索相关口径节,再用 meta/simQuery 取实际数字佐证;口径原文优先于你的常识。',
+      '【红线】不编造公式;口径文档没写的说「未定义」;两处数字不同先解释口径差(权威源vs下游明细/当前DOS vs 月末DOS),不断言某边错。'].join('\n')},
+  forecast:{id:'forecast',name:'推演解释专家',
+    tools:['scopeQuery','explainCell','unitTrace','simQuery','nextYear','caliberDoc','options','meta','boardState'],
+    prompt:['你是推演解释与数据分析专家,负责:推演值为什么高/低、怎么算的、明年风险,以及增长/下滑的分组分析。',
+      '【框表纪律】增长/下滑/对比/占比类问题必用 scopeQuery:先按问题框定底表切片(产品或系族或产品线 × 年份 × 分组),一次取回逐组数值——',
+      '  "X系列明年对比今年增长多少,哪些国家涨哪些跌" → scopeQuery({family:"X",groupBy:"country",years:"both"}) 再 scopeQuery({family:"X",groupBy:"model",years:"both"});',
+      '  回答顺序:①总体(合计+同比)②增长的组逐个列(名字+今年/明年/同比)③下滑的组逐个列④点出主要驱动组。逐组列全,不许只给合计或用"等"省略。',
+      '解释今年某月单点值用 explainCell 因子分解(真实计算过程,不是猜测),周级细节 unitTrace;明年库存风险用 nextYear 看逐月库存/DOS 对照红线;问去年实际(如"去年10月卖了多少")用 scopeQuery({...,years:"last",groupBy:"month"}) 从历史底表取。',
+      '解释框架(按影响力排序):①手工拍数②锁量压缩/断供钳制③大促周×爆发系数④平销b̂×增速g×周季节k⑤生命周期⑥低置信回退。',
+      '【构成核查】跨年对比先看两侧「覆盖单元」数:差异明显时同比里掺着构成效应(新品上市/停售/渠道进出),要在结论里点破,必要时收窄到共同范围再比,不许把构成变化说成增长/下滑。',
+      '【红线】所有数字来自工具;同比/合计用工具返回的现成字段,不自己加总;明年是预算外推口径要注明置信低于今年;风险结论必须落到数字+红线阈值,不许拍脑袋。'].join('\n')},
+};
+const AI_ROUTES=[
+  {agent:'forecast',re:/为什么|怎么算出|解释|高了|低了|偏高|偏低|合理|异常|突然|暴涨|暴跌|推演|预测|未来|断供|锁量|爆发|风险|明年|202[7-9]|库存.{0,6}(够|多|少|压)|要货|增长|下滑|对比|同比|哪些国家|哪些型号|哪个国家|哪个型号/},
+  {agent:'caliber',re:/口径|来源|从哪|公式|定义|规则|逻辑|算法|取数|对不上|不一致|哪张表|权威|为什么.{0,6}(不含|不算|跳过)/},
+];
+function aiRoute(q){
+  const hit=[];
+  AI_ROUTES.forEach(function(r){ if(r.re.test(q)&&hit.indexOf(r.agent)<0)hit.push(r.agent); });
+  if(!hit.length)hit.push('forecast');
+  return hit.slice(0,2).map(function(id){ return {agentId:id,agent:AI_AGENTS[id],
+    subQuestion:hit.length===1?q:('围绕【'+AI_AGENTS[id].name+'】的职责回答这个问题中属于你的部分:'+q)}; });
+}
+function aiGuards(q){
+  const g=[];
+  if(/写进|写入|改成|修改|设置为|删除|清除|帮我拍/.test(q))g.push('AI 只读:不能写数改数;拍数请在总控/汇总/明细页操作(或用选区批量工具)。第一句先声明只读。');
+  if(/明年|后年|202[7-9]/.test(q))g.push('明年数字必须用 nextYear 工具取(预算外推口径),禁止自行外推或拍脑袋;回答要注明"明年为平销外推口径,置信低于今年";后年及更远说明无数据。');
+  if(/份额|市占/.test(q))g.push('本系统无市场大盘数据,算不出市场份额;不得用内部销量推算。');
+  if(/风险/.test(q))g.push('风险结论必须落到数字:逐月 月末库存/DOS 对照红线阈值(工具返回里有),给出"哪个月起越线"的具体判断,不许只说"有风险/没风险"。');
+  if(/哪些|各个|分别|逐个|每个(国家|型号|产品|月)/.test(q))g.push('用户要求逐组数据:用 scopeQuery 一次取回分组切片,把每一组(每国/每型号)的数值一行一个完整列出(名字+数值+同比),增长与下滑分开列,不许只给合计、只挑最大最小或用"等"省略;确无数据的组标"数据未包含"。');
+  if(/(增长|下滑|对比|同比).{0,12}(多少|几|%|百分)/.test(q)||/明年.{0,10}对比.{0,6}今年/.test(q))g.push('两年对比必须用 scopeQuery(years:"both") 的现成 同比% 字段,禁止自己拿两个数心算同比;今年口径=整月(实际+推演),明年=预算外推,回答要带这句口径。');
+  return g;
+}
+/* ---- 工具:全部同步读内存数据(store/D/Da/state),不落盘 ---- */
+function aiMatchUnit(u,a){
+  if(a.line&&u.line!==a.line)return false;
+  if(a.product&&u.product!==a.product)return false;
+  if(a.model!=null&&a.model!==''&&String(u.model)!==String(a.model))return false;
+  if(a.country&&u.country!==a.country)return false;
+  if(a.account&&u.account!==a.account)return false;
+  return true;
+}
+function aiAuthItems(a){
+  /* 权威源条目:[{it,src}] */
+  const out=[];
+  if(D&&D.list)D.list.forEach(function(it){ if(it.u.audio)return; if(aiMatchUnit(it.u,a))out.push({it:it,src:'fsd'}); });
+  if(Da&&Da.list)Da.list.forEach(function(it){ if(aiMatchUnit(it.u,a))out.push({it:it,src:'audio'}); });
+  return out;
+}
+function aiToolMeta(){
+  const o={当前年:store?F.periodY(store.maxPeriod):null,
+    FSD底表:store?{截至:F.weekLabel(store.maxPeriod),单元数:store.units.size}:'未载入',
+    下游渠道表:retailStore&&retailStore.units.size?{截至:F.weekLabel(retailStore.maxPeriod),单元数:retailStore.units.size,说明:'仅渠道明细,不并入总量'}:'未载入',
+    音频专表:audioStore&&audioStore.units.size?{截至:F.weekLabel(audioStore.maxPeriod),单元数:audioStore.units.size}:'未载入',
+    推演范围:D&&D.fw.length?(F.weekLabel(D.fw[0])+' 至 '+F.weekLabel(D.fw[D.fw.length-1])+'(今年年底)'):'无',
+    锁量型号数:Object.keys(state.lockQty||{}).filter(function(k){return state.lockQty[k]&&state.lockQty[k].on;}).length,
+    爆发改写数:Object.keys(state.burst||{}).length,
+    手工拍数单元数:Object.keys(state.ovSO).length+Object.keys(state.ovSI).length,
+    国家大促周历:Object.keys(F.promoWeekSet?state.promoCal||{}:{}).length+' 国改写(空=17国默认)',
+    渠道大促节点数:Object.keys(state.chanPromo||{}).length};
+  return o;
+}
+function aiToolOptions(a){
+  a=a||{};
+  const field=a.field,con=(a.contains||'').toLowerCase();
+  if(['line','product','model','country','account'].indexOf(field)<0)
+    return {error:'field 只能是 line/product/model/country/account'};
+  const set={};
+  const scan=function(stx,skipAudio){ if(!stx||!stx.units)return;
+    stx.units.forEach(function(u){ if(skipAudio&&u.audio)return;
+      if(a.product&&u.product!==a.product)return;
+      if(a.line&&u.line!==a.line)return;
+      const v=field==='model'?(u.model==null?'':String(u.model)):u[field];
+      if(v!=null&&v!=='')set[v]=1; }); };
+  scan(store,true); scan(audioStore,false);
+  let vals=Object.keys(set);
+  if(con)vals=vals.filter(function(v){ return v.toLowerCase().indexOf(con)>=0; });
+  vals.sort();
+  return {field:field,取值:vals,说明:'权威源(FSD非音频+音频专表)'};
+}
+function aiMonthCtx(){
+  const mFsd={},mAud={},monthsSet={};
+  if(D)D.fw.forEach(function(p){ const m=F.monthOfP(p); mFsd[p]=m; monthsSet[m]=1; });
+  if(Da)Da.fw.forEach(function(p){ const m=F.monthOfP(p); mAud[p]=m; monthsSet[m]=1; });
+  const months=Object.keys(monthsSet).map(Number).sort(function(a,b){return a-b;});
+  const meF={},meA={},fiF={},fiA={};
+  if(D){ D.monthEnds.forEach(function(me){ meF[me.m]=me; }); D.fw.forEach(function(p,i){ fiF[p]=i; }); }
+  if(Da){ Da.monthEnds.forEach(function(me){ meA[me.m]=me; }); Da.fw.forEach(function(p,i){ fiA[p]=i; }); }
+  return {mFsd:mFsd,mAud:mAud,months:months,meF:meF,meA:meA,fiF:fiF,fiA:fiA};
+}
+function aiToolSimQuery(a){
+  a=a||{};
+  if(!D)return {error:'尚未载入 FSD 底表'};
+  const items=aiAuthItems(a);
+  if(!items.length)return {error:'没有匹配单元;先用 options 核对取值写法',参数:a};
+  const cx=aiMonthCtx();
+  const agg=mkAggOf(items,cx.mFsd,cx.mAud,cx.months,cx.meF,cx.meA,cx.fiF,cx.fiA);
+  const yC=F.periodY(store.maxPeriod);
+  const rows=cx.months.map(function(m){
+    const inv=agg.meInv[m]; const dv=F.monthDos(inv,(agg.moFull&&agg.moFull[m])||0,F.monthDaysOf(yC,m));
+    return {月:m,推演SO:agg.mo[m]||0,推演SI:agg.moSI[m]||0,该月SO含实际:(agg.moFull&&agg.moFull[m])||0,该月天数:F.monthDaysOf(yC,m),
+      月末INV:inv!=null?inv:null,月末DOS:dv==null?null:(dv===Infinity?'∞':dv)};
+  });
+  return {单元数:agg.n,当前INV:agg.inv,当前DOS:agg.daily>0?Math.round(agg.inv/agg.daily):null,
+    近4周周均SO:agg.daily>0?Math.round(agg.daily*7):null,
+    未来SO合计:agg.futSO,未来SI合计:agg.futSI,rows:rows,
+    口径:'权威源=FSD直签(剔音频)+音频专表;月按周四归属;月末INV为月末周时点值;月末DOS=月末库存÷(该月SO(实际+推演)÷该月天数),天数=该月周数×7'};
+}
+/* ---- 确定性因子分解:某 型号(×国家)×月 的推演值是怎么算出来的 ---- */
+function aiExplainCell(a){
+  a=a||{};
+  if(!D)return {error:'尚未载入数据'};
+  if(!a.product&&!a.line&&!a.country&&!a.model&&!a.account)
+    return {error:'至少给一个过滤维度(line/product/model/country/account)'};
+  const m=+a.month;
+  if(!(m>=1&&m<=12))return {error:'month 必须是 1-12'};
+  const items=aiAuthItems(a);
+  if(!items.length)return {error:'没有匹配单元;先用 options 核对 product/model/country 写法'};
+  const cx=aiMonthCtx();
+  const mk=a.product?(a.product+'||'+(a.model==null?'':String(a.model))):null;
+  let so=0,si=0,manSO=0,manSI=0;
+  const srcCnt={},weeks=[],promoHit={},cappedW=[];
+  let blSum=0,blN=0,conf={high:0,mid:0,low:0,none:0};
+  const gSet={},kVals=[];
+  let exemptN=0,eolItems=0;
+  const yCur=F.periodY(store.maxPeriod);
+  items.forEach(function(x){
+    const it=x.it,u=it.u;
+    if(it.exempt){ exemptN++; return; }
+    if(it.bl&&it.bl.base!=null){ blSum+=it.bl.base; blN++; conf[it.bl.conf||'low']++; } else conf.none++;
+    const g=(state.growth[u.key]!=null)?{v:state.growth[u.key],src:'单元手工'}
+      :(u.model!=null&&state.modelGrowth[mkKey(u)]!=null)?{v:state.modelGrowth[mkKey(u)],src:'型号增速'}
+      :(function(){ const bg=state.bigGrowth||{},fam=F.familyOf(u.product);
+        if(fam&&bg.family&&bg.family[fam.family]!=null)return {v:bg.family[fam.family],src:'系族大盘'};
+        if(bg.line&&bg.line[u.line]!=null)return {v:bg.line[u.line],src:'产品线大盘'};
+        if(bg.global!=null)return {v:bg.global,src:'全局大盘'};
+        return {v:1,src:'默认1'}; })();
+    gSet[g.src+'×'+g.v]=(gSet[g.src+'×'+g.v]||0)+1;
+    const lc=state.lifecycle[u.product];
+    if(lc&&lc.eolSI)eolItems++;
+    const mof=x.src==='fsd'?cx.mFsd:cx.mAud;
+    const pw=promoWSetOf(u);
+    const kl=x.src==='fsd'?F.pickKLayer([D.layers],u):null;
+    ((it.sim&&it.sim.rows)||[]).forEach(function(rr,i){
+      if(mof[rr.p]!==m)return;
+      const siV=x.src==='fsd'?(rr.si||0):(rr.buy||0);
+      so+=(rr.so||0); si+=siV;
+      const f=it.fc&&it.fc[i];
+      const src=f?f.src:'?';
+      srcCnt[src]=(srcCnt[src]||0)+(rr.so||0);
+      if(src==='override')manSO+=(rr.so||0);
+      const ovi=state.ovSI[ovKey(x.src,u.key)];
+      if(ovi&&ovi[rr.p]!=null)manSI+=siV;
+      const w=F.periodW(rr.p);
+      if(pw[w])promoHit['W'+w]=1;
+      if(rr.capped)cappedW.push('W'+w);
+      if(kl&&kl.kdef&&kl.kdef[w]!=null)kVals.push(kl.kdef[w]);
+      if(weeks.length<10)weeks.push({周:F.weekLabel(rr.p),SO:rr.so||0,SI:siV,
+        SO来源:({override:'手工拍数',flat:'平销推演',self:'参考自身去年',ref:'参考去年同周',anchor:'锚定推演',base:'基础周销',avg:'近4周均',fill:'去年均值补估',tail:'自然收尾',skip:'停售'})[src]||src,
+        大促周:pw[w]?1:0,断供:rr.capped?1:0});
+    });
+  });
+  /* 对比锚点 + 进行中月的已发生实际(整月口径=实际+剩余推演,同比才对等) */
+  let lastYear=0,lyHas=false,prev=0,prevHas=false,curAct=0,curActHas=false;
+  items.forEach(function(x){
+    const u=x.it.u;
+    u.periods.forEach(function(p){
+      const y=F.periodY(p),mo2=F.monthOfP(p);
+      const w=u.weeks.get(p);
+      const ok=u.audio?(w.so!=null&&w.so>0):(w.so!=null);
+      if(!ok)return;
+      if(y===yCur-1&&mo2===m){ lastYear+=(w.so||0); lyHas=true; }
+      if(y===yCur&&mo2===m-1){ prev+=(w.so||0); prevHas=true; }
+      if(y===yCur&&mo2===m){ curAct+=(w.so||0); curActHas=true; }
+    });
+    const mof=x.src==='fsd'?cx.mFsd:cx.mAud;
+    ((x.it.sim&&x.it.sim.rows)||[]).forEach(function(rr){
+      if(mof[rr.p]===m-1){ prev+=(rr.so||0); prevHas=true; }
+    });
+  });
+  const fullSO=so+curAct;   // 整月口径:已发生实际+剩余推演(未来整月时=纯推演)
+  const wkN=Object.keys(cx.mFsd).filter(function(p){ return cx.mFsd[p]===m; }).length
+    ||Object.keys(cx.mAud).filter(function(p){ return cx.mAud[p]===m; }).length;
+  const burstOv=mk?state.burst[mk]:null;
+  const R=(mk&&__lockRes&&__lockRes[mk])||null;
+  const kAvg=kVals.length?+(kVals.reduce(function(t,v){return t+v;},0)/kVals.length).toFixed(2):null;
+  const notes=[];
+  if(manSO>0)notes.push('手工拍数占 SO '+Math.round(manSO/Math.max(1,so)*100)+'%('+F.fmt(manSO)+' 台)——这是用户自己拍的,不是公式算的');
+  if(Object.keys(promoHit).length)notes.push('该月命中大促周:'+Object.keys(promoHit).join('/')
+    +(burstOv!=null?(';爆发系数改写×'+burstOv+' 生效(大促周=平销×'+burstOv+')'):';未改写爆发系数,大促周走周季节系数'));
+  if(R&&R.scaled)notes.push('锁量生效:总量 '+F.fmt(R.total)+',已发 '+F.fmt(R.sent)+',余 '+F.fmt(R.remain)+',规则SI被压缩'+(R.gap!=null?(';断供自 '+F.weekLabel(R.gap)):''));
+  if(R&&R.retailScaled)notes.push('锁量贯通下游:同型号下游自动Purchase总量 '+F.fmt(R.retailFut)+' 超过 直接渠道自有库存INV1 '+F.fmt(R.retailInv1)+'+余量 '+F.fmt(R.remain)+',按 ×'+(R.retailF!=null?R.retailF:'国家配额')+' 压缩(手拍保留)');
+  if(R&&((R.extF!=null&&R.extF<1)||(R.extRetailF!=null&&R.extRetailF<1)))notes.push('锁量贯通明年:延伸段自动SI/Purchase按余量(扣今年已排)压缩'+(R.extF!=null&&R.extF<1?' ×'+R.extF:'')+(R.extRetailF!=null&&R.extRetailF<1?' 下游×'+R.extRetailF:''));
+  if(cappedW.length)notes.push('断供钳制周:'+cappedW.join('/')+'(SO 被可用库存卡住,推演值≠需求)');
+  if(eolItems)notes.push(eolItems+' 个单元处于退市周期(停购后 SO 按学习衰减率递减)');
+  if(conf.low+conf.none>conf.high+conf.mid)notes.push('多数单元平销低置信,回退近4周均——解释波动时以近期动销为准,不是季节模型');
+  if(exemptN)notes.push(exemptN+' 个单元免推演(低库存),不贡献推演量');
+  if(kAvg!=null&&!Object.keys(promoHit).length)notes.push('该月平均周季节系数 k≈'+kAvg+(kAvg>1.1?'(季节性偏高月)':kAvg<0.9?'(季节性偏低月)':'(平月)'));
+  if(curActHas)notes.unshift('进行中月:已发生实际 '+F.fmt(curAct)+' + 剩余周推演 '+F.fmt(so)+' = 整月 '+F.fmt(fullSO)+';同比按整月口径算');
+  return {对象:{产品:a.product,型号:a.model||'',国家:a.country||'全部',月:m},
+    月度值:{推演SO:so,推演SI:si,其中手工SO:manSO,其中手工SI:manSI,公式SO:so-manSO,
+      当月已发生SO:curActHas?curAct:null,整月口径SO:fullSO},
+    SO按来源拆分:srcCnt,
+    平销基线:{'型号平销Σ台每周':blN?Math.round(blSum):null,'置信高中低':conf.high+'/'+conf.mid+'/'+(conf.low+conf.none),
+      '平销×该月周数':blN?Math.round(blSum*wkN):null,该月周数:wkN},
+    增速链:gSet,
+    对比:{上月:prevHas?Math.round(prev):null,去年同月实际:lyHas?Math.round(lastYear):null,
+      与去年同月比:(lyHas&&lastYear>0)?(Math.round(fullSO/lastYear*100)+'%'):null},
+    周明细:weeks.concat(weeks.length>=10?[{说明:'仅前10周,更多用 unitTrace'}]:[]),
+    解读要点:notes};
+}
+function aiToolUnitTrace(a){
+  a=a||{};
+  if(!a.product)return {error:'缺 product;可加 model/country/account 收窄'};
+  const items=aiAuthItems(a).slice(0,3);
+  if(!items.length)return {error:'没有匹配单元'};
+  const rows=[];
+  items.forEach(function(x){
+    const u=x.it.u;
+    const hist=u.periods.slice(-6);
+    hist.forEach(function(p){ const w=u.weeks.get(p);
+      rows.push({单元:u.country+'·'+u.account,周:F.weekLabel(p),类型:'历史',SO:w.so,SI:w.si,INV:w.inv!=null?w.inv:w.inv1}); });
+    ((x.it.sim&&x.it.sim.rows)||[]).forEach(function(rr,i){
+      const f=x.it.fc&&x.it.fc[i];
+      rows.push({单元:u.country+'·'+u.account,周:F.weekLabel(rr.p),类型:'推演',
+        SO:rr.so,SI:x.src==='fsd'?rr.si:rr.buy,INV:rr.inv,DOS:rr.dos,
+        SO来源:f?f.src:'',SI来源:rr.siSrc||rr.buySrc||'',断供:rr.capped?1:0}); });
+  });
+  return {说明:'最多3个单元(历史近6周+全部推演周);更多单元请加 country/account 过滤',rows:rows};
+}
+function aiToolCaliberDoc(a){
+  const q=String((a&&a.topic)||'').toLowerCase();
+  if(!q)return {节:AI_CALIBER_DOC.map(function(s){ return s.id+':'+s.title; }),说明:'传 topic 关键词取正文'};
+  const scored=[];
+  AI_CALIBER_DOC.forEach(function(s){
+    let sc=0;
+    const tl=s.text.toLowerCase();
+    q.split(/[\s,，、]+/).forEach(function(t){
+      if(!t)return;
+      if(s.title.toLowerCase().indexOf(t)>=0)sc+=3;
+      let c=0,p=tl.indexOf(t);
+      while(p>=0&&c<6){ c++; p=tl.indexOf(t,p+t.length); }
+      sc+=c;
+    });
+    if(sc>0)scored.push({s:s,sc:sc});
+  });
+  scored.sort(function(x,y){ return y.sc-x.sc; });
+  if(!scored.length)return {error:'没有命中口径节;可用节:'+AI_CALIBER_DOC.map(function(s){return s.title;}).join('/')};
+  return {命中:scored.slice(0,3).map(function(x){ return x.s.text; })};
+}
+/* 每个看板的口径小卡:用户在哪个页问,先按那个页的口径答(销售团队 BOARD2AGENT 思路) */
+const AI_BOARD_CARDS={
+  watch:'监控页:对监控名单每周对账。FSD 源看 ST 下去没(清理中/边清边进/仍在进货/无动作),下游源看 SO 出去没;基线=加入监控时快照;模块五=退市监控(外推到退市周对比残值×1.5)。',
+  master:'产品总控页:型号级操盘台,权威源=FSD直签(剔音频)+音频专表。每型号:锁量/平销Σ/爆发系数/分月 SI/SO/月末INV/月末DOS(可拍);展开有国家块。问"这个格为什么是这个数"用 explainCell。',
+  overview:'FSD库存页:直签渠道单元清单,当前INV/INV1/DOS/近4周均SO;免推演(低库存)沉底;可勾选导出。',
+  detail:'推演明细页:单个 渠道×型号 的周级历史+未来推演,SI/SO 可逐周手拍;推演模式(平销/参考自身去年/锚定/基础周销)逐单元选。',
+  summary:'推演汇总页:产品线→产品→国家→渠道树形钻取,分月SO/SI+各月末DOS;含分月模拟面板(层级拍数守恒分配);监控标签与导出。注意:此页含三个源(FSD/下游/音频)切换,下游源数字是渠道明细口径,不是权威总量。',
+  pv:'推演编辑页:矩阵式批量编辑视图(行=单元,列=周),SO/SI 直接改写。',
+  confirm:'待确认页:历史不足或参考覆盖率低的单元需人工定推演模式;确认后进推演。另含补货口径待审视区:一次性铺货渠道(历史仅1-2次显著SI)未拍板前不自动补货,逐个拍板 维持一次性/按规则补。',
+  retail:'下游渠道页:第二张底表(下游渠道=间接渠道,同一概念;FSD 表内标记为间接的单元也按此口径),Purchase 按渠道学习链自动推演(可手拍);此页数字不并入权威总量。',
+  audio:'音频专板页:音频线权威源(人工报量,SO=0=未报量跳过);零补货口径。',
+  monthend:'月末DOS页:各单元推演月末库存与DOS,按标红规则告警;9-12月各有红线。',
+  targets:'SO目标页:国家回填目标表的跟踪(已结束月看达成与DOS vs 承诺,进行中月看时间进度,年底按系族基线)与模板导出(带活公式)。',
+  newprod:'新品规划页:虚拟单元(锚品平销×缩放/首SI周/爬坡/大促上市加成),与底表隔离;上市4周自动复盘。',
+  coef:'系数与参数页:周季节系数四层(可微调)/平销体检/补货规律回测/模型回测台(平销引擎 vs 现行,WMAPE)。',
+  settings:'设置页:免推演阈值/渠道类别与属性/生命周期/大促周历与渠道大促/大盘增速/DOS标红/RRP与预算名/AI 助手。',
+  data:'数据页:三表粘贴或文件夹扫描导入;方案导入导出。',
+};
+function aiToolBoardState(){
+  const sel=xgSelCells();
+  return {当前页签:state.ui.tab,
+    当前看板口径:AI_BOARD_CARDS[state.ui.tab]||'',
+    总控筛选:{产品线:state.ui.mkLine||'全部',锁量:state.ui.mkLock||'全部',搜索:state.ui.mkQ||''},
+    展开的型号:Object.keys(state.ui.mkOpen||{}),
+    表格选区:sel.length?(sel.length+' 格,首格:'+JSON.stringify(sel[0].dataset)):'无',
+    当前明细单元:state.ui.unit||'无'};
+}
+/* ---- 明年(预算外推口径)取数:回答"到明年库存有没有风险"这类跨年问题 ---- */
+function aiToolNextYear(a){
+  a=a||{};
+  if(!store||!store.units.size)return {error:'尚未载入数据'};
+  const curY=F.periodY(store.maxPeriod),nextY=curY+1;
+  const rows=budgetRowsOv(nextY);
+  if(!rows.length)return {error:'预算外推构建失败或无数据'};
+  /* 列位:0BU 1产品 2预算名 3系族 4国家 5渠道 6源 7年 8季度 9月 10SO台 11SI要货台 12月末库存 16备注 */
+  const agg={};   // 年|月 → {so,si,inv}
+  let matched=0;
+  rows.forEach(function(r){
+    if(r[6]===F.DICT.SRC_RETAIL)return;                       // 权威口径:下游明细不并入(源名='下游')
+    if(r[6]==='FSD'&&r[0]===F.DICT.GARNET_AUDIO)return;   // 音频以专表为准,FSD 内音频行剔除防双计
+    if(a.product&&r[1]!==a.product)return;
+    if(a.line&&r[0]!==a.line)return;
+    if(a.country&&r[4]!==a.country)return;
+    matched++;
+    const k=r[7]+'-'+String(r[9]).padStart(2,'0');
+    const o=agg[k]=agg[k]||{so:0,si:0,inv:0};
+    o.so+=(+r[10]||0); o.si+=(+r[11]||0); o.inv+=(+r[12]||0);
+  });
+  if(!matched)return {error:'没有匹配行;先用 options 核对 product/line/country 写法'};
+  const keys=Object.keys(agg).sort();
+  const out=keys.map(function(k){
+    const o=agg[k];
+    const ym=k.split('-'); const dv=F.monthDos(o.inv,o.so,F.monthDaysOf(+ym[0],+ym[1]));
+    return {年月:k,SO台:Math.round(o.so),SI要货台:Math.round(o.si),月末库存:Math.round(o.inv),
+      'DOS(库存÷月SO÷月天数)':dv==null?null:(dv===Infinity?'∞':dv)};
+  });
+  /* 衍生合计由工具算好随返回给出(口径纪律:合计若靠模型自加,溯源门禁没有出处会拦) */
+  let nySO=0,nySI=0,nyEndInv=null,nyEndDos=null;
+  out.forEach(function(r){
+    if(r.年月.indexOf(String(nextY))!==0)return;
+    nySO+=r.SO台; nySI+=r.SI要货台; nyEndInv=r.月末库存; nyEndDos=r['DOS(库存÷月SO÷月天数)'];
+  });
+  const th=dosThOf(12);
+  return {rows:out,
+    明年合计:{年:nextY,全年SO台:nySO,全年SI要货台:nySI,年末库存:nyEndInv,年末DOS:nyEndDos},
+    口径:'今年剩余月=看板推演原样(含手工拍数/锁量);'+nextY+'年=平销引擎外推(b̂×漂移×周季节×大盘增速)+FSD轻量补货循环(明年10/11/12月底收官粗约束100/70/50天),低置信单元用近4周均;下游/音频延伸段 Purchase 同样按渠道学习策略补货(水位型/DOS门槛型)。这是预算口径的方向性推演,置信低于今年。',
+    风险参考:'DOS红线(12月口径)='+th.red+'天/预警='+th.amber+'天;年末看'+nextY+'-12。',
+    覆盖:matched+' 行(权威源,下游明细未并入)'};
+}
+/* ---- 框表分析:按问题动态框定底表切片(过滤×年份×分组),同比/合计由工具算好 ----
+   今年=整月口径(已发生实际+剩余周推演,权威源=FSD剔音频+音频专表);
+   明年=预算外推(剔下游明细与 FSD 源音频行)。groupBy 支持 country/model/product/family/line/month,最多两维。 */
+function aiToolScopeQuery(a){
+  a=a||{};
+  if(!D||!store||!store.units.size)return {error:'尚未载入数据'};
+  const valid=['country','model','product','family','line','month'];
+  const gb=String(a.groupBy||'').split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  if(!gb.length)return {error:'缺 groupBy(可选:'+valid.join('/')+';最多两维,如 "country" 或 "country,model")'};
+  if(gb.length>2||gb.some(function(x){ return valid.indexOf(x)<0; }))
+    return {error:'groupBy 非法「'+a.groupBy+'」,只能取:'+valid.join('/')+'(最多两维,逗号分隔)'};
+  const years=(a.years==='cur'||a.years==='next'||a.years==='last')?a.years:'both';
+  const metric=a.metric==='si'?'si':'so';
+  const MET=metric.toUpperCase();
+  const curY=F.periodY(store.maxPeriod),nextY=curY+1;
+  const famOf=function(p){ const f2=F.familyOf(p); return f2?f2.family:''; };
+  const match=function(u){
+    if(a.line&&u.line!==a.line)return false;
+    if(a.family&&famOf(u.product)!==a.family)return false;
+    if(a.product&&u.product!==a.product)return false;
+    if(a.model!=null&&a.model!==''&&String(u.model)!==String(a.model))return false;
+    if(a.country&&u.country!==a.country)return false;
+    return true;
+  };
+  const agg={};
+  const addV=function(k,slot,v){ const e=agg[k]=agg[k]||{cur:0,next:0}; e[slot]+=v; };
+  const keyOf=function(o,mm){
+    return gb.map(function(d2){
+      if(d2==='month')return mm+'月';
+      if(d2==='family')return (o.family!=null?o.family:famOf(o.product))||'(无系族)';
+      if(d2==='model')return (o.model==null||o.model==='')?'(无型号)':String(o.model);
+      return o[d2]||'(空)';
+    }).join(' · ');
+  };
+  /* years:'last' = 去年实际(权威源历史,音频跳零口径),分组同样生效 */
+  if(years==='last'){
+    const aggL={};
+    let unitsL=0;
+    const scanL=function(list,skipAudio){
+      if(!list)return;
+      list.forEach(function(it){
+        const u=it.u;
+        if(skipAudio&&u.audio)return;
+        if(!match(u))return;
+        unitsL++;
+        u.periods.forEach(function(p){
+          if(F.periodY(p)!==curY-1)return;
+          const w=u.weeks.get(p);
+          const ok=u.audio?(w.so!=null&&w.so>0):(w.so!=null);
+          const v=metric==='so'?(ok?(w.so||0):0):(w.si||0);
+          if(v){ const k=keyOf(u,F.monthOfP(p)); const e=aggL[k]=aggL[k]||{v:0}; e.v+=v; }
+        });
+      });
+    };
+    scanL(D.list,true); scanL(Da&&Da.list,false);
+    const rowsL=Object.keys(aggL).map(function(k){ const o2={组:k}; o2['去年'+MET]=Math.round(aggL[k].v); return o2; });
+    if(!rowsL.length)return {error:'去年范围内没有数据;先用 options 核对过滤取值',参数:a};
+    rowsL.sort(function(x,y){ return (y['去年'+MET]||0)-(x['去年'+MET]||0); });
+    let sumL=0; Object.keys(aggL).forEach(function(k){ sumL+=aggL[k].v; });
+    const totL={}; totL['去年'+MET]=Math.round(sumL);
+    return {范围:{产品线:a.line||'全部',系族:a.family||'全部',产品:a.product||'全部',型号:a.model||'全部',
+        国家:a.country||'全部',指标:MET,分组:gb.join('+'),覆盖单元:unitsL},
+      合计:totL,rows:rowsL,
+      口径:'去年('+(curY-1)+')实际,权威源=FSD直签剔音频行+音频专表;音频 SO=0 为未报量跳过;月按周四归属。'
+        +'与今年对比时先核对两侧「覆盖单元」数:差异大=构成变了(新品上市/停售/渠道进出),同比要注明构成效应或收窄范围再比。'};
+  }
+  let units=0;
+  if(years!=='next'){
+    const scan=function(list,skipAudio,buyAsSi){
+      if(!list)return;
+      list.forEach(function(it){
+        const u=it.u;
+        if(skipAudio&&u.audio)return;
+        if(!match(u))return;
+        units++;
+        u.periods.forEach(function(p){
+          if(F.periodY(p)!==curY)return;
+          const w=u.weeks.get(p);
+          const v=metric==='so'?(w.so||0):(w.si||0);
+          if(v)addV(keyOf(u,F.monthOfP(p)),'cur',v);
+        });
+        ((it.sim&&it.sim.rows)||[]).forEach(function(r){
+          const v=metric==='so'?(r.so||0):((buyAsSi?r.buy:r.si)||0);
+          if(v)addV(keyOf(u,F.monthOfP(r.p)),'cur',v);
+        });
+      });
+    };
+    scan(D.list,true,false);
+    scan(Da&&Da.list,false,true);
+  }
+  if(years!=='cur'){
+    budgetRowsOv(nextY).forEach(function(r){
+      if(+r[7]!==nextY)return;
+      if(r[6]===F.DICT.SRC_RETAIL)return;
+      if(r[6]==='FSD'&&r[0]===F.DICT.GARNET_AUDIO)return;
+      if(a.line&&r[0]!==a.line)return;
+      if(a.family&&(r[3]||'')!==a.family)return;
+      if(a.product&&r[1]!==a.product)return;
+      if(a.model!=null&&a.model!==''&&String(r[17]!=null?r[17]:'')!==String(a.model))return;
+      if(a.country&&r[4]!==a.country)return;
+      const k=keyOf({line:r[0],product:r[1],family:r[3],country:r[4],model:r[17]},r[9]);
+      addV(k,'next',metric==='so'?(+r[10]||0):(+r[11]||0));
+    });
+  }
+  const rows=Object.keys(agg).map(function(k){
+    const e=agg[k],row={组:k};
+    if(years!=='next')row['今年'+MET]=Math.round(e.cur);
+    if(years!=='cur')row['明年'+MET]=Math.round(e.next);
+    if(years==='both')row['同比%']=e.cur>0?+((e.next/e.cur-1)*100).toFixed(1):null;
+    return row;
+  });
+  if(!rows.length)return {error:'框定范围内没有数据;先用 options 核对 line/family/product/model/country 的精确写法',参数:a};
+  rows.sort(function(x,y){
+    return ((y['今年'+MET]!=null?y['今年'+MET]:y['明年'+MET])||0)-((x['今年'+MET]!=null?x['今年'+MET]:x['明年'+MET])||0); });
+  let sumCur=0,sumNext=0;
+  Object.keys(agg).forEach(function(k){ sumCur+=agg[k].cur; sumNext+=agg[k].next; });
+  const tot={};
+  if(years!=='next')tot['今年'+MET]=Math.round(sumCur);
+  if(years!=='cur')tot['明年'+MET]=Math.round(sumNext);
+  if(years==='both')tot['同比%']=sumCur>0?+((sumNext/sumCur-1)*100).toFixed(1):null;
+  const out={范围:{产品线:a.line||'全部',系族:a.family||'全部',产品:a.product||'全部',型号:a.model||'全部',
+      国家:a.country||'全部',指标:MET,分组:gb.join('+'),覆盖单元:units||undefined},
+    合计:tot,rows:rows,
+    口径:'今年=整月口径(已发生实际+剩余周推演,权威源=FSD直签剔音频行+音频专表);'
+      +'明年=预算外推(平销×漂移×季节×增速+轻补货,剔下游明细与FSD源音频行),置信低于今年;同比=明年/今年-1,由工具算好。'
+      +'明年与今年同底盘外推构成基本可比;与去年(years:last)对比时要各自核对「覆盖单元」数,构成变化会混入同比。'};
+  if(years==='both'){
+    out.增长组=rows.filter(function(r){ return r['同比%']!=null&&r['同比%']>0; }).length;
+    out.下滑组=rows.filter(function(r){ return r['同比%']!=null&&r['同比%']<0; }).length;
+  }
+  return out;
+}
+const AI_TOOLS={
+  meta:{fn:aiToolMeta,desc:'数据覆盖范围/推演horizon/锁量与拍数概况',
+    schema:{type:'object',properties:{},required:[]}},
+  options:{fn:aiToolOptions,desc:'枚举维度取值(精确写法);field=line/product/model/country/account,可带 contains 模糊、product/line 收窄',
+    schema:{type:'object',properties:{field:{type:'string',enum:['line','product','model','country','account']},contains:{type:'string'},product:{type:'string'},line:{type:'string'}},required:['field']}},
+  simQuery:{fn:aiToolSimQuery,desc:'月度推演 SO/SI/月末INV/月末DOS(权威口径聚合);按 line/product/model/country 过滤',
+    schema:{type:'object',properties:{line:{type:'string'},product:{type:'string'},model:{type:'string'},country:{type:'string'}},required:[]}},
+  explainCell:{fn:aiExplainCell,desc:'【解释推演值必用】任意维度组合(line/product/model/country/account 至少一个)×月 的确定性因子分解:手工/平销/增速/大促爆发/锁量/断供/退市/置信+对比锚点',
+    schema:{type:'object',properties:{line:{type:'string'},product:{type:'string'},model:{type:'string'},country:{type:'string'},account:{type:'string'},month:{type:'integer'}},required:['month']}},
+  unitTrace:{fn:aiToolUnitTrace,desc:'单元级周明细(历史近6周+推演各周,含SO/SI来源与断供标记);最多3单元',
+    schema:{type:'object',properties:{product:{type:'string'},model:{type:'string'},country:{type:'string'},account:{type:'string'}},required:['product']}},
+  caliberDoc:{fn:aiToolCaliberDoc,desc:'检索取数口径文档(数据源/DOS/平销引擎/锁量/月归属等);topic 传关键词',
+    schema:{type:'object',properties:{topic:{type:'string'}},required:[]}},
+  nextYear:{fn:aiToolNextYear,desc:'【明年问题必用】明年逐月 SO/SI/月末库存/DOS(预算外推口径:平销×漂移×季节×增速+轻补货),含今年剩余月;判断明年库存风险用它',
+    schema:{type:'object',properties:{product:{type:'string'},line:{type:'string'},country:{type:'string'}},required:[]}},
+  scopeQuery:{fn:aiToolScopeQuery,desc:'【增长/下滑/对比/历史分析必用】按问题框定底表切片并分组对比:过滤(line/family/product/model/country)×年份(cur今年整月口径/next明年外推/both两年对比/last去年实际)×分组(country/model/product/family/line/month,最多两维);每组给数值与同比%,合计与增长下滑组数由工具算好。答"去年X月卖了多少/哪些国家增长哪些下滑/哪些型号涨跌"就用它',
+    schema:{type:'object',properties:{line:{type:'string'},family:{type:'string'},product:{type:'string'},model:{type:'string'},country:{type:'string'},
+      groupBy:{type:'string'},years:{type:'string',enum:['cur','next','both','last']},metric:{type:'string',enum:['so','si']}},required:['groupBy']}},
+  boardState:{fn:aiToolBoardState,desc:'界面当前状态(页签/筛选/展开型号/表格选区)',
+    schema:{type:'object',properties:{},required:[]}},
+};
+/* ---- 编排器纯函数(移植自 销售团队 ai-orchestrator,评测锤炼过的纪律原样保留) ---- */
+function aiValidateArgs(name,args){
+  const T=AI_TOOLS[name];
+  if(!T)return {ok:false,error:'未知工具 '+name};
+  const a=(args&&typeof args==='object'&&!Array.isArray(args))?args:{};
+  const props=T.schema.properties||{},req=T.schema.required||[];
+  /* 反双重序列化:模型把对象参数传成 JSON 字符串 → 就地 parse,失败按参数错误打回 */
+  Object.keys(a).forEach(function(k){
+    const pd=props[k];
+    if(pd&&typeof a[k]==='string'&&(pd.type==='object'||pd.type==='array')&&/^\s*[\[{]/.test(a[k])){
+      try{ a[k]=JSON.parse(a[k]); }catch(e){}
+    }
+  });
+  for(const k of Object.keys(a)){
+    if(!props[k])return {ok:false,error:name+' 不认识参数「'+k+'」,可用:'+(Object.keys(props).join('/')||'无')};
+    const p=props[k],v=a[k];
+    if(p.enum&&v!=null&&p.enum.indexOf(v)<0)return {ok:false,error:name+'.'+k+' 取值非法「'+v+'」,只能:'+p.enum.join('/')};
+    if(p.type==='integer'&&v!=null&&!(typeof v==='number'&&isFinite(v))){
+      const n=+v; if(isFinite(n))a[k]=n; else return {ok:false,error:name+'.'+k+' 必须是数字'};
+    }
+  }
+  for(const k of req){
+    const v=a[k];
+    if(v===undefined||v===null||v==='')return {ok:false,error:name+' 缺少必填参数 '+k};
+  }
+  return {ok:true,args:a};
+}
+function aiShrink(name,result){
+  let r=result;
+  try{
+    const rowCap=(name==='scopeQuery')?60:AI_BUDGET.toolResultRows;   // 分组切片行窄,放宽以便"逐组列全"
+    if(r&&typeof r==='object'&&Array.isArray(r.rows)&&r.rows.length>rowCap)
+      r=Object.assign({},r,{rows:r.rows.slice(0,rowCap),
+        _省略:'仅前 '+rowCap+' 行,共 '+result.rows.length+' 行;请加过滤收窄'});
+    if(r&&typeof r==='object'&&Array.isArray(r.取值)&&r.取值.length>60)
+      r=Object.assign({},r,{取值:r.取值.slice(0,60),_省略:'仅前60个取值,用 contains 收窄'});
+  }catch(e){}
+  let s; try{ s=JSON.stringify(r); }catch(e){ s=String(r); }
+  if(s.length>AI_BUDGET.toolResultChars)s=s.slice(0,AI_BUDGET.toolResultChars-12)+'…(已截断)';
+  return '[工具 '+name+' 返回]\n'+s;
+}
+function aiTrim(messages){
+  const msgs=(messages||[]).slice();
+  const size=function(ms){ return ms.reduce(function(n,m2){ return n+String((m2&&m2.content)||'').length; },0); };
+  if(size(msgs)<=AI_BUDGET.reqChars)return msgs;
+  const keep=new Set();
+  msgs.forEach(function(m2,i){ if(m2.role==='system')keep.add(i); });
+  for(let i=msgs.length-1;i>=0;i--){ if(msgs[i].role==='user'){ keep.add(i); break; } }
+  for(let i=0;i<msgs.length&&size(msgs)>AI_BUDGET.reqChars;i++){
+    if(keep.has(i))continue;
+    if(String(msgs[i].content||'').length<200)continue;
+    msgs[i]=Object.assign({},msgs[i],{content:'(较早的中间结果已省略以控制上下文)'});
+  }
+  return msgs;
+}
+function aiSplitThink(text){
+  const t=String(text==null?'':text);
+  if(t.indexOf('<think>')<0)return {think:'',answer:t.trim()};
+  let think='',answer=t,any=false;
+  const closed=/<think>([\s\S]*?)<\/think>/g;
+  let m2;
+  while((m2=closed.exec(t))){ think+=m2[1]; any=true; }
+  if(any)answer=t.replace(/<think>[\s\S]*?<\/think>/g,'');
+  else { const i=t.indexOf('<think>'); think=t.slice(i+7); answer=t.slice(0,i); }
+  return {think:think.trim(),answer:answer.trim()};
+}
+/* 溯源硬门禁:答案数字回查工具返回原文;合法变换=原值/×100/÷100/连续滑窗和/两数之差;查无出处替换「?」 */
+function aiProvenance(answer,toolTrace){
+  const text=String(answer||'');
+  if(!text||!toolTrace||!toolTrace.length)return {answer:text,blocked:[]};
+  const NUM=/-?\d[\d,]*(?:\.\d+)?/g;
+  const pool=[],sumKeys=new Set();
+  const addSum=function(v){ if(!isFinite(v)||sumKeys.size>200000)return;
+    sumKeys.add(String(Math.round(v))); sumKeys.add(v.toFixed(2)); };
+  toolTrace.forEach(function(s){
+    const seq=[];
+    (String(s).match(NUM)||[]).forEach(function(m2){
+      const v=parseFloat(m2.replace(/,/g,'')); if(!isFinite(v))return;
+      pool.push(v);
+      if(Number.isInteger(v)&&(Math.abs(v)<=31||(v>=1900&&v<=2100)))return;
+      seq.push(v);
+    });
+    for(let i=0;i<seq.length;i++){
+      let acc=seq[i];
+      for(let w=1;w<13&&i+w<seq.length;w++){ acc+=seq[i+w]; addSum(acc); }
+    }
+  });
+  if(!pool.length)return {answer:text,blocked:[]};
+  const uniq=Array.from(new Set(pool)).slice(0,400);
+  const close=function(a,b){ return Math.abs(a-b)<=Math.max(0.05,Math.abs(b)*0.002); };
+  const tight=function(a,b){ return Math.abs(a-b)<=Math.max(0.02,Math.abs(b)*0.001); };
+  const backed=function(x){
+    for(const t2 of uniq){ if(close(t2,x)||close(t2*100,x)||close(t2/100,x))return true; }
+    if(sumKeys.has(String(Math.round(x)))&&Math.abs(x-Math.round(x))<0.005)return true;
+    if(sumKeys.has(x.toFixed(2)))return true;
+    for(let i=0;i<uniq.length;i++)for(let j=0;j<uniq.length;j++){
+      if(i!==j&&tight(uniq[i]-uniq[j],x))return true; }
+    return false;
+  };
+  const blocked=[];
+  const out=text.replace(NUM,function(m2){
+    const v=parseFloat(m2.replace(/,/g,''));
+    if(!isFinite(v))return m2;
+    if(Number.isInteger(v)&&(Math.abs(v)<=31||(v>=1900&&v<=2100)))return m2;   // 日期/序号豁免
+    if(backed(v))return m2;
+    blocked.push(m2);
+    return '?';
+  });
+  return {answer:out,blocked:Array.from(new Set(blocked)).slice(0,12)};
+}
+const AI_CHECKLIST='回答体检(缺一不可):①结论数字带单位(台/天/%);②一句话口径(权威源/月按周四归属);'
+  +'③解释高低必须落到具体因子(手工拍数/锁量/爆发/平销/增速/退市/低置信),不许说没有依据的"可能";'
+  +'④查不到就明说"数据未包含",绝不编造;⑤只读系统,不能替用户改数;⑥始终用中文回答。';
+/* ---- LLM 通道:多提供方路由(与 Salesboard ai-panel 完全同款端点/字段/超时) ---- */
+const AI_PROVIDERS={
+  deepseek:{label:'DeepSeek API（在线，推荐）',base:'https://api.deepseek.com/v1/chat/completions',models:['deepseek-chat','deepseek-v4-pro']},
+  minimax:{label:'MiniMax API（在线）',base:'https://api.minimax.chat/v1/text/chatcompletion_v2',models:['MiniMax-M2.5','MiniMax-Text-01','MiniMax-M1']},
+  anthropic:{label:'Claude API（Anthropic）',base:'https://api.anthropic.com/v1/messages',models:['claude-sonnet-5','claude-opus-5','claude-haiku-4-5-20251001']},
+  openai:{label:'OpenAI API',base:'https://api.openai.com/v1/chat/completions',models:['gpt-5.2','gpt-5.2-mini','gpt-4.1']},
+  corplink:{label:'CorpLink CLI（Acme内网）'},
+  lmstudio:{label:'LM Studio（本机服务器）',base:'http://127.0.0.1:1234/v1'},
+};
+function aiCfg(){
+  const o=state.ai||{};
+  return {provider:AI_PROVIDERS[o.provider]?o.provider:'lmstudio',   // 默认本机(2026-09-04 D13:数据不出本机)
+    dsKey:o.dsKey||'',dsModel:o.dsModel||'deepseek-chat',
+    key:o.key||'',baseUrl:o.baseUrl||AI_PROVIDERS.minimax.base,model:o.model||'MiniMax-M2.5',
+    anKey:o.anKey||'',anModel:o.anModel||'claude-sonnet-5',
+    oaKey:o.oaKey||'',oaModel:o.oaModel||'gpt-5.2',
+    lmBase:o.lmBase||AI_PROVIDERS.lmstudio.base,lmModel:o.lmModel||'',
+    cliCmd:o.cliCmd||'',cliArgs:o.cliArgs||'',cliMode:['stdin','file','arg'].indexOf(o.cliMode)>=0?o.cliMode:'stdin'};
+}
+function aiReady(){
+  const c=aiCfg();
+  if(c.provider==='deepseek')return c.dsKey?{ok:true}:{ok:false,why:'请在设置页填 DeepSeek API Key'};
+  if(c.provider==='minimax')return c.key?{ok:true}:{ok:false,why:'请在设置页填 MiniMax API Key'};
+  if(c.provider==='anthropic')return c.anKey?{ok:true}:{ok:false,why:'请在设置页填 Anthropic API Key'};
+  if(c.provider==='openai')return c.oaKey?{ok:true}:{ok:false,why:'请在设置页填 OpenAI API Key'};
+  if(c.provider==='corplink')return c.cliCmd?{ok:true}:{ok:false,why:'请在设置页配置 CorpLink CLI 命令'};
+  if(c.provider==='lmstudio')return c.lmModel?{ok:true}:{ok:false,why:'请在设置页填 LM Studio 已加载的模型名'};
+  return {ok:false,why:'未选择提供方'};
+}
+function aiProviderTag(){
+  const c=aiCfg();
+  return c.provider==='deepseek'?('DeepSeek '+c.dsModel)
+    :c.provider==='minimax'?('MiniMax '+c.model)
+    :c.provider==='anthropic'?('Claude '+c.anModel)
+    :c.provider==='openai'?('OpenAI '+c.oaModel)
+    :c.provider==='lmstudio'?('LM Studio '+(c.lmModel||'未选模型'))
+    :c.provider==='corplink'?'CorpLink CLI':'未配置';
+}
+/* 端点/鉴权按提供方路由(销售团队 reqBase 同款:LM Studio 无 Key 超时放宽;Claude 走 anthropic 格式) */
+function aiReqBase(){
+  const c=aiCfg();
+  if(c.provider==='lmstudio')return {key:'',baseUrl:String(c.lmBase).replace(/\/+$/,'')+'/chat/completions',model:c.lmModel,timeoutMs:180000};
+  if(c.provider==='deepseek')return {key:c.dsKey,baseUrl:AI_PROVIDERS.deepseek.base,model:c.dsModel,timeoutMs:120000};
+  if(c.provider==='anthropic')return {key:c.anKey,baseUrl:AI_PROVIDERS.anthropic.base,model:c.anModel,apiFormat:'anthropic',timeoutMs:120000};
+  if(c.provider==='openai')return {key:c.oaKey,baseUrl:AI_PROVIDERS.openai.base,model:c.oaModel,timeoutMs:120000};
+  return {key:c.key,baseUrl:c.baseUrl,model:c.model,timeoutMs:120000};
+}
+/* 文本回退协议(销售团队 parseToolCall 同款):无原生 function-calling 的通道(CorpLink/部分本地模型)
+   在文本里回 {"tool":"名","args":{...}} 也能执行 */
+function aiParseToolCall(text){
+  const m=/\{[\s\S]*?"tool"[\s\S]*?\}/.exec(String(text||''));
+  if(!m)return null;
+  try{
+    const o=JSON.parse(m[0]);
+    if(o&&o.tool)return {tool:String(o.tool),args:(o.args&&typeof o.args==='object')?o.args:{}};
+  }catch(e){}
+  return null;
+}
+let __aiStreamCb=null,__aiStreamSeq=0,__aiLlmOverride=null;
+async function aiLlm(payload,streamInto){
+  if(__aiLlmOverride)return __aiLlmOverride(payload);   // 评测注入口(mock 模式)
+  const c=aiCfg();
+  if(c.provider==='corplink'){
+    /* CLI 无对话结构:压平成单段 prompt;无原生工具,靠文本回退协议 */
+    const flat=(payload.messages||[]).map(function(m2){
+      return (m2.role==='system'?'【系统指令】':m2.role==='assistant'?'【你此前的回答】':'【输入】')+'\n'+m2.content;
+    }).join('\n\n')+(payload.tools&&payload.tools.length
+      ?('\n\n【可用工具】需要取数时,只回一段 JSON:{"tool":"工具名","args":{...}}。工具清单:'
+        +payload.tools.map(function(t){ return t.function.name+'('+t.function.description+')'; }).join(';')):'');
+    return SHELL.aiChatCli({cmd:c.cliCmd,argsTmpl:c.cliArgs,inputMode:c.cliMode,prompt:flat,
+      timeoutMs:(+((state.ai||{}).timeoutMs)||240)*1000});
+  }
+  if(c.provider!=='lmstudio'&&!(state.ai&&state.ai.onlineOk)){
+    /* 数据不出本机(2026-09-04 D13):在线模型会收到工具返回的 SO/SI/库存,首次使用必须显式确认(只问一次,可在设置页改回本机) */
+    const okGo=window.confirm('AI 解读将把问题与取数结果(SO/SI/库存等)发送到在线服务「'+aiProviderTag()+'」。\n确认发送?(只问一次;可在设置页改回本机 LM Studio)');
+    if(!okGo)throw new Error('已取消:未向在线服务发送数据');
+    state.ai.onlineOk=true; saveState();
+  }
+  const body=Object.assign(aiReqBase(),{temperature:0},payload);
+  if((state.ai||{}).timeoutMs)body.timeoutMs=Math.max(body.timeoutMs||0,(+state.ai.timeoutMs)*1000);
+  if(streamInto&&body.apiFormat!=='anthropic'){
+    body.stream=true; body.id='ai'+(++__aiStreamSeq);
+    __aiStreamCb={id:body.id,el:streamInto,buf:''};
+  }
+  return SHELL.aiChat(body);
+}
+/* ---- 专家执行循环(串行,工具轮上限,轮次耗尽强制作答) ---- */
+async function aiRunSpecialist(task,budget,ui2){
+  const a=task.agent;
+  const sys=[a.prompt,AI_CALIBER_GLOBAL,'先给结论再给数字;每个数字标口径;不确定就用工具查,查不到就说查不到。'].join('\n\n');
+  const specs=a.tools.map(function(n){ const T=AI_TOOLS[n];
+    return {type:'function',function:{name:n,description:T.desc,parameters:T.schema}}; });
+  const toolTrace=[];
+  const messages=[];
+  const ctx=[];
+  try{ ctx.push('【界面状态】'+JSON.stringify(aiToolBoardState())); }catch(e){}
+  try{ const mt=JSON.stringify(aiToolMeta()); ctx.push('【数据概览】'+(mt.length>AI_BUDGET.snapshotChars?mt.slice(0,AI_BUDGET.snapshotChars)+'…':mt)); }catch(e){}
+  if(ctx.length)messages.push({role:'user',content:ctx.join('\n')});
+  const guardTxt=(task.guards&&task.guards.length)?('\n\n【本题硬约束(违反即废答)】\n'+task.guards.map(function(g){return '· '+g;}).join('\n')):'';
+  messages.push({role:'user',content:task.subQuestion+guardTxt+'\n\n'+AI_CHECKLIST});
+  let rounds=0,lastErr=null;
+  while(rounds<AI_BUDGET.maxToolRounds){
+    rounds++;
+    const trimmed=aiTrim([{role:'system',content:sys}].concat(messages));
+    const wantStream=(rounds>1&&task.streamInto)?task.streamInto:null;
+    const resp=await aiLlm({messages:trimmed,tools:specs,maxTokens:AI_BUDGET.subTokens},wantStream);
+    if(!resp||resp.error){ lastErr=(resp&&resp.error)||'无响应'; break; }
+    const calls=[];
+    (resp.toolCalls||[]).forEach(function(tc){
+      const name=tc.function?tc.function.name:tc.name;
+      let args={};
+      try{ args=tc.function&&tc.function.arguments?JSON.parse(tc.function.arguments):(tc.args||{}); }catch(e){ args={}; }
+      if(name&&a.tools.indexOf(name)>=0)calls.push({tool:name,args:args});
+    });
+    if(!calls.length){
+      /* 文本回退协议:CorpLink CLI/无 FC 的本地模型在文本里回 {"tool":...} */
+      const c2=aiParseToolCall(resp.content||'');
+      if(c2&&a.tools.indexOf(c2.tool)>=0)calls.push(c2);
+    }
+    if(!calls.length&&!aiSplitThink(resp.content||'').answer.trim()){
+      /* 空回合兜底:模型没作答也没有效工具调用(如调了白名单外工具被滤掉)——提示后重试,不许静默返回空 */
+      if(rounds<AI_BUDGET.maxToolRounds){
+        messages.push({role:'user',content:'你上一轮既没有回答也没有调用可用工具(可用:'+a.tools.join('/')+')。请直接作答,或调用白名单内的工具取数。'});
+        continue;
+      }
+      lastErr='模型持续空回'; break;
+    }
+    if(calls.length&&budget.left>0){
+      messages.push({role:'assistant',content:aiSplitThink(resp.content||'').answer});
+      for(const call of calls){
+        if(budget.left<=0)break;
+        budget.left--;
+        const v=aiValidateArgs(call.tool,call.args);
+        if(!v.ok){ messages.push({role:'user',content:'[工具 '+call.tool+' 参数错误] '+v.error+'\n请修正后重试。'}); continue; }
+        if(ui2&&ui2.onTool)ui2.onTool(a.name,call.tool,v.args);
+        let out;
+        try{ out=AI_TOOLS[call.tool].fn(v.args); }catch(e){ out={error:String((e&&e.message)||e)}; }
+        const shr=aiShrink(call.tool,out);
+        toolTrace.push(shr);
+        messages.push({role:'user',content:shr+'\n\n请据此继续回答。'});
+      }
+      continue;
+    }
+    const sp=aiSplitThink(resp.content||'');
+    return {agentId:a.id,agentName:a.name,answer:sp.answer,think:sp.think,toolTrace:toolTrace,rounds:rounds};
+  }
+  if(!lastErr){
+    /* 轮次耗尽:已取到的数据不能浪费,禁用工具强制作答一次 */
+    const fin=aiTrim([{role:'system',content:sys}].concat(messages,[{role:'user',
+      content:'工具轮次已用尽。请仅基于上面已返回的工具数据作答;数据不足的部分明说「数据未包含」,绝不编造。'}]));
+    const last=await aiLlm({messages:fin,tools:[],maxTokens:AI_BUDGET.subTokens},task.streamInto||null);
+    if(last&&!last.error&&String(last.content||'').trim()){
+      const sp2=aiSplitThink(last.content);
+      return {agentId:a.id,agentName:a.name,answer:sp2.answer,think:sp2.think,toolTrace:toolTrace,rounds:rounds+1,forced:true};
+    }
+  }
+  return {agentId:a.id,agentName:a.name,answer:'',error:lastErr||'工具轮次用尽仍未给出结论',toolTrace:toolTrace,rounds:rounds};
+}
+async function aiOrchestrate(question,ui2){
+  const tasks=aiRoute(question);
+  const guards=aiGuards(question);
+  const budget={left:AI_BUDGET.maxToolCallsTotal};
+  const results=[];
+  for(const t of tasks){
+    if(ui2&&ui2.onAgent)ui2.onAgent(t.agent.name);
+    t.guards=guards;
+    t.streamInto=(tasks.length===1&&ui2)?ui2.streamEl:null;
+    results.push(await aiRunSpecialist(t,budget,ui2));
+  }
+  if(results.length===1){
+    const r=results[0];
+    if(r.error)return {answer:'',error:r.error,results:results};
+    const pv=aiProvenance(r.answer,r.toolTrace.concat([question]));
+    return {answer:pv.answer,blocked:pv.blocked,results:results};
+  }
+  /* 双专家:综合(只许用专家已给出的内容) */
+  const lines=['用户问题:'+question,'','各专家结论如下(这是唯一可用的数字来源):'];
+  results.forEach(function(r){
+    lines.push('','## '+r.agentName);
+    lines.push(r.error?('(取数失败:'+r.error+')'):String(r.answer||'').slice(0,2400));
+  });
+  lines.push('','请综合成一段给业务同事看的中文结论:先一句话总体判断,再分点关键数字与因子解释。',
+    '硬性要求:①不得出现上面没有的数字;②每个数字带口径;③缺失的部分直说没查到。');
+  const syn=await aiLlm({messages:[{role:'system',content:AI_CALIBER_GLOBAL},{role:'user',content:lines.join('\n')}],
+    maxTokens:AI_BUDGET.synthTokens},ui2?ui2.streamEl:null);
+  /* 综合轮空回/报错 → 降级为专家答案直拼(销售团队 会话报备的 deepseek 偶发空回复,面板侧同样兜住) */
+  if(!syn||syn.error||!aiSplitThink((syn&&syn.content)||'').answer.trim())
+    return {answer:results.map(function(r){return '【'+r.agentName+'】\n'+(r.answer||r.error);}).join('\n\n'),results:results};
+  const allTrace=results.reduce(function(acc,r){ return acc.concat(r.toolTrace); },[]).concat([question]);
+  const pv=aiProvenance(aiSplitThink(syn.content).answer,allTrace);
+  return {answer:pv.answer,blocked:pv.blocked,results:results};
+}
+/* ---- Agent 面板 i18n(2026-08-31 用户拍板英文化,对齐 销售团队 batch4 做法):
+   只翻 UI 表层(词条+动态文案规则);发给模型的 prompt/口径卡/工具字段保持中文(不伤中文回答质量)。
+   默认 English,dock 头部与设置页可切回中文;state.ai.lang 持久化。 ---- */
+function aiLang(){ return (state.ai&&state.ai.lang)==='zh'?'zh':'en'; }
+const AI_EN={
+  'AI 解读':'AI Insights',
+  '取数口径 · 推演解释':'Data caliber · Forecast explainer',
+  '清空':'Clear','清空对话':'Clear conversation','发送':'Send',
+  '问口径(这个数从哪来)或问推演(9月 SO 为什么这么高)…\nEnter 发送 / Shift+Enter 换行':
+    'Ask about data caliber (where a number comes from) or the forecast (why Sep SO is high)…\nEnter to send / Shift+Enter for newline',
+  '正在取数与推理…':'Querying data & reasoning…',
+  '分析中…':'analyzing…',
+  '取数轨迹':'Tool trace',
+  '模型调用失败:':'Model call failed: ',
+  '(空回答)':'(empty answer)',
+  '出错:':'Error: ',
+  '⚠ 以下数字在工具返回中查无出处,已替换为「?」:':'⚠ Numbers with no provenance in tool returns were replaced with "?": ',
+  '确定性解算(直接读推演引擎,非模型生成)':'Deterministic breakdown (read from the forecast engine, not model-generated)',
+  '推演SO':'Forecast SO','推演SI':'Forecast SI','平销基线':'Baseline','对比':'Compare',
+  '台':'units','(全公式)':'(all formula)','手工':'manual','公式':'formula','含手工':'incl. manual',
+  '整月口径':'Full-month','已发生':'actual to date','剩余推演':'remaining forecast',
+  '台/周':'u/wk','周':'wk','置信':'confidence','该月周数':'weeks in month',
+  '上月':'Prev month','去年同月':'LY same month','同比':'YoY',
+  '为什么是这个数:':'Why this number:',
+  '周明细与增速链':'Weekly detail & growth chain',
+  '增速:':'Growth chain: ','SO按来源:':'SO by source: ',
+  '·大促':' ·promo','·断供':' ·supply-cut',
+  '解释':'Explain','的推演值':' forecast','月':'/Mo',
+  'AI 解释':'AI Explain',
+  'AI 正在回答上一问':'AI is still answering the previous question',
+  '请先在产品总控选中一个月度格(SI/SO)':'Select a monthly SI/SO cell in Product Master first',
+  '当前模型:':'Current model: ',
+  '我是本软件的 AI 解读助手,两位专家协同:<b>取数口径专家</b>(数从哪来/公式)与<b>推演解释专家</b>(某月 SO 为什么高/低,含明年预算外推)。任何看板都可以直接问。':
+    'I am the AI insights assistant. Two experts work together: the <b>Data Caliber Expert</b> (where numbers come from / formulas) and the <b>Forecast & Analysis Expert</b> (why a month is high/low, incl. next-year budget extrapolation, growth/decline breakdowns by country & model). Ask from any board.',
+  '尚未配置模型(设置页→AI 助手,支持 DeepSeek/MiniMax/Claude/OpenAI/CorpLink CLI/本机 LM Studio)。<b>不配模型也能用</b>:在产品总控选中月度格→选区工具条「AI 解释」,直接给出确定性因子分解。':
+    'No model configured yet (Settings → AI Assistant; DeepSeek/MiniMax/Claude/OpenAI/CorpLink CLI/local LM Studio supported). <b>Works without a model too</b>: select a monthly cell in Product Master → "AI Explain" on the selection bar for a deterministic factor breakdown.',
+  '取数与口径专家':'Data Caliber Expert','推演解释专家':'Forecast & Analysis Expert',
+};
+function aiT(zh){ return aiLang()==='en'?(AI_EN[zh]!=null?AI_EN[zh]:zh):zh; }
+/* 动态文案规则翻译(解读要点/SO来源等引擎生成的中文句式) */
+const AI_EN_RULES=[
+  [/^进行中月:已发生实际 ([\d,]+) \+ 剩余周推演 ([\d,]+) = 整月 ([\d,]+);同比按整月口径算$/,
+   'In-progress month: $1 actual + $2 remaining-week forecast = $3 full month; YoY uses the full-month view'],
+  [/^手工拍数占 SO (\d+)%\(([\d,]+) 台\)——这是用户自己拍的,不是公式算的$/,
+   'Manual overrides make up $1% of SO ($2 units) — set by you, not by the formula'],
+  [/^该月命中大促周:(.+);爆发系数改写×([\d.]+) 生效\(大促周=平销×\2\)$/,
+   'Promo weeks hit this month: $1; burst override ×$2 active (promo week = baseline × $2)'],
+  [/^该月命中大促周:(.+);未改写爆发系数,大促周走周季节系数$/,
+   'Promo weeks hit this month: $1; no burst override, promo weeks use weekly seasonality'],
+  [/^锁量生效:总量 ([\d,]+),已发 ([\d,]+),余 ([\d,]+),规则SI被压缩(;断供自 (.+))?$/,
+   'Supply lock active: total $1, shipped $2, remaining $3; rule-based SI compressed$4'],
+  [/;断供自 /,'; supply cut from '],
+  [/^断供钳制周:(.+)\(SO 被可用库存卡住,推演值≠需求\)$/,
+   'Supply-capped weeks: $1 (SO clamped by available stock; forecast ≠ demand)'],
+  [/^(\d+) 个单元处于退市周期\(停购后 SO 按学习衰减率递减\)$/,
+   '$1 unit(s) in end-of-life phase (SO decays at the learned rate after last buy)'],
+  [/^多数单元平销低置信,回退近4周均——解释波动时以近期动销为准,不是季节模型$/,
+   'Most units have low baseline confidence and fall back to the 4-week average — recent sell-through, not seasonality, drives the number'],
+  [/^(\d+) 个单元免推演\(低库存\),不贡献推演量$/,
+   '$1 unit(s) exempt from forecasting (low stock), contributing nothing'],
+  [/^该月平均周季节系数 k≈([\d.]+)\(季节性偏高月\)$/,'Avg weekly seasonality k≈$1 (seasonally high month)'],
+  [/^该月平均周季节系数 k≈([\d.]+)\(季节性偏低月\)$/,'Avg weekly seasonality k≈$1 (seasonally low month)'],
+  [/^该月平均周季节系数 k≈([\d.]+)\(平月\)$/,'Avg weekly seasonality k≈$1 (flat month)'],
+];
+function aiTN(s){
+  s=String(s==null?'':s);
+  if(aiLang()!=='en')return s;
+  for(const r of AI_EN_RULES){ if(r[0].test(s))return s.replace(r[0],r[1]); }
+  return s;
+}
+const AI_EN_SRC={'手工拍数':'Manual override','平销推演':'Baseline forecast','参考自身去年':'Own last-year ref',
+  '参考去年同周':'LY same-week ref','锚定推演':'Anchor forecast','基础周销':'Base weekly','近4周均':'4-week avg',
+  '去年均值补估':'LY-avg fill','自然收尾':'Tail run-out','停售':'Discontinued'};
+function aiTSrc(s){ return aiLang()==='en'?(AI_EN_SRC[s]||s):s; }
+/* ---- AI Dock(右侧抽屉):对话 + 工具轨迹 + 确定性解算面板(不配模型也能用) ---- */
+let __aiBusy=false;
+function aiDockEl(){ return document.getElementById('aiDock'); }
+function aiEsc(s){ return esc(String(s==null?'':s)); }
+function aiMdLite(s){
+  /* 极简 markdown:换行/加粗/行内代码;不引库 */
+  return aiEsc(s).replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\n/g,'<br>');
+}
+function aiPush(role,html){
+  const box=document.getElementById('aiMsgs'); if(!box)return null;
+  const d=document.createElement('div');
+  d.className='aiMsg '+(role==='user'?'aiU':'aiA');
+  d.innerHTML=html;
+  box.appendChild(d);
+  box.scrollTop=box.scrollHeight;
+  return d;
+}
+function aiToggleDock(show){
+  let el=aiDockEl();
+  if(!el){
+    el=document.createElement('div');
+    el.id='aiDock'; el.style.display='none';
+    el.innerHTML='<div id="aiHead"><b>'+aiT('AI 解读')+'</b><span class="muted" style="font-size:11px">'+aiT('取数口径 · 推演解释')+'</span>'
+      +'<span style="margin-left:auto;display:flex;gap:6px">'
+      +'<button class="mini" id="aiLangBtn" title="Switch language / 切换语言">'+(aiLang()==='en'?'中':'EN')+'</button>'
+      +'<button class="mini" id="aiClear" title="'+aiT('清空对话')+'">'+aiT('清空')+'</button>'
+      +'<button class="mini" id="aiClose">✕</button></span></div>'
+      +'<div id="aiMsgs"></div>'
+      +'<div id="aiFoot">'
+      +'<textarea id="aiIn" rows="2" placeholder="'+aiT('问口径(这个数从哪来)或问推演(9月 SO 为什么这么高)…\nEnter 发送 / Shift+Enter 换行').replace(/\n/g,'&#10;')+'"></textarea>'
+      +'<button id="aiSend" class="mini" style="height:auto">'+aiT('发送')+'</button></div>';
+    document.body.appendChild(el);
+    document.getElementById('aiClose').onclick=function(){ aiToggleDock(false); };
+    document.getElementById('aiClear').onclick=function(){ const b=document.getElementById('aiMsgs'); if(b)b.innerHTML=''; };
+    document.getElementById('aiLangBtn').onclick=function(){
+      if(!state.ai)state.ai={};
+      state.ai.lang=aiLang()==='en'?'zh':'en';
+      saveState();
+      const dk=aiDockEl(); if(dk)dk.remove();   // 重建 dock 以套用语言
+      aiApplyNavLang();
+      aiToggleDock(true);
+    };
+    const inp=document.getElementById('aiIn');
+    inp.addEventListener('keydown',function(e){
+      if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); aiAsk(inp.value); inp.value=''; }
+    });
+    document.getElementById('aiSend').onclick=function(){ aiAsk(inp.value); inp.value=''; };
+    if(SHELL&&SHELL.onAiStream)SHELL.onAiStream(function(d){
+      if(!__aiStreamCb||d.id!==__aiStreamCb.id)return;
+      if(d.delta){ __aiStreamCb.buf+=d.delta;
+        const sp=aiSplitThink(__aiStreamCb.buf);
+        if(__aiStreamCb.el&&sp.answer)__aiStreamCb.el.innerHTML=aiMdLite(sp.answer);
+        const box=document.getElementById('aiMsgs'); if(box)box.scrollTop=box.scrollHeight; }
+    });
+    const rdy0=aiReady();
+    const hello=rdy0.ok?('<div class="muted" style="font-size:11px">'+aiT('当前模型:')+aiEsc(aiProviderTag())+'</div>')
+      :('<div class="note">'+aiT('尚未配置模型(设置页→AI 助手,支持 DeepSeek/MiniMax/Claude/OpenAI/CorpLink CLI/本机 LM Studio)。<b>不配模型也能用</b>:在产品总控选中月度格→选区工具条「AI 解释」,直接给出确定性因子分解。')+'</div>');
+    aiPush('a',aiT('我是本软件的 AI 解读助手,两位专家协同:<b>取数口径专家</b>(数从哪来/公式)与<b>推演解释专家</b>(某月 SO 为什么高/低,含明年预算外推)。任何看板都可以直接问。')+hello);
+  }
+  const want=show!=null?show:(el.style.display==='none');
+  el.style.display=want?'':'none';
+  return want;
+}
+/* 确定性解算面板:explainCell 结果直接渲染(无模型/模型前置都用它) */
+function aiExplainHtml(r){
+  if(r.error)return '<div class="note">'+aiEsc(r.error)+'</div>';
+  const o=r.对象,v=r.月度值,c=r.对比,b=r.平销基线;
+  const U=' '+aiT('台'),moLab=aiLang()==='en'?('Mo '+o.月):(o.月+'月');
+  let h='<div class="aiXp"><b>'+aiEsc(o.产品)+(o.型号?(' '+aiEsc(o.型号)):'')+'</b> · '+aiEsc(o.国家)+' · '+moLab
+    +'<table style="margin-top:6px"><tr><td class="l">'+aiT('推演SO')+'</td><td><b>'+F.fmt(v.推演SO)+'</b>'+U
+    +(v.其中手工SO?('('+aiT('手工')+' '+F.fmt(v.其中手工SO)+' + '+aiT('公式')+' '+F.fmt(v.公式SO)+')'):aiT('(全公式)'))
+    +(v.当月已发生SO!=null?('<br><span class="muted">'+aiT('整月口径')+' '+F.fmt(v.整月口径SO)+' = '+aiT('已发生')+' '+F.fmt(v.当月已发生SO)+' + '+aiT('剩余推演')+' '+F.fmt(v.推演SO)+'</span>'):'')+'</td></tr>'
+    +'<tr><td class="l">'+aiT('推演SI')+'</td><td>'+F.fmt(v.推演SI)+U+(v.其中手工SI?('('+aiT('含手工')+' '+F.fmt(v.其中手工SI)+')'):'')+'</td></tr>'
+    +'<tr><td class="l">'+aiT('平销基线')+'</td><td>'+(b['型号平销Σ台每周']!=null?(F.fmt(b['型号平销Σ台每周'])+' '+aiT('台/周')+' ×'+b.该月周数+aiT('周')+' ≈ '+F.fmt(b['平销×该月周数'])+U+'('+aiT('置信')+' '+b.置信高中低+')'):'—')+'</td></tr>'
+    +'<tr><td class="l">'+aiT('对比')+'</td><td>'+aiT('上月')+' '+(c.上月!=null?F.fmt(c.上月):'—')+' · '+aiT('去年同月')+' '+(c.去年同月实际!=null?F.fmt(c.去年同月实际):'—')
+    +(c.与去年同月比?(' · '+aiT('同比')+' '+c.与去年同月比):'')+'</td></tr></table>';
+  if(r.解读要点&&r.解读要点.length){
+    h+='<div style="margin-top:6px"><b>'+aiT('为什么是这个数:')+'</b><ul style="margin:4px 0 0 18px;padding:0">';
+    r.解读要点.forEach(function(n){ h+='<li>'+aiEsc(aiTN(n))+'</li>'; });
+    h+='</ul></div>';
+  }
+  h+='<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">'+aiT('周明细与增速链')+'</summary>'
+    +'<div class="muted" style="font-size:11px;margin-top:4px">'+aiT('增速:')+aiEsc(JSON.stringify(r.增速链))+'</div>'
+    +'<div class="muted" style="font-size:11px">'+aiT('SO按来源:')+aiEsc(JSON.stringify(r.SO按来源拆分))+'</div>';
+  (r.周明细||[]).forEach(function(w){ if(w.周)h+='<div class="muted" style="font-size:11px">'+aiEsc(w.周)+' SO '+F.fmt(w.SO)+' / SI '+F.fmt(w.SI)+' / '+aiEsc(aiTSrc(w.SO来源))+(w.大促周?aiT('·大促'):'')+(w.断供?aiT('·断供'):'')+'</div>'; });
+  h+='</details></div>';
+  return h;
+}
+async function aiAsk(q){
+  q=String(q||'').trim();
+  if(!q)return;
+  if(__aiBusy){ xgFlash(aiT('AI 正在回答上一问')); return; }
+  aiToggleDock(true);
+  aiPush('user',aiMdLite(q));
+  const rdy=aiReady();
+  if(!rdy.ok){
+    aiPush('a','<div class="note">'+aiEsc(rdy.why)+(aiLang()==='en'
+      ?' (Settings → AI Assistant). DeepSeek / MiniMax / Claude / OpenAI / CorpLink CLI / local LM Studio supported.<br>Without a model: select a monthly cell in Product Master → "AI Explain" for the deterministic breakdown.'
+      :'（设置页 → AI 助手）。支持 DeepSeek / MiniMax / Claude / OpenAI / CorpLink CLI / 本机 LM Studio。<br>不配模型时可用:总控选中月度格 → 选区工具条「AI 解释」看确定性因子分解。')+'</div>');
+    return;
+  }
+  __aiBusy=true;
+  const prog=aiPush('a','<span class="muted">'+aiT('正在取数与推理…')+'</span>');
+  const toolLog=[];
+  try{
+    const res=await aiOrchestrate(q,{
+      streamEl:prog,
+      onAgent:function(name){ toolLog.push('▷ '+aiT(name)); prog.innerHTML='<span class="muted">'+aiEsc(aiT(name))+' '+aiT('分析中…')+'</span>'; },
+      onTool:function(agent,tool,args){ toolLog.push(tool+' '+JSON.stringify(args)); },
+    });
+    let h='';
+    if(res.error)h='<div class="note">'+aiT('模型调用失败:')+aiEsc(res.error)+'</div>';
+    else {
+      h=aiMdLite(res.answer||aiT('(空回答)'));
+      if(res.blocked&&res.blocked.length)
+        h+='<div class="note" style="margin-top:6px">'+aiT('⚠ 以下数字在工具返回中查无出处,已替换为「?」:')+aiEsc(res.blocked.join(', '))+'</div>';
+    }
+    if(toolLog.length)h+='<details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-size:11px">'+aiT('取数轨迹')+'('+toolLog.length+')</summary><div class="muted" style="font-size:11px">'+toolLog.map(aiEsc).join('<br>')+'</div></details>';
+    prog.innerHTML=h;
+  }catch(e){
+    prog.innerHTML='<div class="note">'+aiT('出错:')+aiEsc(String(e&&e.message||e))+'</div>';
+  }finally{
+    __aiBusy=false; __aiStreamCb=null;
+    const box=document.getElementById('aiMsgs'); if(box)box.scrollTop=box.scrollHeight;
+  }
+}
+/* XGrid 联动:选中总控月度格 → 确定性解算(+有模型时追加 AI 叙述) */
+function aiExplainSelection(){
+  const cells=xgSelCells().filter(function(td){ return td.dataset&&td.dataset.mkm!=null; });
+  if(!cells.length){ xgFlash(aiT('请先在产品总控选中一个月度格(SI/SO)')); return; }
+  const d=cells[0].dataset;
+  const ix=d.mk.indexOf('||');
+  const args={product:d.mk.slice(0,ix),model:d.mk.slice(ix+2)||undefined,
+    country:d.mkc||undefined,month:+d.mkm};
+  aiToggleDock(true);
+  const who=aiEsc(args.product)+(args.model?(' '+aiEsc(args.model)):'')+(args.country?(' '+aiEsc(args.country)):'');
+  aiPush('user',aiLang()==='en'?('Explain the forecast for '+who+' · Mo '+args.month)
+    :('解释 '+who+' '+args.month+'月 的推演值'));
+  let r;
+  try{ r=aiExplainCell(args); }catch(e){ r={error:String(e&&e.message||e)}; }
+  aiPush('a','<div class="muted" style="font-size:11px;margin-bottom:4px">'+aiT('确定性解算(直接读推演引擎,非模型生成)')+'</div>'+aiExplainHtml(r));
+  if(state.ai&&state.ai.baseUrl&&!r.error)
+    aiAsk(args.product+(args.model?(' '+args.model):'')+(args.country?(' '+args.country):'')+' '+args.month+'月的推演SO是 '+r.月度值.推演SO+' 台,用因子分解解释为什么是这个水平,和上月/去年同月比高了还是低了,主要由哪个因子贡献。');
+}
+/* nav 与选区条上的 Agent 入口文案跟随语言 */
+function aiApplyNavLang(){
+  const nb=document.getElementById('btnAiNav');
+  if(nb)nb.textContent=aiT('AI 解读');
+  const xb=document.getElementById('xgAiBtn');
+  if(xb)xb.textContent=aiT('AI 解释');
+}
+window.__aiAsk=aiAsk;
+

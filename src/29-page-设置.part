@@ -1,0 +1,957 @@
+/* ===== 设置（免推演阈值 + 全局参数 + 模型说明） ===== */
+function renderSettings(elOpt){
+  const el=elOpt||$('#view-settings');
+  if(!elOpt){ const c=$('#view-rules'); if(c)c.innerHTML=''; }
+  const snap=snapshotOpenState(el);
+  const models=new Map();   // model → {product,line,inv}
+  const feed=function(list){ (list||[]).forEach(function(it){ const u=it.u;
+    let m=models.get(u.model);
+    if(!m){ m={model:u.model,product:u.product,line:u.line,inv:0}; models.set(u.model,m); }
+    if(it.cur.curInv!=null)m.inv+=it.cur.curInv;
+  }); };
+  feed(D&&D.list);
+  if(!D&&Dr)feed(Dr.list);   // 无 FSD 数据时用下游全集
+  const lines=[];
+  models.forEach(function(m){ if(m.line&&lines.indexOf(m.line)<0)lines.push(m.line); });
+  lines.sort();
+  let exN=0;
+  (D?D.list:[]).concat(Dr?Dr.list:[]).forEach(function(it){ if(it.exempt)exN++; });
+  let h='<div class="panel"><h3>免推演阈值（渠道库存 ≤ 阈值台数 → 不进待确认、不推演、不算 DOS 风险;当前命中 <b id="exHitCnt">'+exN+'</b> 个单元）</h3>'
+    +'<div class="bar">全局默认:每个渠道该型号库存 ≤ <input type="number" id="exGlobal" min="0" value="'+(state.exempt.global==null?'':state.exempt.global)+'"> 台即免（清空=不启用全局阈值）</div>'
+    +'<div class="note" style="margin-bottom:8px">优先级:型号覆盖 &gt; 产品线默认 &gt; 全局默认。判定对象是**每个渠道单元自己的库存**(FSD 单元=渠道总库存 INV,下游单元=该渠道 Inventory1)。库存为 0 或无库存记录的单元自动命中。</div>';
+  h+='<h3 style="margin-top:8px">分产品线默认</h3><table style="min-width:0"><thead><tr><th class="l">产品线</th><th>阈值(台)</th></tr></thead><tbody>';
+  lines.forEach(function(line){
+    h+='<tr><td class="l">'+esc(line)+'</td>'
+      +'<td><input type="number" min="0" data-exline="'+esc(line)+'" value="'+(state.exempt.line[line]==null?'':state.exempt.line[line])+'" placeholder="'+(state.exempt.global==null?'不启用':state.exempt.global)+'"></td></tr>'; });
+  h+='</tbody></table>';
+  h+='<h3 style="margin-top:12px">分型号覆盖（每行对应一个型号,库存为该型号全部渠道合计；填写数值即覆盖上级默认）</h3>';
+  lines.forEach(function(line){
+    const ms=[]; models.forEach(function(m){ if(m.line===line)ms.push(m); });
+    ms.sort(function(a,b){ return b.inv-a.inv; });
+    h+='<details data-sec="ex-'+esc(line)+'" style="margin-bottom:6px"><summary style="cursor:pointer;padding:3px 0">'+esc(line)+'（'+ms.length+' 个型号）</summary>'
+      +'<div class="tblwrap" style="max-height:34vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">型号</th><th class="l">产品</th><th title="所有渠道合计">总库存</th><th>免推演阈值(台/每渠道)</th></tr></thead><tbody>';
+    ms.forEach(function(m){
+      const eff=F.exemptThreshold(state.exempt,m.line,m.model);
+      h+='<tr><td class="l">'+esc(m.model)+'</td><td class="l ell" title="'+esc(m.product)+'">'+esc(m.product)+'</td>'
+        +'<td>'+F.fmt(m.inv)+'</td>'
+        +'<td><input type="number" min="0" data-exmodel="'+esc(m.model)+'" data-l="'+esc(m.line)+'" value="'+(state.exempt.model[m.model]==null?'':state.exempt.model[m.model])+'" placeholder="'+(eff==null?'未启用':'生效 '+eff)+'"></td></tr>';
+    });
+    h+='</tbody></table></div></details>';
+  });
+  h+='</div>';
+  /* ---- 年末收官 DOS 上限 ---- */
+  const g0=state.glide||{};
+  h+='<div class="panel"><h3>年末收官 DOS 上限（防止大促期滚动DOS虚低误触发补货；约束按「平销日均」=推演期中位周销÷7 折算）</h3>'
+    +'<div class="bar">10月底 ≤ <input type="number" id="gl10" min="1" value="'+(g0.m10!=null?g0.m10:100)+'"> 天'
+    +'　11月底 ≤ <input type="number" id="gl11" min="1" value="'+(g0.m11!=null?g0.m11:70)+'"> 天'
+    +'　12月底/年底 ≤ <input type="number" id="gl12" min="1" value="'+(g0.m12!=null?g0.m12:50)+'"> 天'
+    +'　<label><input type="checkbox" id="glLY"'+(g0.useLastYear!==false?' checked':'')+'> 参考去年同期（取去年实际与默认的<b>较小者</b>,平销口径）</label></div>';
+  if(D&&D.lyCaps&&Object.keys(D.lyCaps).length){
+    h+='<div class="tblwrap" style="max-height:30vh;margin-top:8px"><table class="sortable"><thead><tr><th class="l">产品线</th>'
+      +'<th>去年10月底<div style="font-weight:400;font-size:10px;color:var(--sub)">库存 / 平销DOS</div></th>'
+      +'<th>去年11月底</th><th>去年12月底</th><th>本次采用上限 10/11/12</th></tr></thead><tbody>';
+    const glines=[];
+    (D?D.list:[]).forEach(function(it){ if(it.u.line&&glines.indexOf(it.u.line)<0)glines.push(it.u.line); });
+    glines.sort();
+    glines.forEach(function(line){
+      const r=D.lyCaps[line]||{};
+      const cell=function(m){ const e=r[m];
+        return e?(F.fmt(e.inv)+' / '+(e.dos!=null?e.dos+'天':'—')):'<span class="muted">无数据</span>'; };
+      h+='<tr><td class="l">'+esc(line)+'</td><td>'+cell(10)+'</td><td>'+cell(11)+'</td><td>'+cell(12)+'</td>'
+        +'<td data-glcap="'+esc(line)+'">'+D.capFor(line,10)+' / '+D.capFor(line,11)+' / '+D.capFor(line,12)+' 天</td></tr>';
+    });
+    h+='</tbody></table></div><div class="note" style="margin-top:6px">采用逻辑：默认梯度是<b>硬上限</b>;勾选参考去年时,去年实际<b>更低</b>才采纳去年（参考只会更严,上年异常水位不作为放宽依据）。10月底放宽=铺货期,11-12月只减不增,年底轻库存收官。<b>本梯度只约束 FSD 直签要货;下游/音频 Purchase 推演按各渠道×型号回测的全年月末画像模拟,不卡此线</b>(见系数页回测表「月末画像」列)。</div>';
+  }
+  h+='</div>';
+  /* ---- 渠道名管理（下游） ---- */
+  if(Dr){
+    const chMap=new Map();
+    Dr.list.forEach(function(it){ const u=it.u;
+      let e=chMap.get(u.account);
+      if(!e){ e={display:u.account,raws:{},units:0,unmapped:u.unmapped}; chMap.set(u.account,e); }
+      e.units++;
+      u.rawNames.forEach(function(rn){ e.raws[rn]=1; });
+    });
+    const chRows=Array.from(chMap.values());
+    chRows.sort(function(a,b){ return a.display.localeCompare(b.display,'zh'); });
+    h+='<div class="panel"><h3>渠道名管理（下游渠道；重命名对所有同名渠道生效,并自动迁移已有手工编辑与豁免标记）</h3>'
+      +'<div class="note" style="margin-bottom:6px">Others(原名) 与「未映射」渠道均可在此命名；命名随方案保存,重新扫描或迁移至其他电脑（携带方案JSON）均保留。清除即恢复内置映射。</div>'
+      +'<div class="tblwrap" style="max-height:40vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">当前显示名</th><th class="l">原始渠道名</th><th>单元数</th><th class="l">改名为</th></tr></thead><tbody>';
+    chRows.forEach(function(e,i){
+      const raws=Object.keys(e.raws);
+      const aliased=raws.some(function(rn){ return state.channelAlias[String(rn).trim()]!=null; });
+      h+='<tr><td class="l">'+esc(e.display)+(e.unmapped?' <span class="chip">未映射</span>':'')+(aliased?' <span class="chip anchor">自定义</span>':'')+'</td>'
+        +'<td class="l ell" style="max-width:280px" title="'+esc(raws.join('\n'))+'">'+esc(raws.join(' / '))+'</td>'
+        +'<td>'+e.units+'</td>'
+        +'<td class="l"><input type="text" data-chidx="'+i+'" placeholder="输入新名称后回车" style="width:170px">'
+        +(aliased?' <button class="mini" data-chclear="'+i+'">清除自定义</button>':'')+'</td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+    window.__chRows=chRows;   // 供事件绑定取 raws
+  }
+  /* ---- 手工干预总账:一切优先于公式的人工值集中显形(知识库教训:手工值静默覆盖=不可发现的错误) ---- */
+  (function(){
+    const cnt=function(bag){ return Object.keys(bag||{}).length; };
+    const cells=function(bag){ let s2=0; Object.keys(bag||{}).forEach(function(k2){ s2+=Object.keys(bag[k2]||{}).length; }); return s2; };
+    let nDec=0; Object.keys(state.decisions||{}).forEach(function(k2){ if(state.decisions[k2]&&state.decisions[k2].mode)nDec++; });
+    let nLock=0; Object.keys(state.lockQty||{}).forEach(function(k2){ if(state.lockQty[k2]&&state.lockQty[k2].on)nLock++; });
+    const items=[
+      ['手工SO拍数',cnt(state.ovSO)+' 单元 / '+cells(state.ovSO)+' 周格','推演编辑/总控/汇总模拟;选区「恢复公式」或节点「恢复」可清'],
+      ['手工SI拍数',cnt(state.ovSI)+' 单元 / '+cells(state.ovSI)+' 周格','同上'],
+      ['外推年拍数',cnt(state.ovExt)+' 单元 / '+cells(state.ovExt)+' 年月格','推演编辑外推列/总控+明年;每月「恢复」可清'],
+      ['推演方式确认',nDec+' 单元','待确认页/明细页'],
+      ['增长系数改写',cnt(state.growth)+' 单元','总控调节条/明细页;清空恢复默认'],
+      ['爆发系数改写',cnt(state.burst)+' 型号','总控;清空恢复自动'],
+      ['锁量启用',nLock+' 型号','总控;清空总量即停'],
+      ['豁免(不推演)',cnt(state.ignored)+' 单元','下游/音频板;可取消'],
+      ['补货口径拍板',cnt(state.buyMode)+' 单元','待确认页·补货口径待审视;可撤销'],
+      ['周系数微调',cnt(state.kedit)+' 层','系数页;清空单元格恢复默认'],
+    ];
+    let hTot=cnt(state.ovSO)+cnt(state.ovSI)+cnt(state.ovExt)+nDec+cnt(state.growth)
+      +cnt(state.burst)+nLock+cnt(state.ignored)+cnt(state.buyMode)+cnt(state.kedit);
+    /* 手拍键体检(2026-09-04 阶段1 D12):V70 及之前下游页周表把手拍写成不带源前缀的裸键,推演读不到;列出来让用户迁移或删除 */
+    (function(){
+      const a=ovKeyAudit();
+      if(!(a.stray.length||a.dual.length))return;
+      h+='<div class="panel"><h3>手拍键体检 <span class="muted">('+a.stray.length+' 处属于下游/音频单元的裸键,'+a.dual.length+' 处 FSD 与下游/音频同名两可)</span></h3>'
+        +'<div class="note">V70 及之前,下游/音频页周表拍数写的是不带来源前缀的键,推演读不到(或串到同名 FSD 单元)。「迁移」把它们挪到正确的来源前缀(拍数从此生效);「删除」直接清掉;两可的键请先在推演编辑核对再决定。</div>'
+        +'<div class="tblwrap" style="max-width:900px"><table><thead><tr><th class="l">键</th><th class="l">袋</th><th class="l">属于</th><th>周数</th></tr></thead><tbody>'
+        +a.stray.concat(a.dual).map(function(x){ return '<tr><td class="l">'+esc(x.key)+'</td><td class="l">'+x.bag+'</td><td class="l">'+x.owner+'</td><td>'+x.n+'</td></tr>'; }).join('')
+        +'</tbody></table></div>'
+        +'<div style="margin-top:6px"><button class="ghost" id="btnOvKeyMig"'+(a.stray.length?'':' disabled')+'>迁移到下游/音频前缀('+a.stray.length+')</button> '
+        +'<button class="ghost" id="btnOvKeyDrop">删除这些裸键('+(a.stray.length+a.dual.length)+')</button></div></div>';
+    })();
+    h+='<div class="panel"><h3>手工干预总账 <span class="muted">('+hTot+' 处,均优先于公式)</span></h3>'
+      +'<div class="note">全部人工改写的集中计数:手工值永远优先于自动推演、不被公式覆盖——分散在各页时容易忘,这里一眼看全。恢复方式见右列;键失联的「孤儿设置」另见下方检测面板。</div>'
+      +'<div class="tblwrap" style="max-width:760px"><table><thead><tr><th class="l">类别</th><th class="l">规模</th><th class="l">入口 / 恢复</th></tr></thead><tbody>'
+      +items.map(function(x){ return '<tr><td class="l">'+x[0]+'</td><td class="l">'+x[1]+'</td><td class="l muted">'+x[2]+'</td></tr>'; }).join('')
+      +'</tbody></table></div></div>';
+  })();
+  /* ---- 孤儿手工设置检测:键升级/渠道改名后失联的设置必须显形,不许静默失效 ---- */
+  /* 守卫:已配置的文件夹必须全部加载成功才评估,否则某源临时加载失败会把该源设置误判为孤儿 */
+  const orphanReady=(store||retailStore||audioStore)
+    &&(!state.folder||store)&&(!state.folder2||retailStore)&&(!state.folder3||audioStore);
+  if(orphanReady){
+    const known={};
+    [store,retailStore,audioStore].forEach(function(s2){ if(s2)s2.units.forEach(function(u2,k2){ known[k2]=1; }); });
+    const scanO=function(bag){ return Object.keys(bag||{}).filter(function(k2){ return !known[k2]; }); };
+    /* 监控基线里 sum| 前缀是推演汇总层级节点的基线(非单元键),不参与孤儿判定 */
+    const scanB=function(bag){ return Object.keys(bag||{}).filter(function(k2){ return k2.indexOf('sum|')!==0&&!known[k2]; }); };
+    const orphans={
+      '手工SO改写':scanO(state.ovSO),'手工SI改写':scanO(state.ovSI),
+      '推演方式确认':scanO(state.decisions),'增长系数':scanO(state.growth),
+      '豁免标记':scanO(state.ignored),'监控基线':scanB(state.watchBase),
+      '监控名单':[].concat(scanO(state.watch.fsd),scanO(state.watch.retail),scanO(state.watch.audio)),
+      '风险勾选':[].concat(scanO(state.riskSel.fsd),scanO(state.riskSel.retail),scanO(state.riskSel.audio))};
+    let oTot=0; Object.keys(orphans).forEach(function(k2){ oTot+=orphans[k2].length; });
+    if(oTot>0){
+      h+='<div class="panel" style="border-left:4px solid var(--warn)"><h3>⚠ 未匹配当前数据的手工设置（'+oTot+' 条）</h3>'
+        +'<div class="note">以下设置的键在当前数据中不存在（常见原因：单元键升级为 国家×渠道×型号、渠道改名、产品停售或底表口径变化）。这些设置<b>当前未生效</b>：<br>'
+        +Object.keys(orphans).filter(function(k2){ return orphans[k2].length; })
+          .map(function(k2){ return k2+' '+orphans[k2].length+' 条'; }).join(' · ')
+        +'</div><div class="bar" style="margin-top:6px"><button class="ghost" id="btnOrphanClean">一键清理全部失联设置</button>'
+        +'<span class="note">如需保留请先在对应看板重新设置后再清理。</span></div></div>';
+    }
+  }
+  /* ---- 未映射产品警示:不许静默放走,提醒用户归档 ---- */
+  if(unmappedProds.length){
+    h+='<div class="panel" style="border-left:4px solid var(--warn)"><h3>⚠ 未映射产品（'+unmappedProds.length+' 个）——请归类归档</h3>'
+      +'<div class="note">以下产品在底表中出现但不在产品映射表（产品→产品系族）里：'
+      +'<b>不参与系族级年底 DOS 管控与大盘增速的系族层</b>。'
+      +'请把「产品名 → 产品系族」的归属发给维护者更新内置映射；新品上市后请优先补录。</div>'
+      +'<div class="tblwrap" style="max-height:24vh"><table><thead><tr>'
+      +'<th class="l">产品线(底表)</th><th class="l">产品</th><th class="l">出现于</th></tr></thead><tbody>'
+      +unmappedProds.map(function(x){
+        return '<tr><td class="l">'+esc(x.line||'—')+'</td><td class="l">'+esc(x.product)+'</td><td class="l">'+esc(x.srcs)+'</td></tr>'; }).join('')
+      +'</tbody></table></div></div>';
+  }
+  /* ---- 大盘增速:全年预测增速(系族>产品线>全局;单元手工增长系数最优先) ---- */
+  (function(){
+    const bg=state.bigGrowth;
+    const pct=function(v){ return v==null?'':String(Math.round((v-1)*100)); };
+    const lines2=[];
+    [store,retailStore,audioStore].forEach(function(s2){
+      if(s2)s2.units.forEach(function(u2){ if(u2.line&&lines2.indexOf(u2.line)<0)lines2.push(u2.line); }); });
+    lines2.sort();
+    const fams={};
+    Object.keys(F.PRODUCT_MAP).forEach(function(p2){ const e2=F.PRODUCT_MAP[p2];
+      if(!fams[e2.family])fams[e2.family]=e2.line; });
+    const famKeys=Object.keys(fams).sort(function(a,b){
+      return fams[a]===fams[b]?(a<b?-1:1):(fams[a]<fams[b]?-1:1); });
+    h+='<div class="panel"><h3>大盘增速（全年预测，作用于全部自动推演）</h3>'
+      +'<div class="note">输入相对去年的增速百分比（如 10 = +10%，-20 = 降 20%），留空 = 不调整（按去年原样参考）。'
+      +'生效优先级：单元手工增长系数（推演明细页）＞ 产品系族 ＞ 产品线 ＞ 全局。修改即时生效于全部自动推演（手工改写值不受影响）。</div>'
+      +'<div class="bar" style="margin:6px 0"><label>全局增速 % <input type="text" id="bgGlobal" style="width:70px" placeholder="0" value="'+pct(bg.global)+'"></label></div>'
+      +'<details data-sec="bgLine"><summary>按产品线（'+Object.keys(bg.line).length+' 项已设）</summary>'
+      +'<table style="min-width:0"><tbody>'
+      +lines2.map(function(l2){
+        return '<tr><td class="l">'+esc(l2)+'</td><td><input type="text" class="bgLine" data-l="'+esc(l2)+'" style="width:70px" placeholder="继承全局" value="'+pct(bg.line[l2])+'"> %</td></tr>'; }).join('')
+      +'</tbody></table></details>'
+      +'<details data-sec="bgFam"><summary>按产品系族（'+Object.keys(bg.family).length+' 项已设，档位口径）</summary>'
+      +'<table style="min-width:0"><tbody>'
+      +famKeys.map(function(f2){
+        return '<tr><td class="l">'+esc(fams[f2])+'</td><td class="l">'+esc(f2)+'</td><td><input type="text" class="bgFam" data-f="'+esc(f2)+'" style="width:70px" placeholder="继承产品线" value="'+pct(bg.family[f2])+'"> %</td></tr>'; }).join('')
+      +'</tbody></table></details></div>';
+  })();
+  /* ---- 渠道属性:类型(线下/电渠/商城Eshop)+补货周期天数(SI→SO 起量等待);商城不参与 DOS 考核 ---- */
+  (function(){
+    const names={};
+    [store,retailStore,audioStore].forEach(function(s2){
+      if(s2)s2.units.forEach(function(u2){ if(u2.account)names[u2.account]=1; }); });
+    const list=Object.keys(names);
+    if(!list.length)return;
+    const sug=function(nm){ return /AMAZON|MERCADO|LINIO|ALIEXPRESS|TIENDAMIA|SHOPEE|E-?COM|\.COM|ONLINE|ESHOP|E-SHOP|电商|线上|商城/i.test(nm); };
+    list.sort(function(a,b){
+      const ea=chanTypeOf(a)!=='offline'?1:0, eb=chanTypeOf(b)!=='offline'?1:0;
+      if(ea!==eb)return eb-ea;
+      const sa=sug(a)?1:0, sb=sug(b)?1:0;
+      if(sa!==sb)return sb-sa;
+      return a<b?-1:1; });
+    let nE=0,nS=0; list.forEach(function(nm){ const t=chanTypeOf(nm); if(t==='ecom')nE++; else if(t==='eshop')nS++; });
+    h+='<div class="panel"><h3>渠道属性（电渠 <span id="cpEcom">'+nE+'</span> · 商城Eshop <span id="cpEshop">'+nS+'</span> · 共 '+list.length+' 个渠道）</h3>'
+      +'<div class="note">覆盖全部数据源（FSD 直签 / 下游间接 / 音频客户）。'
+      +'<b>类型</b>：商城Eshop 不参与 DOS 考核（SO 目标页与告警自动豁免，SO 达成仍考核）；电渠/线下影响补货响应评估窗口。'
+      +'<b>补货周期</b>：SI 到货后 SO 开始起量需等待的天数——留空按默认（电渠/商城 0 天，线下 14 天），可逐渠道设置；'
+      +'ST→SO 激活评估窗口 = 补货周期折算周起、观察 2 周。名称含 Amazon / Online / Eshop 等关键词的渠道已排前，请人工确认。</div>'
+      +'<div class="bar" style="margin:6px 0"><input type="text" id="cpQ" placeholder="搜索渠道名（本地过滤，不刷新页面）" style="min-width:260px" value=""></div>'
+      +'<div style="max-height:36vh;overflow:auto;border:1px solid var(--line);border-radius:8px">'
+      +'<table><thead><tr><th class="l">渠道</th><th class="l">类型</th><th class="l" title="SI 到货后 SO 起量等待天数;留空=默认(电渠/商城0,线下14)">补货周期(天)</th><th class="l"></th></tr></thead><tbody>'
+      +list.map(function(nm){
+        const p=state.chanProp[nm]||{};
+        const t=p.type||'offline';
+        return '<tr class="cpRow" data-nm="'+esc(nm)+'">'
+          +'<td class="l ell" style="max-width:380px" title="'+esc(nm)+'">'+esc(nm)
+          +(sug(nm)&&t==='offline'?' <span class="chip base" title="按名称关键词识别的建议,以人工确认为准">疑似线上</span>':'')+'</td>'
+          +'<td class="l"><select class="cpType" data-nm="'+esc(nm)+'">'
+            +'<option value="offline"'+(t==='offline'?' selected':'')+'>线下</option>'
+            +'<option value="ecom"'+(t==='ecom'?' selected':'')+'>电渠</option>'
+            +'<option value="eshop"'+(t==='eshop'?' selected':'')+'>商城Eshop(不考核DOS)</option></select></td>'
+          +'<td class="l"><input type="text" class="cpLead" data-nm="'+esc(nm)+'" style="width:80px" placeholder="'+((t==='ecom'||t==='eshop')?'默认0':'默认14')+'" value="'+(p.leadDays!=null?p.leadDays:'')+'"></td>'
+          +'<td></td></tr>'; }).join('')
+      +'</tbody></table></div></div>';
+  })();
+  /* ---- FSD 渠道类别标记:真FSD/间接渠道 + 重命名(并非所有 FSD 底表渠道都是真 FSD) ---- */
+  if(store&&store.units.size){
+    const accs={};
+    store.units.forEach(function(u2){
+      const raw=(u2.rawNames&&u2.rawNames.length)?u2.rawNames[0]:u2.account;
+      if(!accs[raw])accs[raw]={raw:raw,cur:u2.account,inv1:0};
+      const cur2=F.unitCurrent(u2,state.cfg);
+      if(cur2.curInv1!=null)accs[raw].inv1+=cur2.curInv1;
+    });
+    const list=Object.keys(accs).map(function(k2){ return accs[k2]; });
+    list.sort(function(a,b){ return b.inv1-a.inv1; });
+    let nF=0,nI=0;
+    list.forEach(function(a){ const cc=state.chanClass[a.raw];
+      if(cc&&cc.cls==='fsd')nF++; else if(cc&&cc.cls==='indirect')nI++; });
+    h+='<div class="panel"><h3>FSD 渠道类别标记（真FSD '+nF+' · 下游渠道(间接) '+nI+' · 共 '+list.length+' 个渠道）</h3>'
+      +'<div class="note">FSD 底表中的渠道并非都是真正的 FSD：标记为「下游渠道(间接)」的单元与下游渠道表是同一个概念——推演进货走下游同款学习链(策略判型/月末画像/平销水位/前瞻需求),监控按动销口径,不能只看库存，需按下游口径关注动销；'
+      +'标记为「真FSD」后可在 FSD 库存页用「渠道类别」筛选直接查看真 FSD 库存并导出，无需逐个勾选。'
+      +'「显示名」为重命名：应用后全局生效（各看板、导出、手工设置一并迁移；导出仍带原始渠道名）。类别修改即时保存，切换看板后生效。</div>'
+      +'<div class="bar" style="margin:6px 0"><input type="text" id="ccQ" placeholder="搜索渠道名（本地过滤）" style="min-width:260px" value=""></div>'
+      +'<div style="max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:8px">'
+      +'<table><thead><tr><th class="l">渠道（原始名）</th><th>INV1合计</th><th class="l">类别</th><th class="l">显示名（重命名）</th><th></th></tr></thead><tbody>'
+      +list.map(function(a,i2){
+        const cc=state.chanClass[a.raw]||{};
+        return '<tr class="ccRow" data-nm="'+esc(a.raw)+'">'
+          +'<td class="l ell" style="max-width:340px" title="'+esc(a.raw)+'">'+esc(a.raw)
+          +(a.cur!==a.raw?' <span class="muted">→ '+esc(a.cur)+'</span>':'')+'</td>'
+          +'<td>'+F.fmt(a.inv1)+'</td>'
+          +'<td class="l"><select class="ccSel" data-nm="'+esc(a.raw)+'">'
+            +'<option value=""'+(!cc.cls?' selected':'')+'>未标记</option>'
+            +'<option value="fsd"'+(cc.cls==='fsd'?' selected':'')+'>真FSD</option>'
+            +'<option value="indirect"'+(cc.cls==='indirect'?' selected':'')+'>下游渠道(间接)</option></select></td>'
+          +'<td class="l"><input type="text" class="ccAlias" data-nm="'+esc(a.raw)+'" style="min-width:180px" placeholder="留空=不改名" value="'+esc(cc.alias||'')+'"></td>'
+          +'<td><button class="mini ccApply" data-nm="'+esc(a.raw)+'">应用改名</button></td></tr>';
+      }).join('')
+      +'</tbody></table></div></div>';
+  }
+  /* ---- 产品系族年底 DOS 基线(SO 目标跟踪的 Family 级管控) ---- */
+  (function(){
+    const fams={};
+    Object.keys(F.PRODUCT_MAP).forEach(function(p2){
+      const e2=F.PRODUCT_MAP[p2];
+      if(!fams[e2.family])fams[e2.family]={line:e2.line,n:0};
+      fams[e2.family].n++;
+    });
+    const keys=Object.keys(fams).sort(function(a,b){
+      const la=fams[a].line,lb=fams[b].line;
+      if(la!==lb)return la<lb?-1:1;
+      return a<b?-1:1; });
+    let nSet=0; keys.forEach(function(f2){ if(state.famBase[f2]!=null&&state.famBase[f2]>=0)nSet++; });
+    h+='<div class="panel"><h3>产品系族年底 DOS 基线（已设 '+nSet+' / '+keys.length+' 个系族）'
+      +' <button class="ghost" id="btnFamDef" style="margin-left:10px">恢复默认基线</button></h3>'
+      +'<div class="note">用于「SO目标」页的系族级管控：国家回填的 SO 目标按产品系族聚合推算年底 DOS，'
+      +'超过基线即在监控看板与 SO 目标页告警。留空 = 该系族不管控；<b>0 = 年底须清零</b>（有库存即告警）。'
+      +'默认基线为业务拍板值（P系列50 / Astra系列0 / nimbus精品50 / nimbus Y 60 / 智能手表50 / 轻智能手表40 / FIT 40 / 手环50 / '
+      +'运动健康智能硬件50 / 儿童50 / 开放式耳机40 / TWS基础40 / TWS精品45 / TWS旗舰45 / Slate Pro 65 / Air 60 / Slate Tab 40 / SE 35），可逐项修改。</div>'
+      +'<div style="max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 10px">'
+      +'<table><thead><tr><th class="l">产品线</th><th class="l">产品系族</th><th>覆盖产品数</th><th class="l">年底DOS基线(天)</th></tr></thead><tbody>'
+      +keys.map(function(f2){
+        const v=state.famBase[f2];
+        return '<tr><td class="l">'+esc(fams[f2].line)+'</td><td class="l">'+esc(f2)+'</td><td>'+fams[f2].n+'</td>'
+          +'<td class="l"><input type="text" class="fbIn" data-fam="'+esc(f2)+'" style="width:90px" placeholder="不管控" value="'+(v!=null?v:'')+'"></td></tr>';
+      }).join('')
+      +'</tbody></table></div></div>';
+  })();
+  /* ---- 平销引擎参数 + 下游预测基准 ---- */
+  h+='<div class="panel"><h3>平销引擎</h3>'
+    +'<div class="note">平销周销 = 剔除 首销期/大促周/缺货周(低库存且低销)/尾部衰退段 后的中位数，是「按平销推演」与新品估算的锚。'
+    +'FSD 产品在待确认板/推演明细页逐产品启用；下游与音频可在此全局切换预测基准（低置信单元自动回退原有方式）。</div>'
+    +'<div class="bar" style="margin-top:6px">'
+    +'<label>下游/音频预测基准 <select id="blPrefer">'
+      +'<option value="0"'+(state.useBaseline?'':' selected')+'>参考去年优先（现行）</option>'
+      +'<option value="1"'+(state.useBaseline?' selected':'')+'>平销引擎优先</option></select></label>'
+    +'<label title="上市后视为首销期的周数,首销 offer 抬高销量不算平销">首销期(周) <input type="text" id="blHead" style="width:60px" value="'+state.cfg.blHead+'"></label>'
+    +'<label title="周季节系数超过该值的周按促销周剔除">促销剔除阈值 κ <input type="text" id="blKappa" style="width:60px" value="'+state.cfg.blKappa+'"></label>'
+    +'<span class="note">识别结果见「系数与参数」页的「平销体检」。</span></div></div>';
+  /* ---- 国家大促周历(平销剔除依据;草案按 2026-08 网络核实,逐年浮动请修订) ---- */
+  (function(){
+    const cs={};
+    [store,retailStore,audioStore].forEach(function(s2){
+      if(s2)s2.units.forEach(function(u2){ if(u2.country)cs[u2.country]=1; }); });
+    Object.keys(F.PROMO_CAL_DEF).forEach(function(c){ cs[c]=1; });
+    const list=Object.keys(cs).sort();
+    if(!list.length)return;
+    let nOv=0; list.forEach(function(c){ if(state.promoCal[c]!=null)nOv++; });
+    h+='<div class="panel"><h3>国家大促周历（'+list.length+' 国 · 已自定义 '+nOv+' 国）</h3>'
+      +'<div class="note">用于平销识别的大促周剔除。格式：<code>周:名称; 起-止:名称</code>，如 <code>21-23:Hot Sale; 46-47:Buen Fin</code>（ISO 周号）。'
+      +'留空 = 使用内置草案（占位符所示；含各国 CyberDay/CyberWow/Hot Sale/Buen Fin/黑五/圣诞/返校季，返校口径：南美 2-3 月、墨西哥 7-9 月、中美 1-2 月）。'
+      +'大促日期逐年浮动，年初请核对修订。填写后覆盖该国全部默认。</div>'
+      +'<div style="max-height:36vh;overflow:auto;border:1px solid var(--line);border-radius:8px">'
+      +'<table><thead><tr><th class="l">国家</th><th class="l">大促周（可编辑）</th><th></th></tr></thead><tbody>'
+      +list.map(function(c){
+        const defTxt=F.promoSpecText(F.PROMO_CAL_DEF[c]||[]);
+        const ov=state.promoCal[c];
+        return '<tr><td class="l">'+esc(c)+(F.PROMO_CAL_DEF[c]?'':' <span class="muted">(无内置草案)</span>')+'</td>'
+          +'<td class="l"><input type="text" class="pcIn" data-c="'+esc(c)+'" style="width:100%;min-width:320px" placeholder="'+esc(defTxt||'无')+'" value="'+esc(ov!=null?F.promoSpecText(ov):'')+'"></td>'
+          +'<td><button class="mini pcRst" data-c="'+esc(c)+'"'+(ov!=null?'':' disabled')+'>恢复默认</button></td></tr>';
+      }).join('')
+      +'</tbody></table></div></div>';
+  })();
+  /* ---- RRP 价格与预算名:预算底表导出用(SUMIFS 到预算表) ---- */
+  (function(){
+    const pc={};   // product -> {line, countries:{}}
+    [store,retailStore,audioStore].forEach(function(stx){
+      if(!stx)return;
+      stx.units.forEach(function(u){
+        if(!u.product)return;
+        let e=pc[u.product]; if(!e)e=pc[u.product]={line:u.line||'',countries:{}};
+        if(u.country)e.countries[u.country]=1;
+      });
+    });
+    state.newProducts.forEach(function(np){
+      if(!pc[np.name])pc[np.name]={line:np.line||'',countries:{}};
+    });
+    const keys=Object.keys(pc);
+    if(!keys.length)return;
+    keys.sort(function(a,b){ const la=pc[a].line,lb=pc[b].line;
+      return la===lb?(a<b?-1:1):(la<lb?-1:1); });
+    let nRrp=0; keys.forEach(function(pd){ if(state.rrp[pd]&&Object.keys(state.rrp[pd]).length)nRrp++; });
+    h+='<div class="panel"><h3>RRP 价格与预算名（已填价格 '+nRrp+' / '+keys.length+' 个产品）</h3>'
+      +'<div class="note">供「导出预算底表」使用：<b>RRP</b> 按 产品×国家 填当地本币单价（含税零售价，与预算表口径一致）；'
+      +'<b>预算名</b> = 预算表里的「传播名」（如 Astra X7、Solano (Astra XT下一代)），留空则用软件产品名——SUMIFS 按此列匹配，务必与预算表逐字一致。'
+      +'新品规划中的产品也在列。填写即时保存。</div>'
+      +'<div class="bar" style="margin:6px 0"><input type="text" id="rrpQ" placeholder="搜索产品/国家（本地过滤）" style="min-width:260px"></div>'
+      +'<div style="max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:8px">'
+      +'<table><thead><tr><th class="l">产品线</th><th class="l">产品</th><th class="l" title="预算表「传播名」,SUMIFS 匹配列">预算名(传播名)</th>'
+      +'<th class="l">国家</th><th class="l" title="当地本币含税零售价">RRP(本币)</th></tr></thead><tbody>'
+      +keys.map(function(pd){
+        const e=pc[pd];
+        const cs=Object.keys(e.countries).sort();
+        if(!cs.length)cs.push('');
+        return cs.map(function(c,i){
+          const rv=(state.rrp[pd]&&c&&state.rrp[pd][c]!=null)?state.rrp[pd][c]:'';
+          return '<tr class="rrpRow" data-nm="'+esc(pd)+'">'
+            +(i===0?'<td class="l" rowspan="'+cs.length+'">'+esc(e.line)+'</td>'
+              +'<td class="l ell" rowspan="'+cs.length+'" style="max-width:240px" title="'+esc(pd)+'">'+esc(pd)+'</td>'
+              +'<td class="l" rowspan="'+cs.length+'"><input type="text" class="bnIn" data-pd="'+esc(pd)+'" style="min-width:170px" placeholder="'+esc(pd)+'" value="'+esc(state.budgetName[pd]||'')+'"></td>'
+              :'')
+            +'<td class="l">'+esc(c||'—')+'</td>'
+            +'<td class="l">'+(c?'<input type="text" class="rrpIn" data-pd="'+esc(pd)+'" data-c="'+esc(c)+'" style="width:110px" placeholder="未填" value="'+rv+'">':'<span class="muted">底表暂无国家</span>')+'</td></tr>';
+        }).join('');
+      }).join('')
+      +'</tbody></table></div></div>';
+  })();
+  /* ---- 产品生命周期:末次SI/退市周/承接;EOL 后停购+几何衰减(率从历史退市品学习) ---- */
+  (function(){
+    const prods={};
+    [[store,'FSD'],[retailStore,'下游'],[audioStore,'音频']].forEach(function(pair){
+      if(!pair[0])return;
+      pair[0].units.forEach(function(u2){
+        if(!u2.product)return;
+        let e=prods[u2.product]; if(!e)e=prods[u2.product]={line:u2.line||'',n:0,srcs:{}};
+        e.n++; e.srcs[pair[1]]=1;
+      });
+    });
+    const keys=Object.keys(prods);
+    if(!keys.length)return;
+    keys.sort(function(a,b){ const la=prods[a].line,lb=prods[b].line;
+      return la===lb?(a<b?-1:1):(la<lb?-1:1); });
+    let nSet=0; keys.forEach(function(pd){ if(state.lifecycle[pd])nSet++; });
+    const L=eolLearnAll();
+    h+='<div class="panel"><h3>产品生命周期（已设置 '+nSet+' / '+keys.length+' 个产品 · 历史退市样本 '+L.global.n+' 个）</h3>'
+      +'<div class="note">设「末次SI周」后：该产品全渠道自动补货即刻停用、SO 进入几何衰减（衰减率从本机历史退市产品学习：系族＞产品线＞全局'
+      +(L.global.rho!=null?'，当前全局学习值 ρ='+L.global.rho+'/周':'，暂无学习样本时用 0.93/周')+'）。'
+      +'设「退市周」后进入监控看板「产品退市监控」：按衰减外推到退市时点的预剩库存超过残值水位'
+      +(L.global.resInv!=null?'（历史退市品残值中位 '+F.fmt(L.global.resInv)+' 台，分系族取值）':'')
+      +'×1.5 即告警——退市库存不会降到零，按历史残值水位管控。'
+      +'「承接新品」用于新品规划页的量承接。周格式：<code>26W40</code> 或 <code>W40</code>（当年）。留空 = 无生命周期约束。</div>'
+      +'<div class="bar" style="margin:6px 0"><input type="text" id="lcQ" placeholder="搜索产品（本地过滤）" style="min-width:260px"></div>'
+      +'<div style="max-height:36vh;overflow:auto;border:1px solid var(--line);border-radius:8px">'
+      +'<table><thead><tr><th class="l">产品线</th><th class="l">产品</th><th>单元数</th>'
+      +'<th class="l" title="此周之后全渠道停止自动补货,SO 进入衰减">末次SI周</th>'
+      +'<th class="l" title="退市时点:预剩库存超残值水位×1.5 即告警">退市周</th>'
+      +'<th class="l">承接新品</th></tr></thead><tbody>'
+      +keys.map(function(pd){
+        const e=prods[pd]; const lc=state.lifecycle[pd]||{};
+        return '<tr class="lcRow" data-nm="'+esc(pd)+'">'
+          +'<td class="l">'+esc(e.line)+'</td>'
+          +'<td class="l ell" style="max-width:300px" title="'+esc(pd)+'（'+esc(Object.keys(e.srcs).join('+'))+'）">'+esc(pd)+'</td>'
+          +'<td>'+e.n+'</td>'
+          +'<td class="l"><input type="text" class="lcSI" data-nm="'+esc(pd)+'" style="width:80px" placeholder="—" value="'+(lc.eolSI?esc(F.periodY(lc.eolSI)%100+'W'+F.periodW(lc.eolSI)):'')+'"></td>'
+          +'<td class="l"><input type="text" class="lcSO" data-nm="'+esc(pd)+'" style="width:80px" placeholder="—" value="'+(lc.eolSO?esc(F.periodY(lc.eolSO)%100+'W'+F.periodW(lc.eolSO)):'')+'"></td>'
+          +'<td class="l"><input type="text" class="lcSucc" data-nm="'+esc(pd)+'" style="min-width:160px" placeholder="无" value="'+esc(lc.succ||'')+'" list="lcProdList"></td></tr>';
+      }).join('')
+      +'</tbody></table></div>'
+      +'<datalist id="lcProdList">'+keys.map(function(pd){ return '<option value="'+esc(pd)+'">'; }).join('')+'</datalist></div>';
+  })();
+  /* ---- 渠道大促节点:跨年同期重复放量自动识别(Casona NightSale 类),人工确认后参与平销剔除 ---- */
+  (function(){
+    if(!store&&!retailStore&&!audioStore)return;
+    const confirmed=Object.keys(state.chanPromo);
+    h+='<div class="panel"><h3>渠道大促节点（已确认 '+confirmed.length+' 个渠道）'
+      +' <button class="ghost" id="btnCpScan" style="margin-left:8px">扫描建议</button></h3>'
+      +'<div class="note">识别口径：某渠道全产品周销聚合后按年归一，同一周号在 ≥2 个年份放量 ≥1.6 倍 → 该渠道的周期性大促候选（如某百货每年 4 月底 / 10 月底大促）。'
+      +'确认后该渠道这些周参与平销剔除（与国家大促周历叠加）；否决后不再重复建议。模型判定不准时以你的人工确认为准。</div>'
+      +'<div id="cpSugHost"></div>'
+      +(confirmed.length?'<div style="margin-top:8px"><b style="font-size:13px">已确认清单</b><div class="tblwrap" style="max-height:22vh"><table><tbody>'
+        +confirmed.map(function(a){
+          return state.chanPromo[a].map(function(sp,i2){
+            return '<tr><td class="l ell" style="max-width:340px" title="'+esc(a)+'">'+esc(a)+'</td>'
+              +'<td class="l">W'+sp.w1+(sp.w2!==sp.w1?'–W'+sp.w2:'')+'（'+esc(sp.name||'渠道大促')+'）</td>'
+              +'<td><button class="mini cpDel" data-a="'+esc(a)+'" data-i="'+i2+'">移除</button></td></tr>';
+          }).join('');
+        }).join('')
+        +'</tbody></table></div></div>':'')
+      +'</div>';
+  })();
+  /* ---- DOS 标红规则:全看板统一的月度管控红线(用于按国家管控月末库存水位) ---- */
+  (function(){
+    const dr=state.dosRed;
+    const rowH=function(lab,idp,th){
+      return '<tr><td class="l">'+lab+'</td>'
+        +'<td><input type="text" style="width:80px" id="dosR-'+idp+'-red" value="'+(th.red!=null?th.red:'')+'"></td>'
+        +'<td><input type="text" style="width:80px" id="dosR-'+idp+'-amber" value="'+(th.amber!=null?th.amber:'')+'"></td></tr>';
+    };
+    h+='<div class="panel"><h3>DOS 标红规则（全部看板统一生效）</h3>'
+      +'<div class="note">达到红线标红，达到预警线标黄；各月末 DOS 列按对应月份阈值判定，当前 DOS 与未单独设置的月份用通用阈值；'
+      +'∞（有库存零动销）恒标红；10月底列另有底色高亮。适用范围：FSD库存、月末DOS、推演汇总（树形/平铺/分月模拟面板）、下游渠道、音频专板。'
+      +'修改即时保存，切换看板后生效。</div>'
+      +'<div class="tblwrap" style="max-width:520px"><table><thead><tr>'
+      +'<th class="l">适用范围</th><th>红线(天)</th><th>预警线(天)</th></tr></thead><tbody>'
+      +rowH('通用（当前DOS / 其它月份）','def',dr.def)
+      +rowH('9月底','m9',dr.m[9]||{red:200,amber:150})
+      +rowH('10月底','m10',dr.m[10]||{red:100,amber:85})
+      +rowH('11月底','m11',dr.m[11]||{red:70,amber:60})
+      +rowH('12月底','m12',dr.m[12]||{red:50,amber:45})
+      +'</tbody></table></div></div>';
+  })();
+  (function(){
+    const c=aiCfg();
+    const grp=function(id,on,inner){ return '<div id="'+id+'" class="bar" style="flex-wrap:wrap;gap:8px'+(on?'':';display:none')+'">'+inner+'</div>'; };
+    const modelPick=function(id,models,cur){
+      return '<input type="text" id="'+id+'" list="'+id+'L" style="width:200px" value="'+esc(cur||'')+'">'
+        +'<datalist id="'+id+'L">'+models.map(function(m){ return '<option value="'+esc(m)+'">'; }).join('')+'</datalist>';
+    };
+    h+='<div class="panel"><h3>AI 助手（多提供方 · 取数口径与推演解释）</h3>'
+      +'<div class="note">与 Salesboard 同款接入:DeepSeek / MiniMax / Claude / OpenAI / CorpLink CLI(Acme内网) / 本机 LM Studio。'
+      +'双专家协同+溯源硬门禁(答案数字回查工具返回,查无出处替换「?」);任何看板都可提问(右上「AI 解读」)。'
+      +'问答内容<b>绝不落盘</b>;在线 API 会把问题与取数结果发往该服务商,内网数据请优先 CorpLink CLI 或本机 LM Studio。'
+      +'<b>不配模型也能用</b>:总控选中月度格→「AI 解释」直接给确定性因子分解。当前:<b>'+esc(aiProviderTag())+'</b></div>'
+      +'<div class="bar">提供方 <select id="aiProv">'
+      +Object.keys(AI_PROVIDERS).map(function(p){ return '<option value="'+p+'"'+(c.provider===p?' selected':'')+'>'+esc(AI_PROVIDERS[p].label)+'</option>'; }).join('')
+      +'</select>　超时 <input type="number" id="aiTmo" style="width:64px" min="10" max="600" value="'+(+((state.ai||{}).timeoutMs)||240)+'"> 秒'
+      +'　Agent 面板语言 <select id="aiLangSel" title="AI 解读面板/解算面板/入口按钮的界面语言(发给模型的口径与提示词恒为中文)">'
+      +'<option value="en"'+(aiLang()==='en'?' selected':'')+'>English</option>'
+      +'<option value="zh"'+(aiLang()==='zh'?' selected':'')+'>中文</option></select>'
+      +'　<button class="ghost" id="btnAiTest">测试连接</button> <span id="aiTestOut" class="muted"></span></div>'
+      +grp('aiGrpDs',c.provider==='deepseek','API Key <input type="password" id="aiDsKey" style="width:220px" placeholder="sk-…(platform.deepseek.com)" value="'+esc(c.dsKey)+'">　模型 '+modelPick('aiDsModel',AI_PROVIDERS.deepseek.models,c.dsModel))
+      +grp('aiGrpMx',c.provider==='minimax','API Key <input type="password" id="aiMxKey" style="width:220px" value="'+esc(c.key)+'">　模型 '+modelPick('aiMxModel',AI_PROVIDERS.minimax.models,c.model)+'　Base URL <input type="text" id="aiMxBase" style="width:300px" value="'+esc(c.baseUrl)+'">')
+      +grp('aiGrpAn',c.provider==='anthropic','API Key <input type="password" id="aiAnKey" style="width:220px" placeholder="sk-ant-…" value="'+esc(c.anKey)+'">　模型 '+modelPick('aiAnModel',AI_PROVIDERS.anthropic.models,c.anModel))
+      +grp('aiGrpOa',c.provider==='openai','API Key <input type="password" id="aiOaKey" style="width:220px" value="'+esc(c.oaKey)+'">　模型 '+modelPick('aiOaModel',AI_PROVIDERS.openai.models,c.oaModel))
+      +grp('aiGrpCli',c.provider==='corplink','命令 <input type="text" id="aiCliCmd" style="width:180px" placeholder="corplink-cli" value="'+esc(c.cliCmd)+'">　参数模板 <input type="text" id="aiCliArgs" style="width:220px" placeholder="chat --file {PROMPT_FILE}" value="'+esc(c.cliArgs)+'">　喂词方式 <select id="aiCliMode">'
+        +['stdin','file','arg'].map(function(m){ return '<option value="'+m+'"'+(c.cliMode===m?' selected':'')+'>'+m+'</option>'; }).join('')+'</select>')
+      +grp('aiGrpLm',c.provider==='lmstudio','服务器 <input type="text" id="aiLmBase" style="width:240px" value="'+esc(c.lmBase)+'">　模型名 <input type="text" id="aiLmModel" style="width:220px" placeholder="LM Studio 已加载的模型标识" value="'+esc(c.lmModel)+'">'
+        +'<span class="muted">连不上时:LM Studio → Developer → Start Server(可设开机自启后台常驻)</span>')
+      +'</div>';
+  })();
+  h+='<div class="panel"><h3>全局参数</h3><div class="bar">'
+    +'DOS 取数窗口 <input type="number" id="cfgWin" min="1" max="12" value="'+state.cfg.dosWindow+'"> 周'
+    +'　预测取整到(累计取整:每周为该步长倍数且累计总量不丢) <input type="number" id="cfgRound" min="1" value="'+state.cfg.roundTo+'">'
+    +'　自动判定门槛：去年有数 ≥<input type="number" id="cfgMinH" min="1" value="'+state.cfg.minHistWeeks+'">周 且同期参考覆盖率 ≥<input type="number" id="cfgMinCov" step="0.05" min="0" max="1" value="'+state.cfg.minRefCov+'"'
+    +'>　收尾判定：下游库存 ≤<input type="number" id="cfgTail" min="1" value="'+(state.cfg.tailWeeks||12)+'">周存量</div>'
+    +'<div class="bar"><label title="待确认的判定只看去年同期能不能参考。今年新型号、新渠道、改过名的渠道去年这个组合根本不存在,一律进待确认——哪怕今年已经卖了半年。打开后:今年自身数据够(平销置信度不是低)的单元默认按平销推演,不进待确认,也不会被推成 0。">'
+    +'<input type="checkbox" id="cfgAutoFlat"'+(state.cfg.autoFlat?' checked':'')+'> <b>今年数据够就不进待确认</b>（按平销推演）</label>'
+    +'　周系数层数 <select id="cfgKLayers" class="mkIn" style="width:auto" title="2 层=产品线×产品 / 产品线(2026-09-15 拍板,默认);5 层=再加 渠道×产品 / 渠道×产品线 / 国家×产品线(老口径)"><option value="2"'+((state.cfg.kLayers||2)===2?' selected':'')+'>2 层(默认)</option><option value="5"'+(state.cfg.kLayers===5?' selected':'')+'>5 层(老口径)</option></select>'
+    +'<span class="note">关掉=只认去年同期（原口径）。这个开关会改变推演数值，改完请核对总量。</span></div>'
+    +'<div class="note">取整到 5 时,周均 ≤2 的慢销产品预测将归零；此类单元通常已被免推演阈值覆盖,如需推演请在明细页手工编辑。</div></div>';
+  h+='<div class="panel"><h3>方案版本快照(保存/回溯)</h3>'
+    +'<div class="note">手动给当前全部方案(拍数/锁量/系数/设置)留一个版本;恢复任一快照前会自动再存一份「恢复前自动」,不怕误操作。快照存本机 userData/snapshots(保留近40份);单步误拍用「撤销」(Ctrl+Z)即可,不必回溯。</div>'
+    +'<div class="bar">备注名 <input id="snapName" class="mkIn" style="width:160px" placeholder="可空,如 拍完Q4预算">'
+    +'<button class="ghost" id="btnSnapSave">保存当前版本</button> <span id="snapMsg" class="muted"></span></div>'
+    +'<div id="snapList" class="tblwrap" style="max-width:640px;max-height:30vh"><div class="muted">加载中…</div></div></div>';
+  h+='<div class="panel"><h3>方案保存与升级</h3><div class="note" style="white-space:pre-line">'
+    +'你的全部设置（确认结果、手工改写、系数微调、免推演阈值、文件夹路径）保存在：\n'
+    +(SHELL_PATHS&&SHELL_PATHS.userData?SHELL_PATHS.userData+'\\fsd-psi-state.json':'（浏览器模式:本机 localStorage）')+'\n'
+    +'该目录与 exe 文件完全分离：升级时直接以新 exe 覆盖旧 exe,设置与数据完整保留。\n'
+    +'每天首次保存前自动留一份备份（backups 目录,保留近 10 天）；「清空全部数据与设置」也会先备份再清。\n'
+    +'亦可随时在「数据」页导出方案 JSON,用于手工备份或迁移至其他电脑。</div></div>';
+  h+='<div class="panel"><h3>模型说明（备注）</h3><div class="note" style="white-space:pre-line">'
+    +'【SO 推演】有去年同周→去年同周SO×档位×增长系数×(周系数÷默认周系数);缺同期参考→均值×周系数补估;下游无历史→近4周均SO×周系数。全部四舍五入到 '+state.cfg.roundTo+',手工改写原样保留。\n'
+    +'【周系数】五层(渠道×产品>渠道×产品线>国家×产品线>产品线×产品>产品线),默认=去年该层周销占比指数;渠道×产品层=该产品在该渠道自己的大促/淡季节奏(≥16有数周,平滑+收缩),可在系数页微调。\n'
+    +'【合理性校验】推演按4周分块,块均值环比上一块(首块对比近4周实际)超过 3×系数比 → 标记⚠推演异常（仅提示,不修改数值）。\n'
+    +'【SI/ST 补货】渠道历史上补货(SI≥2×周均销)≥3次→用它自己的触发/目标DOS中位数;否则用产品线默认。\n'
+    +'【ST 可行性】周均ST=今年至今ST合计÷有记录周数;预计可ST=周均ST×Σ剩余周系数(大促自动放大);年底预剩=max(0,INV1−预计可ST)。上半年ST得多,下半年才可能ST得多——速率外推,不含主观提速。\n'
+    +'【免推演】渠道库存≤阈值→不确认不推演不算风险;阈值三级(型号>产品线>全局)。\n'
+    +'【收尾判定】下游单元库存 ≤ 近4周均SO×收尾阈值周数(默认12)→ 标记自然收尾:SO按近4周均量平推至清库,不参考去年、不乘季节系数,不报推演异常。所有下游推演SO均受库存硬约束(实际SO≤当周可用库存,清零后为0)。</div></div>';
+  el.innerHTML=h;
+  restoreOpenState(el,snap);
+  /* 填表体验:阈值/参数输入只重算数据+局部刷新,不重建页面(不跳、不丢滚动、可连续填写) */
+  const refreshLocal=function(){
+    computeAll();
+    let n2=0; (D?D.list:[]).concat(Dr?Dr.list:[]).forEach(function(it){ if(it.exempt)n2++; });
+    const c=el.querySelector('#exHitCnt'); if(c)c.textContent=n2;
+    el.querySelectorAll('input[data-exmodel]').forEach(function(inp){
+      const eff=F.exemptThreshold(state.exempt,inp.dataset.l,inp.dataset.exmodel);
+      inp.placeholder=eff==null?'未启用':'生效 '+eff; });
+    el.querySelectorAll('input[data-exline]').forEach(function(inp){
+      inp.placeholder=state.exempt.global==null?'不启用':String(state.exempt.global); });
+    el.querySelectorAll('td[data-glcap]').forEach(function(td){
+      if(!D||!D.capFor)return;
+      const ln=td.dataset.glcap;
+      td.textContent=D.capFor(ln,10)+' / '+D.capFor(ln,11)+' / '+D.capFor(ln,12)+' 天'; });
+    const pend=pendingList();
+    const pn=pend.length+buyReviewList().length;
+    const badge=$('#pendBadge');
+    if(badge){ badge.style.display=pn?'':'none'; badge.textContent=pn; }
+  };
+  const numOrNull=function(v){ return v===''?null:(isFinite(+v)?+v:null); };
+  $('#exGlobal').onchange=function(){ state.exempt.global=numOrNull(this.value); refreshLocal(); };
+  el.querySelectorAll('input[data-exline]').forEach(function(inp){
+    inp.onchange=function(){ const v=numOrNull(inp.value);
+      if(v==null)delete state.exempt.line[inp.dataset.exline];
+      else state.exempt.line[inp.dataset.exline]=v;
+      refreshLocal(); }; });
+  el.querySelectorAll('input[data-exmodel]').forEach(function(inp){
+    inp.onchange=function(){ const v=numOrNull(inp.value);
+      if(v==null)delete state.exempt.model[inp.dataset.exmodel];
+      else state.exempt.model[inp.dataset.exmodel]=v;
+      refreshLocal(); }; });
+  (function(){
+    const bindAi=function(id,fn){ const inp=$('#'+id); if(!inp)return;
+      inp.onchange=function(){ if(!state.ai)state.ai={}; fn(this.value.trim()); saveState(); }; };
+    const prov=$('#aiProv');
+    if(prov)prov.onchange=function(){ if(!state.ai)state.ai={}; state.ai.provider=this.value; saveState(); render(); };
+    bindAi('aiTmo',function(v){ state.ai.timeoutMs=Math.min(600,Math.max(10,Math.round(F.parseCellNum(v)||240))); });
+    bindAi('aiDsKey',function(v){ state.ai.dsKey=v; }); bindAi('aiDsModel',function(v){ state.ai.dsModel=v; });
+    bindAi('aiMxKey',function(v){ state.ai.key=v; }); bindAi('aiMxModel',function(v){ state.ai.model=v; });
+    bindAi('aiMxBase',function(v){ state.ai.baseUrl=v; });
+    bindAi('aiAnKey',function(v){ state.ai.anKey=v; }); bindAi('aiAnModel',function(v){ state.ai.anModel=v; });
+    bindAi('aiOaKey',function(v){ state.ai.oaKey=v; }); bindAi('aiOaModel',function(v){ state.ai.oaModel=v; });
+    bindAi('aiCliCmd',function(v){ state.ai.cliCmd=v; }); bindAi('aiCliArgs',function(v){ state.ai.cliArgs=v; });
+    const wlM=$('#aiCliMode'); if(wlM)wlM.onchange=function(){ if(!state.ai)state.ai={}; state.ai.cliMode=this.value; saveState(); };
+    const lgS=$('#aiLangSel'); if(lgS)lgS.onchange=function(){
+      if(!state.ai)state.ai={};
+      state.ai.lang=this.value==='zh'?'zh':'en';
+      saveState();
+      const dk=aiDockEl(); if(dk)dk.remove();   // 下次打开按新语言重建
+      aiApplyNavLang();
+    };
+    bindAi('aiLmBase',function(v){ state.ai.lmBase=v; }); bindAi('aiLmModel',function(v){ state.ai.lmModel=v; });
+    const aiTest=$('#btnAiTest');
+    if(aiTest)aiTest.onclick=async function(){
+      const out=$('#aiTestOut');
+      const rdy=aiReady();
+      if(!rdy.ok){ out.textContent=rdy.why; return; }
+      out.textContent='连接中…';
+      try{
+        const r=await aiLlm({messages:[{role:'user',content:'只回复两个字:正常'}],maxTokens:16});
+        out.textContent=(r&&!r.error)?('✓ 连通:'+String(aiSplitThink(r.content||'').answer).slice(0,40)):('✗ '+((r&&r.error)||'无响应'));
+      }catch(e){ out.textContent='✗ '+String(e&&e.message||e).slice(0,80); }
+    };
+  })();
+  (function(){
+    const listEl=$('#snapList');
+    const refreshSnaps=async function(){
+      if(!listEl)return;
+      if(!(SHELL&&SHELL.snapList)){ listEl.innerHTML='<div class="muted">浏览器模式不支持快照</div>'; return; }
+      const r=await SHELL.snapList();
+      if(!r||!r.ok){ listEl.innerHTML='<div class="muted">读取失败</div>'; return; }
+      if(!r.list.length){ listEl.innerHTML='<div class="muted">还没有快照</div>'; return; }
+      listEl.innerHTML='<table><thead><tr><th class="l">时间</th><th class="l">备注</th><th>大小</th><th></th></tr></thead><tbody>'
+        +r.list.map(function(s){
+          const ts=s.stamp?(s.stamp.slice(0,4)+'-'+s.stamp.slice(4,6)+'-'+s.stamp.slice(6,8)+' '+s.stamp.slice(9,11)+':'+s.stamp.slice(11,13)):s.file;
+          return '<tr><td class="l">'+esc(ts)+'</td><td class="l">'+esc(s.name||'—')+'</td>'
+            +'<td>'+Math.round(s.size/1024)+'KB</td>'
+            +'<td><button class="mini snapRestoreBtn" data-f="'+esc(s.file)+'">恢复</button></td></tr>';
+        }).join('')+'</tbody></table>';
+      listEl.querySelectorAll('.snapRestoreBtn').forEach(function(b){
+        b.onclick=async function(){
+          if(!confirm('恢复到该版本？当前方案会先自动另存一份「恢复前自动」快照。'))return;
+          const r2=await snapRestore(b.dataset.f);
+          if(!r2.ok)alert('恢复失败:'+(r2.error||''));
+        };
+      });
+    };
+    const sb=$('#btnSnapSave');
+    if(sb)sb.onclick=async function(){
+      const msg=$('#snapMsg');
+      const r=await snapSaveNow(($('#snapName')||{}).value||'');
+      if(msg)msg.textContent=r.ok?('已保存 '+r.file):('失败:'+(r.error||''));
+      refreshSnaps();
+    };
+    refreshSnaps();
+  })();
+  $('#cfgWin').onchange=function(){ const v=F.parseCellNum(this.value); if(v)state.cfg.dosWindow=Math.max(1,Math.round(v)); refreshLocal(); };
+  $('#cfgRound').onchange=function(){ const v=F.parseCellNum(this.value); if(v)state.cfg.roundTo=Math.max(1,Math.round(v)); refreshLocal(); };
+  $('#cfgMinH').onchange=function(){ const v=F.parseCellNum(this.value); if(v)state.cfg.minHistWeeks=Math.max(1,Math.round(v)); refreshLocal(); };
+  $('#cfgMinCov').onchange=function(){ const v=F.parseCellNum(this.value); if(v!=null)state.cfg.minRefCov=Math.min(1,Math.max(0,v)); refreshLocal(); };
+  const caf=$('#cfgAutoFlat'); if(caf)caf.onchange=function(){ state.cfg.autoFlat=this.checked; recompute(); };
+  const ckl=$('#cfgKLayers'); if(ckl)ckl.onchange=function(){ state.cfg.kLayers=+this.value===5?5:2; recompute(); };
+  $('#cfgTail').onchange=function(){ const v=F.parseCellNum(this.value); if(v&&v>0)state.cfg.tailWeeks=Math.round(v); refreshLocal(); };
+  /* 渠道类别:类别即改即存零重建;改名走「应用」按钮(迁移键+重放 FSD 行+全局重算) */
+  el.querySelectorAll('.ccSel').forEach(function(s2){
+    s2.onchange=function(){
+      const nm=this.dataset.nm;
+      let cc=state.chanClass[nm];
+      if(this.value){ if(!cc)cc=state.chanClass[nm]={}; cc.cls=this.value; }
+      else if(cc){ delete cc.cls; if(!cc.alias)delete state.chanClass[nm]; }
+      saveState(); computeAll();   // 类别决定 真FSD/间接 口径(自动补货与延伸段分支),要重算(2026-09-02 审计)
+    };
+  });
+  el.querySelectorAll('.ccApply').forEach(function(b){
+    b.onclick=function(){
+      const nm=b.dataset.nm;
+      const inp=el.querySelector('.ccAlias[data-nm="'+CSS.escape(nm)+'"]');
+      if(!inp)return;
+      const neo=inp.value.trim();
+      let cc=state.chanClass[nm];
+      const oldShown=(cc&&cc.alias)?cc.alias:nm;
+      const newShown=neo||nm;
+      if(oldShown===newShown){ alert('显示名未变化。'); return; }
+      if(!confirm('将渠道「'+oldShown+'」重命名为「'+newShown+'」？\n全局生效：各看板显示、导出与手工设置(改写/确认/监控/勾选)一并迁移;导出仍附原始渠道名。'))return;
+      if(neo){ if(!cc)cc=state.chanClass[nm]={}; cc.alias=neo; }
+      else if(cc){ delete cc.alias; if(!cc.cls)delete state.chanClass[nm]; }
+      migrateAccountKeys(oldShown,newShown);
+      if(lastFsdRows)importRows(lastFsdRows,'渠道重命名重放');
+      else recompute();
+      saveState();
+    };
+  });
+  const ccQ=$('#ccQ');
+  if(ccQ)ccQ.oninput=function(){
+    const qq=this.value.toLowerCase();
+    el.querySelectorAll('.ccRow').forEach(function(tr2){
+      tr2.style.display=(!qq||tr2.dataset.nm.toLowerCase().indexOf(qq)>=0)?'':'none'; });
+  };
+  /* 产品系族基线:即改即存,并即时重算目标告警(不重建 DOM) */
+  el.querySelectorAll('.fbIn').forEach(function(inp){
+    inp.onchange=function(){
+      const fam=this.dataset.fam;
+      const v=F.parseCellNum(this.value);
+      if(v!=null&&v>=0)state.famBase[fam]=Math.round(v);   // 0 合法:年底须清零
+      else { delete state.famBase[fam]; this.value=''; }
+      recomputeTargets();
+      saveState();
+    };
+  });
+  const fbDef=$('#btnFamDef');
+  if(fbDef)fbDef.onclick=function(){
+    if(!confirm('将全部系族基线恢复为默认值？（未在默认清单中的系族将清空为不管控）'))return;
+    state.famBase={}; Object.assign(state.famBase,FAM_BASE_DEF);
+    recomputeTargets(); saveState(); render();
+  };
+  /* RRP/预算名:即改即存,零重建 */
+  el.querySelectorAll('.rrpIn').forEach(function(inp){
+    inp.onchange=function(){
+      const pd=this.dataset.pd,c=this.dataset.c;
+      const v=F.parseCellNum(this.value);
+      if(v!=null&&v>0){ if(!state.rrp[pd])state.rrp[pd]={}; state.rrp[pd][c]=v; }
+      else { this.value=''; if(state.rrp[pd]){ delete state.rrp[pd][c];
+        if(!Object.keys(state.rrp[pd]).length)delete state.rrp[pd]; } }
+      saveState(); __rrpGen++; (function(){ const c2=calcCache(); delete c2.budTo; delete c2.budOv; delete c2.pvExt; })();   // 底表金额列即时生效(2026-09-02 审计)
+    };
+  });
+  el.querySelectorAll('.bnIn').forEach(function(inp){
+    inp.onchange=function(){
+      const pd=this.dataset.pd; const v=this.value.trim();
+      if(v)state.budgetName[pd]=v; else delete state.budgetName[pd];
+      saveState(); __rrpGen++; (function(){ const c2=calcCache(); delete c2.budTo; delete c2.budOv; delete c2.pvExt; })();
+    };
+  });
+  const rrpQ=$('#rrpQ');
+  if(rrpQ)rrpQ.oninput=function(){
+    const qq=this.value.toLowerCase();
+    el.querySelectorAll('.rrpRow').forEach(function(tr2){
+      tr2.style.display=(!qq||tr2.dataset.nm.toLowerCase().indexOf(qq)>=0)?'':'none'; });
+  };
+  /* 产品生命周期:周文本解析复用全局 parseWeekText(26W40/W40),失败恢复原值;改动即全局重算 */
+  const parseWeekIn=parseWeekText;
+  const lcBind=function(cls,field){
+    el.querySelectorAll(cls).forEach(function(inp){
+      inp.onchange=function(){
+        const pd=this.dataset.nm;
+        const v=parseWeekIn(this.value);
+        if(v===undefined){ alert('周格式无效，请用 26W40 或 W40。'); this.value=''; return; }
+        let lc=state.lifecycle[pd];
+        if(v==null){ if(lc){ delete lc[field]; if(!lc.eolSI&&!lc.eolSO&&!lc.succ)delete state.lifecycle[pd]; } }
+        else { if(!lc)lc=state.lifecycle[pd]={}; lc[field]=v; }
+        computeAll(); saveState();
+      };
+    });
+  };
+  lcBind('.lcSI','eolSI'); lcBind('.lcSO','eolSO');
+  el.querySelectorAll('.lcSucc').forEach(function(inp){
+    inp.onchange=function(){
+      const pd=this.dataset.nm; const v=this.value.trim();
+      let lc=state.lifecycle[pd];
+      if(!v){ if(lc){ delete lc.succ; if(!lc.eolSI&&!lc.eolSO&&!lc.succ)delete state.lifecycle[pd]; } }
+      else { if(!lc)lc=state.lifecycle[pd]={}; lc.succ=v; }
+      computeAll(); saveState();
+    };
+  });
+  const lcQ=$('#lcQ');
+  if(lcQ)lcQ.oninput=function(){
+    const qq=this.value.toLowerCase();
+    el.querySelectorAll('.lcRow').forEach(function(tr2){
+      tr2.style.display=(!qq||tr2.dataset.nm.toLowerCase().indexOf(qq)>=0)?'':'none'; });
+  };
+  /* 渠道大促节点:扫描建议→确认/否决 */
+  const cpScan=$('#btnCpScan');
+  if(cpScan)cpScan.onclick=function(){
+    const host=$('#cpSugHost'); if(!host)return;
+    const all={};
+    [store,retailStore,audioStore].forEach(function(stx){
+      if(!stx||!stx.units.size)return;
+      F.chanPromoScan(stx,{}).forEach(function(sg){
+        let e=all[sg.account]; if(!e)e=all[sg.account]={spans:{},years:sg.years};
+        sg.spans.forEach(function(sp){ const k2=sp.w1+'-'+sp.w2;
+          if(!e.spans[k2]||e.spans[k2].lift<sp.lift)e.spans[k2]=sp; });
+      });
+    });
+    const rows2=[];
+    Object.keys(all).forEach(function(a){
+      Object.keys(all[a].spans).forEach(function(k2){
+        const sp=all[a].spans[k2];
+        if(state.chanPromoDeny[a+'|'+k2])return;
+        const cf=state.chanPromo[a]||[];
+        if(cf.some(function(x){ return x.w1===sp.w1&&x.w2===sp.w2; }))return;
+        rows2.push({a:a,sp:sp,years:all[a].years});
+      });
+    });
+    rows2.sort(function(x,y){ return y.sp.lift-x.sp.lift; });
+    if(!rows2.length){ host.innerHTML='<div class="note" style="margin-top:6px">没有新的建议（已确认/已否决的不再显示）。</div>'; return; }
+    let hh='<div class="note" style="margin:6px 0">建议 '+rows2.length+' 条（按放量倍数排序）：</div>'
+      +'<div class="tblwrap" style="max-height:26vh"><table><thead><tr>'
+      +'<th class="l">渠道</th><th class="l">周期</th><th>放量倍数</th><th>覆盖年份</th><th class="l">操作</th></tr></thead><tbody>';
+    rows2.slice(0,60).forEach(function(r2,i2){
+      hh+='<tr><td class="l ell" style="max-width:320px" title="'+esc(r2.a)+'">'+esc(r2.a)+'</td>'
+        +'<td class="l">W'+r2.sp.w1+(r2.sp.w2!==r2.sp.w1?'–W'+r2.sp.w2:'')+'</td>'
+        +'<td>×'+r2.sp.lift+'</td><td>'+r2.years+' 年</td>'
+        +'<td class="l"><button class="mini cpOk" data-i="'+i2+'">确认为大促</button> '
+        +'<button class="mini cpNo" data-i="'+i2+'">否决</button></td></tr>';
+    });
+    hh+='</tbody></table></div>';
+    host.innerHTML=hh;
+    host.querySelectorAll('.cpOk').forEach(function(b){
+      b.onclick=function(){
+        const r2=rows2[+b.dataset.i]; if(!r2)return;
+        if(!state.chanPromo[r2.a])state.chanPromo[r2.a]=[];
+        state.chanPromo[r2.a].push({w1:r2.sp.w1,w2:r2.sp.w2,name:'渠道大促'});
+        bumpDataGen();
+        recompute();
+      };
+    });
+    host.querySelectorAll('.cpNo').forEach(function(b){
+      b.onclick=function(){
+        const r2=rows2[+b.dataset.i]; if(!r2)return;
+        state.chanPromoDeny[r2.a+'|'+r2.sp.w1+'-'+r2.sp.w2]=1;
+        saveState();
+        b.closest('tr').style.opacity='.4'; b.closest('tr').querySelectorAll('button').forEach(function(x){x.disabled=true;});
+      };
+    });
+  };
+  el.querySelectorAll('.cpDel').forEach(function(b){
+    b.onclick=function(){
+      const a=b.dataset.a, i2=+b.dataset.i;
+      bumpDataGen();
+      if(state.chanPromo[a]){ state.chanPromo[a].splice(i2,1);
+        if(!state.chanPromo[a].length)delete state.chanPromo[a]; }
+      recompute();
+    };
+  });
+  /* DOS 标红规则:只落方案不重建 DOM(设置页不跳规则) */
+  const drBind=function(idp,get){
+    ['red','amber'].forEach(function(k){
+      const inp=$('#dosR-'+idp+'-'+k); if(!inp)return;
+      inp.onchange=function(){
+        const v=F.parseCellNum(inp.value);
+        if(v!=null&&v>0){ get()[k]=Math.round(v); saveState(); }
+        else inp.value=get()[k];
+      };
+    });
+  };
+  drBind('def',function(){ return state.dosRed.def; });
+  [9,10,11,12].forEach(function(mm){
+    drBind('m'+mm,function(){
+      if(!state.dosRed.m[mm])state.dosRed.m[mm]={red:200,amber:150};
+      return state.dosRed.m[mm]; });
+  });
+  /* 平销引擎参数:即改即算不重绘 */
+  const blP=$('#blPrefer');
+  if(blP)blP.onchange=function(){ state.useBaseline=this.value==='1'; computeAll(); saveState(); };
+  const blH=$('#blHead');
+  if(blH)blH.onchange=function(){ const v=F.parseCellNum(this.value);
+    if(v!=null&&v>=0&&v<=26){ state.cfg.blHead=Math.round(v); bumpDataGen(); computeAll(); saveState(); }
+    else this.value=state.cfg.blHead; };
+  const blK=$('#blKappa');
+  if(blK)blK.onchange=function(){ const v=F.parseCellNum(this.value);
+    if(v!=null&&v>1){ state.cfg.blKappa=v; bumpDataGen(); computeAll(); saveState(); }
+    else this.value=state.cfg.blKappa; };
+  /* 大促周历:即改即算;空=回默认草案 */
+  el.querySelectorAll('.pcIn').forEach(function(inp){
+    inp.onchange=function(){
+      const c=this.dataset.c, txt=this.value.trim();
+      bumpDataGen();
+      if(!txt){ delete state.promoCal[c]; }
+      else {
+        const arr=F.parsePromoSpec(txt);
+        if(!arr.length){ alert('格式无法识别，请按「周:名称; 起-止:名称」填写，如 21-23:Hot Sale; 46:Buen Fin'); this.value=state.promoCal[c]!=null?F.promoSpecText(state.promoCal[c]):''; return; }
+        state.promoCal[c]=arr;
+        this.value=F.promoSpecText(arr);
+      }
+      const rst=el.querySelector('.pcRst[data-c="'+CSS.escape(c)+'"]');
+      if(rst)rst.disabled=(state.promoCal[c]==null);
+      computeAll(); saveState();
+    };
+  });
+  el.querySelectorAll('.pcRst').forEach(function(b){
+    b.onclick=function(){
+      const c=b.dataset.c;
+      bumpDataGen();
+      delete state.promoCal[c];
+      const inp=el.querySelector('.pcIn[data-c="'+CSS.escape(c)+'"]');
+      if(inp)inp.value='';
+      b.disabled=true;
+      computeAll(); saveState();
+    };
+  });
+  /* 大盘增速:即改即算(computeAll,不整页重绘不跳);% → 倍数 */
+  const bgSet=function(get,set){
+    return function(){
+      const v=F.parseCellNum(this.value);
+      if(v==null){ set(null); this.value=''; }
+      else if(v>-100){ set(1+v/100); }
+      else { this.value=''; set(null); }
+      computeAll();
+      saveState();
+    };
+  };
+  const bgG=$('#bgGlobal');
+  if(bgG)bgG.onchange=bgSet(null,function(x){ if(x==null)state.bigGrowth.global=null; else state.bigGrowth.global=x; });
+  el.querySelectorAll('.bgLine').forEach(function(inp){
+    inp.onchange=bgSet(null,function(x){
+      if(x==null)delete state.bigGrowth.line[inp.dataset.l];
+      else state.bigGrowth.line[inp.dataset.l]=x; });
+  });
+  el.querySelectorAll('.bgFam').forEach(function(inp){
+    inp.onchange=bgSet(null,function(x){
+      if(x==null)delete state.bigGrowth.family[inp.dataset.f];
+      else state.bigGrowth.family[inp.dataset.f]=x; });
+  });
+  /* 渠道属性:即改即存零重建(设置页不跳规则);计数就地更新 */
+  const cpCnt=function(){
+    let nE=0,nS=0;
+    Object.keys(state.chanProp).forEach(function(a){ const t=state.chanProp[a].type;
+      if(t==='ecom')nE++; else if(t==='eshop')nS++; });
+    const e1=$('#cpEcom'); if(e1)e1.textContent=String(nE);
+    const e2=$('#cpEshop'); if(e2)e2.textContent=String(nS);
+  };
+  el.querySelectorAll('.cpType').forEach(function(s2){
+    s2.onchange=function(){
+      const nm=this.dataset.nm;
+      let p=state.chanProp[nm];
+      if(this.value==='offline'){ if(p){ delete p.type; if(p.leadDays==null)delete state.chanProp[nm]; } }
+      else { if(!p)p=state.chanProp[nm]={}; p.type=this.value; }
+      cpCnt(); saveState();
+    };
+  });
+  el.querySelectorAll('.cpLead').forEach(function(inp){
+    inp.onchange=function(){
+      const nm=this.dataset.nm;
+      const v=F.parseCellNum(this.value);
+      let p=state.chanProp[nm];
+      if(v!=null&&v>=0){ if(!p)p=state.chanProp[nm]={}; p.leadDays=Math.round(v); }
+      else { this.value=''; if(p){ delete p.leadDays; if(!p.type)delete state.chanProp[nm]; } }
+      saveState();
+    };
+  });
+  const cpQ=$('#cpQ');
+  if(cpQ)cpQ.oninput=function(){
+    const qq=this.value.toLowerCase();
+    el.querySelectorAll('.cpRow').forEach(function(tr2){
+      tr2.style.display=(!qq||tr2.dataset.nm.toLowerCase().indexOf(qq)>=0)?'':'none'; });
+  };
+  const okm=$('#btnOvKeyMig'); if(okm)okm.onclick=function(){
+    const a=ovKeyAudit();
+    a.stray.forEach(function(x){ const nk=ovKey(x.src,x.key); state[x.bag][nk]=Object.assign({},state[x.bag][x.key],state[x.bag][nk]||{}); delete state[x.bag][x.key]; });
+    saveState(); recompute(); xgFlash('已迁移 '+a.stray.length+' 处裸键到下游/音频前缀'); };
+  const okd=$('#btnOvKeyDrop'); if(okd)okd.onclick=function(){
+    const a=ovKeyAudit(); const all=a.stray.concat(a.dual);
+    if(!confirm('删除这 '+all.length+' 处裸键手拍?(不可撤销)'))return;
+    all.forEach(function(x){ delete state[x.bag][x.key]; });
+    saveState(); recompute(); xgFlash('已删除 '+all.length+' 处裸键'); };
+  const ob=$('#btnOrphanClean');
+  if(ob)ob.onclick=function(){
+    if(!confirm('清理全部失联的手工设置？（不影响当前数据中存在的设置）'))return;
+    const known2={};
+    [store,retailStore,audioStore].forEach(function(s2){ if(s2)s2.units.forEach(function(u2,k2){ known2[k2]=1; }); });
+    const clean=function(bag){ Object.keys(bag||{}).forEach(function(k2){ if(!known2[k2])delete bag[k2]; }); };
+    clean(state.ovSO);clean(state.ovSI);clean(state.ovTail);clean(state.decisions);clean(state.growth);
+    clean(state.ignored);
+    Object.keys(state.watchBase||{}).forEach(function(k2){
+      if(k2.indexOf('sum|')!==0&&!known2[k2])delete state.watchBase[k2]; });
+    clean(state.watch.fsd);clean(state.watch.retail);clean(state.watch.audio);
+    clean(state.riskSel.fsd);clean(state.riskSel.retail);clean(state.riskSel.audio);
+    recompute();
+  };
+  /* 年末收官 */
+  const glBind=function(id,key){ const inp=$('#'+id); if(!inp)return;
+    inp.onchange=function(){ const v=F.parseCellNum(inp.value);
+      if(v!=null&&v>0){ state.glide[key]=Math.round(v); refreshLocal(); } }; };
+  glBind('gl10','m10'); glBind('gl11','m11'); glBind('gl12','m12');
+  const glLY=$('#glLY'); if(glLY)glLY.onchange=function(){ state.glide.useLastYear=this.checked; refreshLocal(); };
+  /* 渠道改名 */
+  el.querySelectorAll('input[data-chidx]').forEach(function(inp){
+    const apply=function(){
+      const e=window.__chRows&&window.__chRows[+inp.dataset.chidx]; if(!e)return;
+      const nv=inp.value.trim();
+      if(!nv||nv===e.display)return;
+      renameChannel(e.display,nv,Object.keys(e.raws));
+    };
+    inp.addEventListener('keydown',function(ev){ if(ev.key==='Enter'){ev.preventDefault();apply();} });
+    inp.addEventListener('blur',apply);
+  });
+  el.querySelectorAll('button[data-chclear]').forEach(function(b){
+    b.onclick=function(){
+      const e=window.__chRows&&window.__chRows[+b.dataset.chclear]; if(!e)return;
+      Object.keys(e.raws).forEach(function(rn){ delete state.channelAlias[String(rn).trim()]; });
+      applyAliasAndRebuild();
+    };
+  });
+  makeSortable(el);
+}
+

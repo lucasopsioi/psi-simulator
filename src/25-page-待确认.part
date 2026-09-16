@@ -1,0 +1,146 @@
+/* ===== 待确认 ===== */
+function bulkConfirm(){
+  pendingList().forEach(function(it){
+    if(it.cls.status==='partial')state.decisions[it.u.key]={mode:'self'};
+    else { const avg=it.cur.avgWeeklySO;
+      if(avg!=null&&avg>0)state.decisions[it.u.key]={mode:'base',base:Math.round(avg)};
+      else state.decisions[it.u.key]={mode:'skip'}; }
+  });
+  recompute();
+}
+function warnsBlockHtml(){
+  const ws=D.list.filter(function(it){ return it.warns&&it.warns.length; });
+  if(!ws.length)return '';
+  let h='<div class="panel" style="border-left:4px solid var(--amber)"><h3>⚠ 推演合理性警示（'+ws.length+' 项；相邻月数量级校验，点击行至明细页核对）</h3>'
+    +'<div class="tblwrap" style="max-height:30vh"><table class="sortable"><thead><tr>'
+    +'<th class="l">账户</th><th class="l">产品</th><th class="l">型号</th><th class="l">警示</th></tr></thead><tbody>';
+  ws.forEach(function(it){ const i=D.list.indexOf(it);
+    h+='<tr data-i="'+i+'" style="cursor:pointer"><td class="l ell">'+esc(it.u.account)+'</td>'
+      +'<td class="l ell">'+esc(it.u.product)+'</td><td class="l">'+esc(it.u.model)+'</td>'
+      +'<td class="l" style="white-space:normal;min-width:320px">'+esc(warnText(it))+'</td></tr>'; });
+  h+='</tbody></table></div></div>';
+  return h;
+}
+function renderConfirm(){
+  const el=$('#view-confirm');
+  if(!D){ emptyHint(el); return; }
+  const pend=pendingList();
+  let exN=0,autoN=0;
+  D.list.forEach(function(it){ if(it.exempt)exN++; if(it.dec&&it.dec.auto)autoN++; });
+  const autoNote=autoN?('<div class="note">另有 <b>'+autoN+'</b> 项今年数据够，已由「今年数据够就不进待确认」开关按平销自动推演（设置页可关；关掉后它们会回到这里）。</div>'):'';
+  if(!pend.length){
+    el.innerHTML='<div class="panel">✅ 无待确认产品：所有单元均已确定推演口径。'
+      +(exN?'<span class="muted">（另有 '+exN+' 项因低库存免推演,阈值见「设置」页）</span>':'')+'</div>'
+      +autoNote+buyReviewBlockHtml()+warnsBlockHtml();
+    el.querySelectorAll('tr[data-i]').forEach(function(tr){
+      tr.onclick=function(){ const it2=D.list[+tr.dataset.i]; if(!it2)return;
+        state.ui.unit=it2.u.key; state.ui.tab='pv'; state.ui.pvMode='detail'; render(); }; });
+    makeSortable(el);
+    bindBuyReview(el);
+    return;
+  }
+  /* 按「去年为什么没得参考」分三组:先看清有多少、为什么,再整组处理;逐项收成表格默认折叠
+     (2026-09-04 用户:每次一看有很多不确定的、需要确认的,头很大,不知道原因在哪) */
+  if(!state.ui.pendOpen)state.ui.pendOpen={};
+  const groups={}; PEND_GROUPS.forEach(function(g){ groups[g[0]]=[]; });
+  pend.forEach(function(it){ groups[pendGroupOf(it)].push(it); });
+  const flatN=pend.filter(canFlatOf).length;
+  let h='<div class="cards">'
+    +'<div class="kpi warn"><div class="v">'+pend.length+'</div><div class="t">待确认合计</div></div>'
+    +'<div class="kpi"><div class="v">'+flatN+'</div><div class="t">今年自己数据够（可直接按平销）</div></div>'
+    +'<div class="kpi"><div class="v">'+(pend.length-flatN)+'</div><div class="t">今年也没足够销量</div></div>'
+    +'<div class="kpi"><div class="v">'+exN+'</div><div class="t">免推演（低库存）</div></div>'
+    +'</div>';
+  h+='<div class="note" style="margin-bottom:10px">待确认的判定只看<b>去年同期能不能参考</b>：去年这个单元有销量的周 ≥'+state.cfg.minHistWeeks
+    +' 周，且未来每周都能在去年找到同期销量的比例 ≥'+Math.round(state.cfg.minRefCov*100)+'%。'
+    +'判定粒度是 国家×账户×型号，所以今年新上的型号、今年新开或改过名的渠道，去年这个组合根本不存在，一律进这里——哪怕今年已经卖了半年。'
+    +'<b>待确认的单元今年剩余周 SO 会被推成 0</b>，放着不管会让总量偏低。'
+    +'想一次性免掉这类问题，去「设置」页打开「今年数据够就不进待确认」。</div>';
+  h+='<div class="bar"><button class="act" id="btnBulkConfirm">一键确认全部（'+pend.length+' 项）</button>'
+    +'<span class="note">规则：有限历史→按自身历史推演（缺口自动补估）；有销量无历史→基础周销=近4周均SO；无历史无销量→标记停售。确认后各页可复核，也可随时逐项调整。</span></div>';
+  h+=autoNote;
+  PEND_GROUPS.forEach(function(g){
+    const key=g[0],lst=groups[key]; if(!lst.length)return;
+    const cf=lst.filter(canFlatOf), nf=lst.filter(function(x){ return !canFlatOf(x); });
+    const open=!!state.ui.pendOpen[key];
+    const med=cf.length?(F.medianOf(cf.map(function(x){ return x.bl.n; }))||0):0;
+    h+='<div class="panel"><h3 style="cursor:pointer" data-pgtog="'+key+'">'+(open?'▾':'▸')+' '+esc(g[1])
+      +' <span class="muted">'+lst.length+' 项</span></h3>'
+      +'<div class="note">'+esc(g[2])+'</div>'
+      +'<div class="bar">'
+      +'<button class="act" data-pgflat="'+key+'"'+(cf.length?'':' disabled')+' title="按今年自身的平销水位推演:中位周销×漂移×季节×增速。只作用于今年数据够的那些项。">按平销确认（'+cf.length+' 项）</button>'
+      +'<button class="ghost" data-pgbase="'+key+'"'+(nf.length?'':' disabled')+' title="今年样本不足以算平销的,按近4周均SO当基础周销;近4周也没量的标停售">其余按近4周均确认（'+nf.length+' 项）</button>'
+      +'<span class="note">'+(cf.length?('可平销的这些，今年有效周中位 '+F.fmt(med)+' 周'):'今年样本都不足，只能按近4周均或停售')+'</span></div>';
+    if(open){
+      h+='<div class="tblwrap" style="max-height:40vh"><table class="sortable"><thead><tr>'
+        +'<th class="l">国家</th><th class="l">账户</th><th class="l">产品</th><th class="l">型号</th>'
+        +'<th title="去年该单元有销量的周数">去年周数</th><th title="未来周能在去年找到同期销量的比例">同期覆盖</th>'
+        +'<th>当前INV</th><th>近4周均SO</th>'
+        +'<th title="今年自身剔除首销/大促/缺货/清尾后的有效周数">今年有效周</th>'
+        +'<th title="今年自身的中位周销">平销 b</th><th class="l">置信度</th><th class="l noSort">单项处理</th></tr></thead><tbody>';
+      lst.forEach(function(it){ const u=it.u,b=it.bl||{};
+        const i=D.list.indexOf(it);
+        const cc={high:'高',mid:'中',low:'低',none:'无'}[b.conf]||'—';
+        h+='<tr data-i="'+i+'">'
+          +'<td class="l">'+esc(u.country)+'</td>'
+          +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+'</td>'
+          +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+          +'<td class="l">'+esc(u.model)+'</td>'
+          +'<td>'+it.cls.histWeeks+'</td>'
+          +'<td>'+Math.round(it.cls.refCov*100)+'%</td>'
+          +'<td>'+F.fmt(it.cur.curInv)+'</td>'
+          +'<td>'+(it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'—')+'</td>'
+          +'<td>'+(b.n||0)+'</td>'
+          +'<td>'+(b.base!=null?b.base:'—')+'</td>'
+          +'<td class="l">'+(canFlatOf(it)?'<span class="chip auto">'+cc+'</span>':'<span class="chip pend">'+cc+'</span>')+'</td>'
+          +'<td class="l noSort"><button class="mini" data-p1="flat" data-k="'+esc(u.key)+'"'+(canFlatOf(it)?'':' disabled')+'>平销</button> '
+          +'<button class="mini" data-p1="base" data-k="'+esc(u.key)+'">近4周均</button> '
+          +(it.cls.status==='partial'?'<button class="mini" data-p1="self" data-k="'+esc(u.key)+'">按自身去年</button> ':'')
+          +'<button class="mini" data-p1="skip" data-k="'+esc(u.key)+'">停售</button></td></tr>';
+      });
+      h+='</tbody></table></div>';
+    }
+    h+='</div>';
+  });
+  h+=buyReviewBlockHtml()+warnsBlockHtml();
+  el.innerHTML=h;
+  bindBuyReview(el);
+  $('#btnBulkConfirm').onclick=function(){
+    if(confirm('一键确认 '+pend.length+' 项？（有限历史→按自身历史推演；有销量无历史→基础周销=近4周均；无历史无销量→停售。确认后仍可逐项调整）'))bulkConfirm(); };
+  el.querySelectorAll('[data-pgtog]').forEach(function(hd){
+    hd.onclick=function(){ const k=hd.dataset.pgtog;
+      if(state.ui.pendOpen[k])delete state.ui.pendOpen[k]; else state.ui.pendOpen[k]=1; render(); };
+  });
+  /* 整组处理:平销只作用于今年数据够的项;其余按近4周均,近4周也没量的标停售(与一键确认同规则) */
+  el.querySelectorAll('[data-pgflat]').forEach(function(b){
+    b.onclick=function(){ const lst=groups[b.dataset.pgflat].filter(canFlatOf);
+      if(!lst.length)return;
+      if(!confirm('把这 '+lst.length+' 项按今年自身的平销水位推演？（随时可逐项改回）'))return;
+      lst.forEach(function(it){ state.decisions[it.u.key]={mode:'flat'}; });
+      recompute(); };
+  });
+  el.querySelectorAll('[data-pgbase]').forEach(function(b){
+    b.onclick=function(){ const lst=groups[b.dataset.pgbase].filter(function(x){ return !canFlatOf(x); });
+      if(!lst.length)return;
+      if(!confirm('把这 '+lst.length+' 项按近4周均SO当基础周销？（近4周也没量的标为停售，随时可改）'))return;
+      lst.forEach(function(it){ const avg=it.cur.avgWeeklySO;
+        if(avg!=null&&avg>0)state.decisions[it.u.key]={mode:'base',base:Math.round(avg)};
+        else state.decisions[it.u.key]={mode:'skip'}; });
+      recompute(); };
+  });
+  el.querySelectorAll('button[data-p1]').forEach(function(b){
+    b.onclick=function(e){ e.stopPropagation();
+      const k=b.dataset.k,m=b.dataset.p1;
+      if(m==='base'){ const it2=D.byKey.get(k); const avg=it2&&it2.cur.avgWeeklySO;
+        state.decisions[k]=(avg!=null&&avg>0)?{mode:'base',base:Math.round(avg)}:{mode:'skip'}; }
+      else state.decisions[k]={mode:m};
+      recompute(); };
+  });
+  el.querySelectorAll('tbody tr[data-i]').forEach(function(tr){
+    tr.style.cursor='pointer';
+    tr.onclick=function(){ const it2=D.list[+tr.dataset.i]; if(!it2)return;
+      state.ui.unit=it2.u.key; state.ui.tab='pv'; state.ui.pvMode='detail'; render(); };
+  });
+  makeSortable(el);
+}
+

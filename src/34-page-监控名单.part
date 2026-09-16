@@ -1,0 +1,51 @@
+/* ===== 监控名单：加入/移出/基线,行内按钮,迷你走势图 ===== */
+function watchByKeyOf(kind){
+  return kind==='fsd'?(D&&D.byKey):(kind==='retail'?(Dr&&Dr.byKey):(Da&&Da.byKey));
+}
+function watchBtnHtml(kind,key){
+  const on=!!(state.watch[kind]&&state.watch[kind][key]);
+  return on?' <button class="mini" data-unwatchi="'+kind+'" data-wk="'+esc(key)+'" title="已在监控看板,每周刷新后自动对账;再点一次取消监控(基线一并清除)">已监控·取消</button>'
+    :' <button class="mini" data-watch="'+kind+'" data-wk="'+esc(key)+'" title="加入监控看板:每周刷新底表后自动对账 SO/DOS/SI/ST 变化">监控</button>';
+}
+function addWatch(kind,key){
+  const byKey=watchByKeyOf(kind);
+  const it=byKey&&byKey.get(key); if(!it)return;
+  state.watch[kind][key]=1;
+  const m=F.watchMetrics(it.u,state.cfg);
+  const stq=kind==='fsd'?(store&&store.maxPeriod):(kind==='retail'?(retailStore&&retailStore.maxPeriod):(audioStore&&audioStore.maxPeriod));
+  state.watchBase[key]={p:stq||0,inv:it.cur.curInv,inv1:it.cur.curInv1,dos:m.dosNow,so4:m.so4};
+  saveState(); render();
+}
+function removeWatch(kind,key){
+  delete state.watch[kind][key]; delete state.watchBase[key];
+  saveState(); render();
+}
+function bindWatchBtns(el){
+  el.querySelectorAll('button[data-watch]').forEach(function(b){
+    b.onclick=function(e){ e.stopPropagation(); addWatch(b.dataset.watch,b.dataset.wk); };
+  });
+  el.querySelectorAll('button[data-unwatchi]').forEach(function(b){
+    b.onclick=function(e){ e.stopPropagation(); removeWatch(b.dataset.unwatchi,b.dataset.wk); };
+  });
+}
+function sparkHtml(spark){
+  if(!spark||!spark.length)return '<span class="muted">—</span>';
+  const W=112,H=26;
+  let max=1; spark.forEach(function(s){ if(s.so>max)max=s.so; });
+  const bw=W/spark.length;
+  let s='<svg width="'+W+'" height="'+H+'" style="vertical-align:middle">';
+  spark.forEach(function(pt,i){
+    const bh=Math.max(1,(pt.so/max)*(H-2));
+    s+='<rect x="'+(i*bw+1).toFixed(1)+'" y="'+(H-bh).toFixed(1)+'" width="'+Math.max(1,bw-2).toFixed(1)+'" height="'+bh.toFixed(1)+'" rx="1" fill="var(--accent)" opacity="'+(i===spark.length-1?'1':'0.4')+'"><title>'+F.weekLabel(pt.p)+': '+pt.so+'</title></rect>';
+  });
+  return s+'</svg>';
+}
+function deltaCell(baseV,nowV,downGood){
+  if(nowV==null)return '—';
+  if(baseV==null||baseV===nowV)return F.fmt(nowV);
+  const d=nowV-baseV;
+  const good=downGood?(d<0):(d>0);
+  return F.fmt(baseV)+' → '+F.fmt(nowV)
+    +' <b style="color:var(--'+(good?'ok':'warn')+')">'+(d>0?'+':'')+F.fmt(d)+'</b>';
+}
+

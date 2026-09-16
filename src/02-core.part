@@ -1,0 +1,149 @@
+/*CORE-START*/
+(function(){
+'use strict';
+const C={};
+const DAY=86400000;
+
+/* ---------- 数值 ---------- */
+C.parseCellNum=function(v){
+  const t=String(v==null?'':v).replace(/[,\s　￥$]/g,'');
+  if(t===''||t==='-'||t==='—') return null;
+  const n=parseFloat(t);
+  return isFinite(n)?n:null;
+};
+C.round5=function(v,step){ step=step||5; if(v==null||!isFinite(v)) return null; return Math.round(v/step)*step; };
+/* 累计取整(2026-09-01 用户拍板):每周值仍是 step 的倍数,但累计和跟住原始累计——周销 2 台的长尾 SKU 出 0/5/0/5 而不是全 0,总量不丢;
+   手拍(override)原样保留且不参与进位;step≤1 退化为普通四舍五入 */
+C.quantizeSeq=function(vals,step){
+  step=step||5;
+  if(step<=1)return vals.map(function(v){ return Math.max(0,Math.round(v||0)); });
+  let cumRaw=0,cumOut=0;
+  return vals.map(function(v){ cumRaw+=Math.max(0,v||0); const tgt=Math.round(cumRaw/step)*step; const out=Math.max(0,tgt-cumOut); cumOut+=out; return out; });
+};
+/* 拍数承接(2026-09-01 用户拍板:某月 SO 从 200 拍到 500,后面不能还按 200 的基数算):
+   手拍周的 拍值÷公式值 作为比例,承接到其后各周(直到下一次拍数),夹在 0.2~5 倍;手拍周本身原样保留。数组带 carryEnd 供延伸段接力 */
+C.carryTaps=function(futureWeeks,rawOf,ovSO,on,tail){
+  /* 承接比例(2026-09-02 审计修正):按「连续手拍段」合计 Σ拍值÷Σ公式值(只计公式值>0 的周,夹 0.2~5),段结束时生效——
+     整桶拍数(5 台步长拆分后末周有取整噪声)的比例 = 拍值÷桶公式值;单周拍数退化为 拍值÷该周公式值(与旧口径一致)。
+     拍 0(段合计为 0)不承接、只改本期;清尾段(tail)结束后承接重置为 1(清库不是需求,不放大后续)。此前按段内最后一周取比例,
+     末周公式值 3 台拍成 5 台就把后面所有月 ×1.67。 */
+  const out=[]; let carry=1;
+  let segOv=0,segRaw=0,inSeg=false,segTail=false;
+  const endSeg=function(){ if(!inSeg)return; inSeg=false;
+    if(segTail)carry=1;
+    else if(on!==false&&segRaw>0&&segOv>0)carry=Math.max(0.2,Math.min(5,segOv/segRaw));
+    segOv=0; segRaw=0; segTail=false; };
+  futureWeeks.forEach(function(p,i){
+    const ov=ovSO&&ovSO[p];
+    const r=rawOf(p,i);
+    if(ov!=null){
+      inSeg=true;
+      const isTail=!!(tail&&tail[p]); if(isTail)segTail=true;
+      if(!isTail&&r.so!=null&&r.so>0){ segOv+=ov; segRaw+=r.so; }
+      const e={p:p,so:ov,src:'override',f:{override:true,raw:ov,how:isTail?'清尾':'手拍'}}; if(isTail)e.tail=true;
+      out.push(e); return;
+    }
+    endSeg();
+    if(r.so==null){ out.push({p:p,so:null,src:r.src}); return; }
+    const e={p:p,so:r.so*carry,src:r.src}; if(carry!==1)e.carry=+carry.toFixed(3);
+    if(r.f){ e.f=Object.assign({},r.f,{carry:carry,raw:r.so*carry}); }
+    out.push(e);
+  });
+  endSeg();
+  out.carryEnd=carry;
+  return out;
+};
+/* 正常经营水位(2026-09-01 用户拍板:每个渠道×产品要有"能吃进多少货/平销库存水位/平销DOS"的判断):
+   取平销引擎保留的平销周(已剔首销/大促/缺货/清尾),库存中位=平销库存水位,库存÷平销日均 的中位=平销DOS;≥6 周有库存记录才成立 */
+C.normalLevelOf=function(u,bl){
+  if(!bl||bl.base==null||!(bl.base>0)||!bl.usedPeriods||!bl.usedPeriods.length)return null;
+  const daily=bl.base/7, invs=[];
+  bl.usedPeriods.forEach(function(p){ const w=u.weeks.get(p); if(!w)return;
+    const iv=w.inv!=null?w.inv:w.inv1; if(iv!=null&&iv>=0)invs.push(iv); });
+  if(invs.length<6)return null;
+  const inv=C.medianOf(invs);
+  return {inv:Math.round(inv),dos:Math.round(inv/daily),n:invs.length};
+};
+C.quantizeFc=function(fc,step){
+  const idx=[],raw=[];
+  fc.forEach(function(f,i){ if(f.src==='override'||f.so==null)return; idx.push(i); raw.push(f.so); });
+  const q=C.quantizeSeq(raw,step);
+  idx.forEach(function(i,k){ fc[i].so=q[k]; if(fc[i].f)fc[i].f.plan=q[k]; });
+  return fc;
+};
+C.fmt=function(v){ return v==null?'—':Number(v).toLocaleString('en-US'); };
+
+/* 字节→文本：BOM 优先(UTF-16LE/BE/UTF-8),再试 UTF-8,乱码多退 GB18030;
+   无 BOM 的 UTF-16LE(Excel「Unicode文本」)靠 NUL 字节占比识别 */
+C.decodeSmart=function(u8){
+  if(!(u8 instanceof Uint8Array)) u8=new Uint8Array(u8);
+  if(u8.length>=2){
+    if(u8[0]===0xFF&&u8[1]===0xFE) return new TextDecoder('utf-16le').decode(u8).replace(/^\ufeff/,'');
+    if(u8[0]===0xFE&&u8[1]===0xFF) return new TextDecoder('utf-16be').decode(u8).replace(/^\ufeff/,'');
+  }
+  /* 无 BOM UTF-16 必须在 GB18030 回退之前判——UTF-16 字节喂给 GB18030 会解出
+     一串不报错的假文字;而 UTF-8/GB18030 文本不含 NUL 字节,该判据零误伤 */
+  let nul=0; const n=Math.min(u8.length,4096);
+  for(let i=0;i<n;i++) if(u8[i]===0)nul++;
+  if(n>0&&nul/n>0.2){ try{ return new TextDecoder('utf-16le').decode(u8).replace(/^\ufeff/,''); }catch(e){} }
+  let txt=new TextDecoder('utf-8',{fatal:false}).decode(u8);
+  const bad=(txt.match(/�/g)||[]).length;
+  if(bad>2){ try{ txt=new TextDecoder('gb18030').decode(u8); }catch(e){} }
+  return txt.replace(/^\ufeff/,'');
+};
+
+/* ---------- ISO 周 ---------- */
+C.mondayOf=function(y,w){ const jan4=Date.UTC(y,0,4); const dow=new Date(jan4).getUTCDay()||7; return new Date(jan4-(dow-1)*DAY+(w-1)*7*DAY); };
+C.isoWeekOf=function(dt){ const d=new Date(Date.UTC(dt.getUTCFullYear(),dt.getUTCMonth(),dt.getUTCDate())); const dow=d.getUTCDay()||7; d.setUTCDate(d.getUTCDate()+4-dow); const y=d.getUTCFullYear(); const w=Math.ceil(((d-Date.UTC(y,0,1))/DAY+1)/7); return {y:y,w:w}; };
+C.weeksInISOYear=function(y){ return C.isoWeekOf(new Date(Date.UTC(y,11,28))).w; };
+C.mkPeriod=function(y,w){ return y*1000+w; };
+C.periodOfDateStr=function(s){ const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m)return null;
+  const iw=C.isoWeekOf(new Date(Date.UTC(+m[1],+m[2]-1,+m[3]))); return C.mkPeriod(iw.y,iw.w); };
+C.periodY=function(p){ return Math.floor(p/1000); };
+C.periodW=function(p){ return p%1000; };
+C.addWeeksP=function(p,n){ let y=C.periodY(p),w=C.periodW(p);
+  while(n>0){ w++; if(w>C.weeksInISOYear(y)){y++;w=1;} n--; }
+  while(n<0){ w--; if(w<1){y--;w=C.weeksInISOYear(y);} n++; }
+  return C.mkPeriod(y,w); };
+const wIdxMemo={};
+C.weekIndex=function(p){ const y=C.periodY(p); let base=wIdxMemo[y];
+  if(base==null){ base=0; for(let yy=2000;yy<y;yy++) base+=C.weeksInISOYear(yy); wIdxMemo[y]=base; }
+  return base+C.periodW(p); };
+C.weekLabel=function(p){ return 'W'+C.periodW(p); };
+C.weekRangeLabel=function(p){ const m=C.mondayOf(C.periodY(p),C.periodW(p)); const e=new Date(m.getTime()+6*DAY);
+  const f=function(d){ return (d.getUTCMonth()+1)+'/'+d.getUTCDate(); }; return f(m)+'-'+f(e); };
+
+/* ---------- 底表解析 ---------- */
+C.parseTable=function(text){
+  const rep={total:0,used:0,badPeriod:0,badPsi:0,noKey:0,header:false,mode:''};
+  const raw=String(text||'').replace(/\r/g,'');
+  const lines=raw.split('\n').filter(function(l){return l.trim()!=='';});
+  if(!lines.length) return {rows:[],report:rep};
+  const probe=lines[0];
+  const nOf=function(re){ return (probe.match(re)||[]).length; };
+  let mode,delim=',';
+  if(nOf(/\t/g)>0)mode='tsv';
+  else if(nOf(/\|/g)>=2)mode='md';
+  else { mode='csv'; if(nOf(/;/g)>nOf(/,/g))delim=';'; }   // 分号 CSV(部分区域设置导出)
+  rep.mode=mode+(delim===';'?';':'');
+  const splitLine=function(l){
+    if(mode==='tsv') return l.split('\t');
+    if(mode==='md'){ let cells=l.split('|');
+      if(cells.length&&cells[0].trim()==='')cells.shift();
+      if(cells.length&&cells[cells.length-1].trim()==='')cells.pop();
+      return cells.map(function(c){return c.trim();}); }
+    const out=[]; let cur='',q=false;
+    for(let i=0;i<l.length;i++){ const ch=l[i];
+      if(q){ if(ch==='"'){ if(l[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=ch; }
+      else { if(ch==='"')q=true; else if(ch===delim){out.push(cur);cur='';} else cur+=ch; } }
+    out.push(cur); return out;
+  };
+  const grid=lines.map(splitLine).filter(function(cells){
+    if(mode!=='md') return true;
+    return !cells.every(function(c){ return /^:?-{2,}:?$/.test(c)||c===''; });
+  });
+  const r=C.parseGrid(grid);
+  r.report.mode=rep.mode;
+  return r;
+};
+

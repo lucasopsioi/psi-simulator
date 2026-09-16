@@ -1,0 +1,184 @@
+/* ---------- 计算 ---------- */
+function keditOf(key){ return state.kedit[key]||null; }
+/* 周文本解析(26W40/W40/40;两位年补 20,缺年用当前数据年);非法返回 undefined,空返回 null */
+function parseWeekText(txt){
+  const t=String(txt||'').trim().toUpperCase();
+  if(!t)return null;
+  const m=t.match(/^(?:(\d{2}|\d{4})W)?W?(\d{1,2})$/);
+  if(!m)return undefined;
+  let y=m[1]?+m[1]:F.periodY((store||retailStore||audioStore||{maxPeriod:2026001}).maxPeriod);
+  if(y<100)y+=2000;
+  const w=+m[2];
+  if(w<1||w>F.weeksInISOYear(y))return undefined;
+  return F.mkPeriod(y,w);
+}
+/* 渠道属性:类型(线下/电渠/商城Eshop)与补货周期天数(SI→SO 起量等待);商城不参与 DOS 考核 */
+function chanTypeOf(acct){ const p=state.chanProp[acct]; return (p&&p.type)?p.type:'offline'; }
+function leadDaysOf(acct){
+  const p=state.chanProp[acct];
+  if(p&&p.leadDays!=null&&p.leadDays>=0)return p.leadDays;
+  const t=chanTypeOf(acct);
+  return (t==='ecom'||t==='eshop')?0:14;   // 默认:电渠/商城当周起量,线下 14 天铺货周期
+}
+function chanTypeLabel(t){ return t==='ecom'?'电渠':(t==='eshop'?'商城Eshop':'线下'); }
+/* 型号键(产品总控/锁量/爆发/覆盖的统一粒度) */
+function mkKey(u){ return u.product+'||'+u.model; }
+/* 大盘增速默认(单元手工增长系数优先):型号级 > 系族 > 产品线 > 全局 > 1 */
+function gDefaultOf(u){
+  if(u.model!=null){
+    const mg=state.modelGrowth[mkKey(u)];
+    if(mg!=null)return mg;
+  }
+  const bg=state.bigGrowth||{};
+  const fam=F.familyOf(u.product);
+  if(fam&&bg.family&&bg.family[fam.family]!=null)return bg.family[fam.family];
+  if(bg.line&&bg.line[u.line]!=null)return bg.line[u.line];
+  if(bg.global!=null)return bg.global;
+  return 1;
+}
+/* 大促周号集合(国家周历∪该渠道已确认大促),爆发覆盖用;gen 缓存 */
+function promoWSetOf(u){
+  const c=calcCache();
+  if(!c.pw)c.pw={};
+  const k=u.country+'|'+u.account;
+  let s=c.pw[k];
+  if(!s){
+    s=Object.assign({},F.promoWeekSet(u.country,state.promoCal));
+    (state.chanPromo[u.account]||[]).forEach(function(sp){
+      for(let w=sp.w1;w<=sp.w2;w++)s[w]=1; });
+    c.pw[k]=s;
+  }
+  return s;
+}
+/* 型号平销合计(权威源:FSD+音频专表),平销覆盖折算基数;gen 缓存 */
+function mkBaseTotals(fsdLayers,audioLayers){
+  const c=calcCache();
+  if(c.mkBase)return c.mkBase;
+  const tot={};
+  /* 权威口径:FSD 底表只计非音频单元(音频行以专表为准),避免型号总量双计 */
+  [[store,fsdLayers,true],[audioStore,audioLayers,false]].forEach(function(pair){
+    const stx=pair[0],ly=pair[1],skipAudio=pair[2];
+    if(!stx||!ly)return;
+    stx.units.forEach(function(u){
+      if(skipAudio&&u.audio)return;
+      const kl=F.pickKLayer([ly],u,kOnly2());
+      const bl=blOfCached(u,kl.kdef);
+      if(bl&&bl.base!=null)tot[mkKey(u)]=(tot[mkKey(u)]||0)+bl.base;
+    });
+  });
+  c.mkBase=tot;
+  return tot;
+}
+/* 平销覆盖折算:用户设了型号总平销时,各单元 b̂ 按占比同乘一个比例 */
+function blAdjusted(u,bl){
+  if(!bl||bl.base==null)return bl;
+  const mk=mkKey(u);
+  const ov=state.blOv[mk];
+  if(ov==null||ov<=0)return bl;
+  const c=calcCache();
+  const tot=c.mkBase?c.mkBase[mk]:null;
+  if(!tot||tot<=0)return bl;
+  return Object.assign({},bl,{base:+(bl.base*ov/tot).toFixed(1)});
+}
+/* ---------- 锁量约束:大区锁量+国家配额 → 压缩未来SI(手工SI原样保留) ---------- */
+let __lockRes=null;
+function lockSentOf(mk){
+  /* 生命周期已发货(实际SI>0 跨年累计,从该型号第一次有 SI 的周起):权威源=FSD底表+音频专表。
+     2026-09-01 用户纠正:锁量=全生命周期 AATP,此前只累计本年,与 AATP 差了一大截 */
+  const ix=mk.indexOf('||'); const prod=mk.slice(0,ix),model=mk.slice(ix+2);
+  let sent=0,firstP=null,lastP=null; const byC={};
+  [[store,true],[audioStore,false]].forEach(function(pair){
+    const stx=pair[0],skipAudio=pair[1];
+    if(!stx||!stx.units||!stx.units.size)return;
+    stx.units.forEach(function(u){
+      if(skipAudio&&u.audio)return;
+      if(u.product!==prod||String(u.model)!==model)return;
+      const lc=F.lifecycleSI(u);
+      sent+=lc.sent;
+      if(lc.firstP!=null&&(firstP==null||lc.firstP<firstP))firstP=lc.firstP;
+      if(lc.lastP!=null&&(lastP==null||lc.lastP>lastP))lastP=lc.lastP;
+      u.periods.forEach(function(p){ const si=u.weeks.get(p).si; if(si&&si>0)byC[u.country]=(byC[u.country]||0)+si; });
+    });
+  });
+  return {sent:sent,byC:byC,firstP:firstP,lastP:lastP};
+}
+function applyLockConstraints(list,fw,sc){
+  const prevLR=__lockRes||{};
+  __lockRes={};
+  const lq=state.lockQty||{};
+  const mks=Object.keys(lq).filter(function(mk){ return lq[mk]&&lq[mk].on&&(+lq[mk].total||0)>0; });
+  if(!mks.length)return;
+  const outSc=function(mk){ return !!(sc&&sc.products&&!sc.products[mkNorm(mk.slice(0,mk.indexOf('||')))]); };   // 增量:范围外型号沿用上一轮锁量结果(其单元对象已复用)
+  const byMk={};
+  list.forEach(function(it){ if(it.u.audio)return;   // 音频型号以专表为准,FSD 内音频行不参与锁量压缩
+    const mk=mkKey(it.u);
+    if(lq[mk]&&lq[mk].on)(byMk[mk]=byMk[mk]||[]).push(it); });
+  mks.forEach(function(mk){
+    if(outSc(mk)&&prevLR[mk]){ __lockRes[mk]=prevLR[mk]; return; }
+    const L=lq[mk]; const items=byMk[mk]||[];
+    const snt=lockSentOf(mk);
+    const total=+L.total||0;
+    const remain=Math.max(0,total-snt.sent);
+    const R={total:total,sent:snt.sent,remain:remain,over:snt.sent>total,allocMis:false,gap:null,scaled:false,firstP:snt.firstP,lastP:snt.lastP};
+    const alloc=L.byC||{};
+    const allocSum=Object.keys(alloc).reduce(function(s,c){ return s+(+alloc[c]||0); },0);
+    const hasQuota=Object.keys(alloc).some(function(c){ return alloc[c]!=null&&alloc[c]!==''; });   // 明确填 0 也算配额(2026-09-02 审计 R3:此前 allocSum>0 闸门把「某国配额 0」静默忽略)
+    if(hasQuota&&Math.abs(allocSum-total)>0.5)R.allocMis=true;
+    /* 每单元:未来SI拆成规则量与手工量(手工改写值永不压缩) */
+    const rows=items.map(function(it){
+      const ov=state.ovSI[it.u.key]||{};
+      let auto=0,man=0; const per={};
+      (it.sim.rows||[]).forEach(function(r){
+        /* 手拍 SO 高于可售时补足的那笔进货(tapcover)也算手拍量(2026-09-02 第三轮审计 R1):
+           此前它是普通自动量,锁量预算发完即被砍成 0,重跑时 SO 又被 capSO 压回——用户拍 3000 只看到 933 且全程无提示。
+           现与手拍 SI 同级(原样保留、超预算记 manOver 红字),与「手拍值永不压缩」「拍的是决策」口径一致。 */
+        const isMan=ov[r.p]!=null||(state.cfg.lockTapCover===true&&r.siSrc==='tapcover');
+        per[r.p]={si:r.si||0,man:isMan};
+        if(isMan)man+=(r.si||0); else auto+=(r.si||0);
+      });
+      return {it:it,per:per,auto:auto,man:man,country:it.u.country};
+    });
+    /* 顺序分配(2026-09-02 用户:拍高某月 SI/SO,后面月份要自动调减,之前拍过的不动;不再等比例压所有周):
+       手拍 SI 原样并优先占预算(超预算记 manOver);自动 SI 按周从前往后按规则值满足,余量用尽后为 0;国家配额=组预算 */
+    const entries=[],rowOf=[];
+    rows.forEach(function(r,ri){ Object.keys(r.per).map(Number).sort(function(a,b){return a-b;}).forEach(function(p){ const x=r.per[p]; entries.push({g:r.country,p:p,si:x.si||0,fixed:!!x.man}); rowOf.push(ri); }); });
+    const byQ={}; if(hasQuota){ Object.keys(alloc).forEach(function(c){ if(alloc[c]==null||alloc[c]==='')return; byQ[c]=Math.max(0,(+alloc[c]||0)-(snt.byC[c]||0)); }); }
+    const res=F.lockSeqAlloc(entries,{total:remain,by:byQ,step:state.cfg.roundTo||5,groupsOf:function(e){ return byQ[e.g]!=null?[e.g]:[]; }});
+    R.manOver=res.manOver; R.cutAt=res.cutAt; R.scaled=(res.cutAt!=null)||res.manOver;
+    if(R.scaled){
+      const moBy={}; entries.forEach(function(e,i){ (moBy[rowOf[i]]=moBy[rowOf[i]]||{})[e.p]=res.alloc[i]; });
+      rows.forEach(function(r,ri){ const mo=moBy[ri]; if(!mo)return;
+        let s0=0,s1=0; Object.keys(mo).forEach(function(p){ s0+=(r.per[p].si||0); s1+=mo[p]; });
+        if(s1===s0)return;   // 该单元没被砍:不重跑
+        const o=r.it.__simOpts||{};
+        r.it.sim=F.simulateUnit({unit:r.it.u,cur:r.it.cur,forecast:r.it.fc,futureWeeks:fw,
+          params:o.params,cfg:state.cfg,ovSI:mo,noAutoSI:true,eolIdx:(o.eolIdx!=null?o.eolIdx:-1),
+          checkpoints:o.checkpoints,dailyBase:o.dailyBase,capSO:true});
+        r.it.lockScaled=s0>0?+(s1/s0).toFixed(3):0;
+        (r.it.sim.rows||[]).some(function(rr){ if(rr.capped){ if(R.gap==null||rr.p<R.gap)R.gap=rr.p; r.it.supplyGap=rr.p; return true; } return false; });
+      });
+    }
+    __lockRes[mk]=R;
+  });
+}
+function isExemptOf(u,cur){
+  const th=F.exemptThreshold(state.exempt,u.line,u.model);
+  /* 库存口径:渠道总库存缺失时退回 INV1(纯 Inventory1 直签库存表),否则大库存单元会被误判为免推演 */
+  const stock=cur.curInv!=null?cur.curInv:cur.curInv1;
+  return {th:th, on:th!=null&&(stock==null||stock<=th)};
+}
+function kSumOf(kl,fw){
+  let s=0; const ke=keditOf(kl.key)||{};
+  fw.forEach(function(p){ const w=F.periodW(p);
+    const kd=kl.kdef[w]!=null?kl.kdef[w]:1;
+    s+=(ke[w]==null?kd:ke[w]); });
+  return s;
+}
+function recompute(opts){ computeAll(opts); render(); }
+/* 大促周历查询(按国家缓存;computeAll 每轮重置以吸收周历编辑) */
+function isPromoP(country,p){
+  const c=calcCache();
+  let s=c.promo[country];
+  if(!s){ s=F.promoWeekSet(country,state.promoCal); c.promo[country]=s; }
+  return !!s[F.periodW(p)];
+}

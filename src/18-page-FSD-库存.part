@@ -1,0 +1,161 @@
+/* ===== FSD 库存（FSD 只分发不零售:主看库存绝对值,默认 INV1 从高到低） ===== */
+function fsdFilteredList(){
+  return D.list.filter(function(it){ const u=it.u;
+    if(!msMatch(state.ui.country,u.country))return false;
+    if(!msMatch(state.ui.acct,u.account))return false;
+    if(!msMatch(state.ui.line,u.line))return false;
+    if(!msMatch(state.ui.fCls,chanClsLabel(u)))return false;
+    if(state.ui.status==='pend'&&!(!it.dec&&it.cls.status!=='auto'&&!it.exempt))return false;
+    if(state.ui.status==='exempt'&&!it.exempt)return false;
+    if(state.ui.status==='warn'&&!(it.warns&&it.warns.length))return false;
+    if(state.ui.q){ const q=state.ui.q.toLowerCase();
+      if((u.product+' '+u.model).toLowerCase().indexOf(q)<0)return false; }
+    return true; });
+}
+const ST_VERDICT={ok:['年底可清库','chip auto'],part:['可消化50%以上','chip base'],
+  risk:['预计剩余较多','chip pend'],stuck:['年内无ST记录','chip pend'],clear:['无库存','chip skip']};
+function renderOverview(elOpt){
+  const el=elOpt||$('#view-overview');
+  if(!elOpt){ const c=$('#view-channels'); if(c)c.innerHTML=''; }
+  if(!D){ emptyHint(el); return; }
+  const pend=pendingList();
+  let totInv1=0,totInv=0,exN=0,exInv=0;
+  D.list.forEach(function(it){
+    if(it.cur.curInv1!=null)totInv1+=it.cur.curInv1;
+    if(it.cur.curInv!=null)totInv+=it.cur.curInv;
+    if(it.exempt){ exN++; exInv+=(it.cur.curInv||0); }
+  });
+  const accts=[],lines=[],countries=[];
+  D.list.forEach(function(it){ if(accts.indexOf(it.u.account)<0)accts.push(it.u.account);
+    if(lines.indexOf(it.u.line)<0)lines.push(it.u.line);
+    if(it.u.country&&countries.indexOf(it.u.country)<0)countries.push(it.u.country); });
+  accts.sort();lines.sort();countries.sort();
+  let h='<div class="cards">'
+    +'<div class="kpi"><div class="v">'+F.fmt(totInv1)+'</div><div class="t">FSD 自有库存合计(INV1)</div></div>'
+    +'<div class="kpi"><div class="v">'+F.fmt(totInv)+'</div><div class="t">渠道总库存(INV,含下游)</div></div>'
+    +'<div class="kpi'+(pend.length?' warn':'')+'"><div class="v">'+pend.length+'</div><div class="t">待确认</div></div>'
+    +'<div class="kpi"><div class="v">'+exN+'</div><div class="t">免推演(低库存,合计'+F.fmt(exInv)+')</div></div>'
+    +'</div>';
+  h+='<div class="filters">'
+    +msHtml('fCountry','国家',countries,state.ui.country)
+    +msHtml('fAcct','账户',accts,state.ui.acct)
+    +msHtml('fLine','产品线',lines,state.ui.line)
+    +msHtml('fCls','渠道类别',['真FSD','下游渠道(间接)','未标记'],state.ui.fCls)
+    +'<select id="fStatus"><option value="">全部状态</option>'
+      +'<option value="pend"'+(state.ui.status==='pend'?' selected':'')+'>仅待确认</option>'
+      +'<option value="warn"'+(state.ui.status==='warn'?' selected':'')+'>仅推演异常</option>'
+      +'<option value="exempt"'+(state.ui.status==='exempt'?' selected':'')+'>仅免推演</option></select>'
+    +'<input type="text" id="fQ" placeholder="搜索产品/型号" value="'+esc(state.ui.q)+'">'
+    +riskBarHtml('fsd')
+    +'<span class="note">默认按 INV1 从高到低 · 点表头可排序 · 点行进推演明细 · 最左列勾选风险产品后可导出</span></div>';
+  const rows=fsdFilteredList();
+  h+='<div class="tblwrap" style="max-height:44vh"><table class="sortable"><thead><tr>'
+    +riskThHtml('fsd')
+    +'<th class="l">国家</th><th class="l">账户</th><th class="l">产品线</th><th class="l">产品</th><th class="l">型号</th><th class="l">状态</th>'
+    +'<th title="FSD 自有(已SI未ST)">INV1</th><th title="渠道总库存(含下游)">INV</th>'
+    +'<th title="最近'+state.cfg.dosWindow+'个有数周的平均周销(音频跳过未报量周)">近4周均SO</th>'
+    +'<th title="最新库存÷最近'+state.cfg.dosWindow+'个有数周日均SO;悬停行看系统DOS">当前DOS</th></tr></thead><tbody>';
+  rows.forEach(function(it){ const u=it.u; const i=D.list.indexOf(it);
+    const audioNote=(u.audio&&it.cur.lastSOP!=null&&it.cur.lastSOP<store.maxPeriod)
+      ?' <span class="chip audio" title="音频为人工报量,最近有数周为 '+F.weekLabel(it.cur.lastSOP)+'">滞后</span>':'';
+    const cc=chanClassOf(u);
+    const ccChip=cc&&cc.cls==='fsd'?' <span class="chip auto" title="已在设置页标记为真 FSD 渠道">FSD</span>'
+      :(cc&&cc.cls==='indirect'?' <span class="chip pend" title="已在设置页标记为下游渠道(间接):按下游口径推演与监控(学习策略/画像/平销水位)">下游</span>':'');
+    h+='<tr data-i="'+i+'"'+(it.exempt?' style="opacity:.55"':'')+'>'
+      +riskCkHtml('fsd',u.key)
+      +'<td class="l">'+esc(u.country)+'</td>'
+      +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+ccChip+'</td>'
+      +'<td class="l">'+esc(u.line)+'</td>'
+      +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+audioNote+'</td>'
+      +'<td class="l">'+esc(u.model)+'</td>'
+      +'<td class="l">'+statusChip(it)+watchBtnHtml('fsd',u.key)+'</td>'
+      +'<td>'+F.fmt(it.cur.curInv1)+'</td>'
+      +'<td>'+F.fmt(it.cur.curInv)+'</td>'
+      +'<td>'+(it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'—')+'</td>'
+      +'<td'+(it.exempt?'':dosCls(it.cur.dosCalc,u.line))+' title="系统DOS(底表原值) '+F.fmt(it.cur.sysDos)+'">'+F.fmt(it.cur.dosCalc)+'</td>'
+      +'</tr>';
+  });
+  h+='</tbody></table></div>';
+  const nStock=rows.filter(function(it){ return it.cls&&it.cls.status==='stock'; }).length;
+  if(nStock)h+='<div class="note">纯库存管控单元 '+nStock+' 项（底表仅含 Inventory1，无动销数据）：参与库存排序、ST 风险清单与监控对账，不做 SO 推演、不进待确认。</div>';
+  /* ---- ST 风险清单 ---- */
+  const stRows=rows.filter(function(it){ return !it.exempt&&(it.cur.curInv1||0)>0; });
+  h+='<div class="panel" style="margin-top:12px"><h3>ST 风险清单（FSD 自有库存年底前的分发可行性评估）'
+    +' <button class="ghost" id="btnExportST" style="margin-left:10px">导出 Excel</button></h3>'
+    +'<div class="note" style="margin-bottom:8px">算法：周均ST = 今年至今 ST 合计(回调周计0) ÷ 有记录周数；'
+    +'预计可ST = 周均ST × Σ剩余周系数（剩余周按该单元周系数加权，大促周自动放大）；'
+    +'年底预剩 INV1 = max(0, 当前INV1 − 预计可ST)。'
+    +'历史 ST 由 INV1 变动推导（上周INV1+本周SI−本周INV1）；按年内至今 ST 速率外推（含剩余周季节加权），判定依据见各行提示。'
+    +'「补货响应」= ST 后 SO 是否被激活：电渠看 ST 当周–次周,线下渠道看 ST 后第 1–3 周（铺货周期后）；电渠请在设置页「电渠标记」中人工确认。</div>'
+    +'<div class="tblwrap" style="max-height:40vh"><table class="sortable"><thead><tr>'
+    +'<th class="l">国家</th><th class="l">账户</th><th class="l">产品线</th><th class="l">产品</th><th class="l">型号</th>'
+    +'<th>当前INV1</th><th title="今年至今ST合计">今年ST</th><th>周均ST</th>'
+    +'<th title="周均ST×Σ剩余周系数">预计可ST</th><th>年底预剩</th><th class="l">判定</th>'
+    +'<th class="l" title="ST 后 SO 激活率:电渠=当周–次周,线下=第1–3周;基准为 ST 前3个有数周均值">补货响应</th></tr></thead><tbody>';
+  stRows.forEach(function(it){ const u=it.u,s=it.stp;
+    const v=ST_VERDICT[s.verdict]||['?','chip'];
+    const ctype=chanTypeOf(u.account);
+    const lead=leadDaysOf(u.account);
+    const act=F.stActivation(u,it.histST,lead,store.maxPeriod);
+    const actHtml=(function(){
+      const chip='<span class="chip '+(ctype!=='offline'?'anchor':'')+'" title="补货周期 '+lead+' 天(设置页「渠道属性」可调):ST 后第 '+act.lag0+'–'+act.lag1+' 周评估 SO 响应">'+chanTypeLabel(ctype)+'</span>';
+      if(!act.n)return chip+' <span class="muted">'+(act.pending?'窗口未到':'无样本')+'</span>';
+      const pct=Math.round(act.rate*100);
+      const cls=pct>=60?'style="color:var(--ok)"':(pct<=30?'style="color:var(--warn)"':'');
+      return chip+' <b '+cls+'>'+pct+'%</b> <span class="muted">('+act.activated+'/'+act.n+(act.pending?'，待观察'+act.pending:'')+')</span>';
+    })();
+    h+='<tr><td class="l">'+esc(u.country)+'</td>'
+      +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+'</td>'
+      +'<td class="l">'+esc(u.line)+'</td>'
+      +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+      +'<td class="l">'+esc(u.model)+'</td>'
+      +'<td>'+F.fmt(it.cur.curInv1)+'</td>'
+      +'<td>'+F.fmt(s.ytdST)+'</td>'
+      +'<td>'+s.avgST+'</td>'
+      +'<td>'+F.fmt(s.canST)+'</td>'
+      +'<td'+(s.endLeft>0?' class="dosLow"':'')+'>'+F.fmt(s.endLeft)+'</td>'
+      +'<td class="l"><span class="'+v[1]+'" title="周均ST '+s.avgST+' × 剩余周加权 = 可ST '+F.fmt(s.canST)+' vs INV1 '+F.fmt(it.cur.curInv1)+'（样本'+s.weeks+'周）">'+v[0]+'</span></td>'
+      +'<td class="l">'+actHtml+'</td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+  el.innerHTML=h;
+  bindMs(el,'fCountry',function(a){ state.ui.country=a; render(); });
+  bindMs(el,'fAcct',function(a){ state.ui.acct=a; render(); });
+  bindMs(el,'fLine',function(a){ state.ui.line=a; render(); });
+  bindMs(el,'fCls',function(a){ state.ui.fCls=a; render(); });
+  $('#fStatus').onchange=function(){ state.ui.status=this.value; render(); };
+  $('#fQ').oninput=function(){ state.ui.q=this.value; render(); };
+  el.querySelectorAll('tbody tr[data-i]').forEach(function(tr){
+    tr.style.cursor='pointer';
+    tr.onclick=function(){ const it=D.list[+tr.dataset.i]; if(!it)return;
+      state.ui.unit=it.u.key; state.ui.tab='pv'; state.ui.pvMode='detail'; render(); };
+  });
+  $('#btnExportST').onclick=function(){
+    const headers=['国家','账户','产品线','产品','型号','当前INV1','今年ST','周均ST','预计可ST','年底预剩','判定','渠道类型','补货激活率','激活/样本','说明'];
+    const data=stRows.map(function(it){ const s=it.stp,v=ST_VERDICT[s.verdict];
+      const ctype=chanTypeOf(it.u.account);
+      const act=F.stActivation(it.u,it.histST,leadDaysOf(it.u.account),store.maxPeriod);
+      return [it.u.country,it.u.account,it.u.line,it.u.product,it.u.model,
+        it.cur.curInv1||0,s.ytdST,s.avgST,s.canST,s.endLeft,v[0],
+        chanTypeLabel(ctype),(act.n?Math.round(act.rate*100)+'%':''),(act.n?act.activated+'/'+act.n:''),
+        '周均ST'+s.avgST+'×剩余周加权→可ST'+s.canST+' vs INV1 '+(it.cur.curInv1||0)+'(样本'+s.weeks+'周)']; });
+    exportTable('FSD-ST风险清单',headers,data);
+  };
+  bindRiskSel(el,'fsd',rows.map(function(it){ return it.u.key; }),function(keys){
+    const sel2=keys.map(function(k){ return D.byKey.get(k); }).filter(Boolean);
+    const headers=['国家','账户','产品线','产品','型号','INV1','INV','近4周均SO','当前DOS','系统DOS','年内ST','预计可ST','年底预剩INV1','ST判定','状态'];
+    const data=sel2.map(function(it){ const u=it.u,s=it.stp;
+      const v=ST_VERDICT[s.verdict]?ST_VERDICT[s.verdict][0]:'';
+      const st=it.exempt?'免推演':((!it.dec&&it.cls.status!=='auto')?'待确认':'');
+      return [u.country,u.account,u.line,u.product,u.model,
+        it.cur.curInv1||0,it.cur.curInv||0,
+        it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'',
+        it.cur.dosCalc!=null?it.cur.dosCalc:'',
+        it.cur.sysDos!=null?it.cur.sysDos:'',
+        s.ytdST,s.canST,s.endLeft,v,st]; });
+    exportTable('FSD风险勾选清单',headers,data);
+  });
+  bindWatchBtns(el);
+  makeSortable(el);
+}
+

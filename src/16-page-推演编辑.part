@@ -1,0 +1,27 @@
+/* ===== 推演编辑：多维推演矩阵(2026-08-31 按用户 Excel 范式重做;当晚扩多年+右键推演逻辑) =====
+   任意层级四行同屏 SI/SO/库存/DOS;视图=维度钻取序;粒度=周/月/季/年;
+   时间轴=历史所有年份(底表有就显示,·A=Actual)+今年(实际+推演)+未来年(27/28,预算外推口径,·E);
+   年份列可勾选隐藏;库存=上期末+本期SI−本期SO;DOS=期末库存÷(本桶SO÷桶天数);
+   数值悬停有简提示,右键弹出完整推演逻辑(平销b̂/大促/增速链/公式,今年月=因子分解,外推年=外推参数卡)。 */
+/* 新品规划 → 推演编辑「新品」源:每个 新品×国家×渠道 一个虚拟单元(无历史,只有推演段),四行可拍(ovSO/ovSI 按 NP| 键存) */
+function npDx(){
+  if(!Dn||!Dn.perNp||!Dn.perNp.length)return null;
+  const list=[];
+  Dn.perNp.forEach(function(pn){
+    pn.units.forEach(function(vu){
+      const key=vu.key||('NP|'+pn.np.id+'|'+vu.country+'|'+vu.account);
+      const u={key:key,country:vu.country,account:vu.account,line:pn.np.line||'(新品)',product:pn.np.name,model:pn.np.name,   // 型号位=产品名:明年列(预算延伸)按 国家×渠道×型号 取值,否则同渠道两个新品会串
+        audio:false,periods:[],weeks:new Map(),rawNames:[vu.account],np:pn.np.id};
+      const rows=vu.rows.map(function(r){ return {p:r.p,so:r.so,si:r.si,buy:r.si,inv:r.inv,dos:r.dos,daily:(r.so||0)/7,
+        soSrc:r.soSrc||'newprod',buySrc:r.buySrc||'rule'}; });
+      list.push({u:u,cur:{curInv:0,curInv1:null,dailySO:vu.base/7,avgWeeklySO:vu.base,windowWeeks:[]},
+        sim:{rows:rows,blocked:false},fc:rows.map(function(r){ return {p:r.p,so:r.so,src:r.soSrc}; }),
+        exempt:false,ignored:false,bl:null,np:pn.np});
+    });
+  });
+  const stx=retailStore||store||audioStore;
+  return {list:list,byKey:new Map(list.map(function(it){ return [it.u.key,it]; })),fw:Dn.fw,monthEnds:F.monthEndPeriods(stx.maxPeriod)};
+}
+function pvDxOf(){ return dxOfSrc(state.ui.pvSrc); }
+function dxOfSrc(src){ return src==='audio'?Da:(src==='retail'?Dr:(src==='np'?npDx():D)); }
+function storeOfSrc(src){ return src==='audio'?audioStore:(src==='retail'?retailStore:(src==='np'?(retailStore||store):store)); }

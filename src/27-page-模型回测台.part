@@ -1,0 +1,177 @@
+/* ===== 模型回测台:平销引擎 vs 现行参考去年,Holdout 滚动多窗口,Web Worker 多核并行 =====
+   processChunk 是纯函数:主线程与 Worker 共用同一份代码(toString 注入),保证两路结果一致。 */
+function mbProcessChunk(d,C){
+  const res={sumA:0,sumB:0,sumErrA:0,sumErrB:0,sumAct:0,perLine:{},worst:[],n:0,nCut:0};
+  d.units.forEach(function(un){
+    const u={audio:un.audio,periods:un.periods,weeks:new Map()};
+    un.weeks.forEach(function(x){ u.weeks.set(x[0],{so:x[1],inv:x[2],inv1:x[3],si:0}); });
+    const okSo=function(so){ return un.audio?(so!=null&&so>0):(so!=null); };
+    const validP=un.periods.filter(function(p){ return okSo(u.weeks.get(p).so); });
+    if(validP.length<26)return;
+    const maxP=validP[validP.length-1];
+    const promoSet=d.promo[un.country]||{};
+    const kd=d.kline[un.line]||{};
+    const cuts=[];
+    [13,26].forEach(function(hh){ const c=C.addWeeksP(maxP,-hh); if(c>validP[0])cuts.push(c); });
+    const ly=C.mkPeriod(C.periodY(maxP)-1,40);
+    if(ly>validP[0]&&ly<C.addWeeksP(maxP,-13))cuts.push(ly);   // 去年大促段窗口
+    let uAbsA=0,uAbsB=0,uAct=0,used=false;
+    cuts.forEach(function(cut){
+      const histValid=validP.filter(function(p){ return p<=cut; });
+      if(histValid.length<20)return;
+      used=true; res.nCut++;
+      const bl=C.baselineOf(u,{endP:cut,blHead:d.cfg.blHead,blKappa:d.cfg.blKappa,kdef:kd,
+        isPromo:function(p){ return !!promoSet[C.periodW(p)]; }});
+      const recent4=histValid.slice(-4).map(function(p){ return u.weeks.get(p).so; });
+      let r4=0; recent4.forEach(function(v){ r4+=v; }); r4=recent4.length?r4/recent4.length:0;
+      let p2=cut,i2=0;
+      for(let i=0;i<13;i++){
+        p2=C.addWeeksP(p2,1);
+        if(p2>maxP)break;
+        const wobj=u.weeks.get(p2);
+        if(!wobj||!okSo(wobj.so))continue;
+        const act=wobj.so;
+        const w=C.periodW(p2);
+        const k=kd[w]!=null?kd[w]:1;
+        i2++;
+        const refP=C.refPeriodOf(p2,C.periodY(p2)-1);
+        const rw=u.weeks.get(refP);
+        const refSo=(rw&&okSo(rw.so)&&refP<=cut)?rw.so:null;
+        const predB=refSo!=null?refSo:r4;                                    // 现行:去年同周(缺→近4均)
+        const predA=(bl.base!=null)?bl.base*Math.pow(1+bl.delta,i2)*k:r4;    // 平销引擎
+        res.sumA+=Math.abs(predA-act); res.sumB+=Math.abs(predB-act);
+        res.sumErrA+=(predA-act); res.sumErrB+=(predB-act);
+        res.sumAct+=act;
+        uAbsA+=Math.abs(predA-act); uAbsB+=Math.abs(predB-act); uAct+=act;
+        let pl=res.perLine[un.line]; if(!pl)pl=res.perLine[un.line]={a:0,b:0,act:0};
+        pl.a+=Math.abs(predA-act); pl.b+=Math.abs(predB-act); pl.act+=act;
+      }
+    });
+    if(used&&uAct>0){
+      res.n++;
+      res.worst.push({key:un.key,src:un.src,line:un.line,wmA:+(uAbsA/uAct).toFixed(3),wmB:+(uAbsB/uAct).toFixed(3),act:Math.round(uAct)});
+    }
+  });
+  res.worst.sort(function(x,y){ return y.wmA-x.wmA; });
+  res.worst=res.worst.slice(0,80);
+  return res;
+}
+function mbWorkerCode(){
+  const fns=['medianOf','periodY','periodW','mkPeriod','mondayOf','isoWeekOf','weeksInISOYear',
+    'addWeeksP','weekIndex','theilSen','baselineOf','refPeriodOf','round5','monthOfP'];
+  let code='const DAY=86400000;const wIdxMemo={};const C={};\n';
+  fns.forEach(function(f){ code+='C.'+f+'='+F[f].toString()+';\n'; });
+  code+='const mbProcessChunk='+mbProcessChunk.toString()+';\n';
+  code+='onmessage=function(ev){ postMessage(mbProcessChunk(ev.data,C)); };';
+  return code;
+}
+function mbCollectUnits(){
+  const out=[];
+  [[store,'FSD'],[retailStore,'下游'],[audioStore,'音频专表']].forEach(function(pair){
+    if(!pair[0])return;
+    pair[0].units.forEach(function(u){
+      out.push({key:u.key,src:pair[1],country:u.country,account:u.account,line:u.line,
+        product:u.product,model:u.model,audio:!!u.audio,periods:u.periods.slice(),
+        weeks:u.periods.map(function(p){ const w=u.weeks.get(p);
+          return [p,w.so,w.inv!=null?w.inv:null,w.inv1!=null?w.inv1:null]; })});
+    });
+  });
+  return out;
+}
+async function runModelBacktest(host){
+  const t0=performance.now();
+  const units=mbCollectUnits();
+  if(!units.length){ host.innerHTML='<div class="note">没有可回测的数据。</div>'; return; }
+  const countries={};
+  units.forEach(function(un){ if(un.country&&!countries[un.country])countries[un.country]=F.promoWeekSet(un.country,state.promoCal); });
+  const kline=(D&&D.layers&&D.layers.line)?D.layers.line:{};
+  const cfg={blHead:state.cfg.blHead,blKappa:state.cfg.blKappa};
+  const cores=Math.max(1,(navigator.hardwareConcurrency||4)-1);
+  const nw=Math.min(cores,Math.max(1,Math.ceil(units.length/40)));
+  host.innerHTML='<div class="note">回测中… '+units.length+' 个单元 · '+nw+' 个并行线程（'+(navigator.hardwareConcurrency||'?')+' 逻辑核）</div>';
+  const chunks=[]; const per=Math.ceil(units.length/nw);
+  for(let i=0;i<units.length;i+=per)chunks.push(units.slice(i,i+per));
+  const results=[];
+  let workerOk=true;
+  try{
+    const code=mbWorkerCode();
+    const blob=new Blob([code],{type:'text/javascript'});
+    const url=URL.createObjectURL(blob);
+    await Promise.all(chunks.map(function(ch){
+      return new Promise(function(resolve,reject){
+        const wk=new Worker(url);
+        wk.onmessage=function(ev){ results.push(ev.data); wk.terminate(); resolve(); };
+        wk.onerror=function(e){ wk.terminate(); reject(e); };
+        wk.postMessage({units:ch,promo:countries,kline:kline,cfg:cfg});
+      });
+    }));
+    URL.revokeObjectURL(url);
+  }catch(e){
+    workerOk=false;
+    results.length=0;
+    chunks.forEach(function(ch){ results.push(mbProcessChunk({units:ch,promo:countries,kline:kline,cfg:cfg},F)); });
+  }
+  const agg={sumA:0,sumB:0,sumErrA:0,sumErrB:0,sumAct:0,perLine:{},worst:[],n:0,nCut:0};
+  results.forEach(function(r){
+    agg.sumA+=r.sumA; agg.sumB+=r.sumB; agg.sumErrA+=r.sumErrA; agg.sumErrB+=r.sumErrB;
+    agg.sumAct+=r.sumAct; agg.n+=r.n; agg.nCut+=r.nCut;
+    Object.keys(r.perLine).forEach(function(l){
+      let pl=agg.perLine[l]; if(!pl)pl=agg.perLine[l]={a:0,b:0,act:0};
+      pl.a+=r.perLine[l].a; pl.b+=r.perLine[l].b; pl.act+=r.perLine[l].act;
+    });
+    agg.worst=agg.worst.concat(r.worst);
+  });
+  agg.worst.sort(function(x,y){ return y.wmA-x.wmA; });
+  agg.worst=agg.worst.slice(0,50);
+  const ms=Math.round(performance.now()-t0);
+  if(agg.sumAct<=0){ host.innerHTML='<div class="note">有效回测样本不足（各单元有效周均少于 26 周）。</div>'; return; }
+  const wmA=agg.sumA/agg.sumAct, wmB=agg.sumB/agg.sumAct;
+  window.__mbLast={wmA:wmA,wmB:wmB,n:agg.n,ms:ms,at:Date.now()};
+  const biasA=agg.sumErrA/agg.sumAct, biasB=agg.sumErrB/agg.sumAct;
+  const improve=(wmB-wmA)/wmB*100;
+  const pc=function(v){ return (v*100).toFixed(1)+'%'; };
+  let hh='<div class="cards" style="margin:8px 0">'
+    +'<div class="kpi"><div class="v">'+pc(wmA)+'</div><div class="t">平销引擎 WMAPE（偏差 '+(biasA>=0?'+':'')+pc(biasA)+'）</div></div>'
+    +'<div class="kpi"><div class="v">'+pc(wmB)+'</div><div class="t">现行·参考去年 WMAPE（偏差 '+(biasB>=0?'+':'')+pc(biasB)+'）</div></div>'
+    +'<div class="kpi'+(improve>=10?'':' warn')+'"><div class="v">'+(improve>=0?'−':'+')+Math.abs(improve).toFixed(1)+'%</div><div class="t">平销引擎误差相对变化</div></div>'
+    +'<div class="kpi"><div class="v">'+ms+'ms</div><div class="t">'+agg.n+' 单元 · '+agg.nCut+' 个截断窗口 · '+(workerOk?nw+' 线程并行':'单线程兜底')+'</div></div>'
+    +'</div>';
+  hh+='<div class="note" style="margin-bottom:6px"><b>结论：</b>'
+    +(improve>=10
+      ?'平销引擎误差比现行模型低 '+improve.toFixed(1)+'%，达到切换纪律（≥10%），建议将下游/音频预测基准切换为「平销引擎优先」（设置页），FSD 逐产品按需启用。'
+      :(improve>=0
+        ?'平销引擎误差低 '+improve.toFixed(1)+'%，未达 10% 切换纪律——维持双轨，按产品选用。'
+        :'平销引擎误差高 '+Math.abs(improve).toFixed(1)+'%，维持现行模型为默认，平销引擎仅按产品选用。'))
+    +' 回测窗口含去年大促段；WMAPE 按实际销量加权。</div>';
+  hh+='<div class="tblwrap" style="max-height:24vh"><table class="sortable"><thead><tr>'
+    +'<th class="l">产品线</th><th>平销引擎 WMAPE</th><th>现行 WMAPE</th><th>更优方</th></tr></thead><tbody>';
+  Object.keys(agg.perLine).sort().forEach(function(l){
+    const pl=agg.perLine[l];
+    if(pl.act<=0)return;
+    const a=pl.a/pl.act,b=pl.b/pl.act;
+    hh+='<tr><td class="l">'+esc(l)+'</td><td>'+pc(a)+'</td><td>'+pc(b)+'</td>'
+      +'<td>'+(a<=b?'<span class="chip auto">平销引擎</span>':'<span class="chip base">参考去年</span>')+'</td></tr>';
+  });
+  hh+='</tbody></table></div>';
+  hh+='<div style="margin-top:8px"><b style="font-size:13px">误差最大的 50 个单元（平销引擎口径,复核数据质量用）</b>'
+    +'<div class="tblwrap" style="max-height:24vh"><table class="sortable"><thead><tr>'
+    +'<th class="l">来源</th><th class="l">单元</th><th class="l">产品线</th><th>平销WMAPE</th><th>现行WMAPE</th><th>实际量</th></tr></thead><tbody>'
+    +agg.worst.map(function(x){
+      return '<tr><td class="l">'+esc(x.src)+'</td><td class="l ell" style="max-width:380px" title="'+esc(x.key.split(F.SEP).join(' · '))+'">'+esc(x.key.split(F.SEP).join(' · '))+'</td>'
+        +'<td class="l">'+esc(x.line)+'</td><td>'+pc(x.wmA)+'</td><td>'+pc(x.wmB)+'</td><td>'+F.fmt(x.act)+'</td></tr>'; }).join('')
+    +'</tbody></table></div></div>';
+  hh+='<div class="bar" style="margin-top:6px"><button class="ghost" id="btnExpMB">导出 Excel</button></div>';
+  host.innerHTML=hh;
+  makeSortable(host);
+  const eb=host.querySelector('#btnExpMB');
+  if(eb)eb.onclick=function(){
+    const headers=['维度','平销引擎WMAPE','现行WMAPE','实际量'];
+    const data=[['整体',(wmA*100).toFixed(1)+'%',(wmB*100).toFixed(1)+'%',Math.round(agg.sumAct)]];
+    Object.keys(agg.perLine).forEach(function(l){ const pl=agg.perLine[l];
+      if(pl.act>0)data.push([l,(pl.a/pl.act*100).toFixed(1)+'%',(pl.b/pl.act*100).toFixed(1)+'%',Math.round(pl.act)]); });
+    agg.worst.forEach(function(x){ data.push([x.src+' '+x.key.split(F.SEP).join(' · '),(x.wmA*100).toFixed(1)+'%',(x.wmB*100).toFixed(1)+'%',x.act]); });
+    exportTable('模型回测结果',headers,data);
+  };
+  window.__mbLast={wmA:wmA,wmB:wmB,ms:ms,n:agg.n,workers:workerOk?nw:0};
+}
+

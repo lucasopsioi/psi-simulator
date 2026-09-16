@@ -1,0 +1,165 @@
+/* ===== 推演明细 ===== */
+function renderDetail(elOpt){
+  const el=elOpt||$('#view-detail');
+  if(!elOpt)pvModeClear();
+  if(!D||!D.list.length){ emptyHint(el); return; }
+  let missWarn='';
+  let it=D.byKey.get(state.ui.unit);
+  if(!it){
+    if(state.ui.unit)missWarn='<div class="panel" style="border-left:4px solid var(--warn)">所选产品在当前数据中不存在（数据可能已更新），已显示列表首项，请重新选择。</div>';
+    it=D.list[0];
+  }
+  state.ui.unit=it.u.key;
+  const u=it.u, params=it.params;
+  const accts={};
+  D.list.forEach(function(x,i){ (accts[x.u.account]=accts[x.u.account]||[]).push(i); });
+  let selHtml='<select id="unitSel">';
+  Object.keys(accts).forEach(function(a){
+    selHtml+='<optgroup label="'+esc(a)+'">';
+    accts[a].forEach(function(i){ const x=D.list[i];
+      selHtml+='<option value="'+i+'"'+(x===it?' selected':'')+'>'
+        +esc(x.u.line+' · '+x.u.product+' ('+x.u.model+')')+'</option>'; });
+    selHtml+='</optgroup>'; });
+  selHtml+='</select>';
+  const dec=it.dec, effMode=dec?dec.mode:(it.cls.status==='auto'?'self':null);
+  const g=state.growth[u.key]==null?1:state.growth[u.key];
+  let h=missWarn;
+  h+='<div class="metaRow" style="margin-bottom:6px"><b style="font-size:17px">'+esc(u.product)+' <span class="muted">'+esc(u.model)+'</span></b>'
+    +'<span class="muted">'+esc(u.line)+' · '+esc(u.account)+' · '+esc(u.country)+'</span>'
+    +statusChip(it)+(u.audio?' <span class="chip audio">音频·人工报量</span>':'')+'</div>';
+  h+='<div class="bar"><span class="note">切换产品</span>'+selHtml
+    +'<span class="chip" title="'+(it.learned?'依据本渠道历史学习：识别到 '+it.learned.n+' 次补货事件,触发DOS中位数 '+it.learned.trigger+',补货后DOS中位数 '+it.learned.target:'该渠道历史补货样本不足 3 次,采用产品线默认参数')+'">'
+    +'补货线 DOS&lt;'+params.trigger+' → 补到 '+params.target+(it.learned?'（本渠道历史学习,'+it.learned.n+'次）':'（产品线默认）')+'</span>'
+    +'<span class="chip" title="预测所用周系数层,最细可用优先">系数层:'+esc(it.kl.label)+'</span>'
+    +'</div>';
+  if(it.warns&&it.warns.length)
+    h+='<div class="panel" style="border-left:4px solid var(--warn)"><b>⚠ 推演合理性警示</b><div class="note" style="white-space:pre-line">'+esc(warnText(it))+'</div></div>';
+  if(it.exempt)
+    h+='<div class="panel note">该产品当前库存 '+F.fmt(it.cur.curInv)+' ≤ 免推演阈值 '+it.thr+' 台，不做推演（阈值在「设置」页调整）。</div>';
+  h+='<div class="metaRow panel">'
+    +'<span>当前INV <b>'+F.fmt(it.cur.curInv)+'</b>'+(it.cur.curInvP?'<span class="muted">('+F.weekLabel(it.cur.curInvP)+')</span>':'')+'</span>'
+    +'<span>INV1 <b>'+F.fmt(it.cur.curInv1)+'</b></span>'
+    +'<span>当前DOS(计算) <b'+dosCls(it.cur.dosCalc,u.line)+'>'+F.fmt(it.cur.dosCalc)+'</b> <span class="muted">系统DOS '+F.fmt(it.cur.sysDos)+'</span></span>'
+    +'<span>最近报量 <b>'+(it.cur.lastSOP?F.weekLabel(it.cur.lastSOP)+' : '+F.fmt(it.cur.lastSO):'—')+'</b>'
+    +(u.audio&&it.cur.lastSOP&&it.cur.lastSOP<store.maxPeriod?' <span class="chip audio">滞后'+(F.weekIndex(store.maxPeriod)-F.weekIndex(it.cur.lastSOP))+'周</span>':'')+'</span>'
+    +'<span title="最近'+state.cfg.dosWindow+'个有数周的平均周销(音频跳过未报量周)">近4周均SO <b>'+(it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'—')+'</b>/周</span>'
+    +'<span title="同期参考=去年同一周;存在上年数据不等同于存在未来各周的同期参考">去年有数 <b>'+it.cls.histWeeks+'</b> 周 · 未来缺同期参考 <b>'+it.cls.missing+'</b>/'+D.fw.length+' 周</span>'
+    +'</div>';
+  h+='<div class="panel" id="detailChart"></div>';
+  /* 推演方式控制 */
+  const anchors=D.list.filter(function(x){ return x.u.key!==u.key&&x.cls.histWeeks>=state.cfg.minHistWeeks; });
+  const sameLine=anchors.filter(function(x){return x.u.line===u.line;});
+  const otherLine=anchors.filter(function(x){return x.u.line!==u.line;});
+  const optOf=function(x){ return '<option value="'+esc(x.u.key)+'"'+(dec&&dec.anchor===x.u.key?' selected':'')+'>'
+    +esc(x.u.model+'｜'+x.u.product+'｜'+x.u.account.split(' ')[0])+'</option>'; };
+  h+='<div class="panel"><h3>推演方式</h3><div class="ctl bar">'
+    +'<label><input type="radio" name="mode" value="self"'+(effMode==='self'?' checked':'')+'> 参考自身去年</label>'
+    +'<label><input type="radio" name="mode" value="anchor"'+(effMode==='anchor'?' checked':'')+'> 锚定历史产品</label>'
+    +'<select id="anchorSel"><optgroup label="同产品线">'+sameLine.map(optOf).join('')+'</optgroup>'
+    +'<optgroup label="其他产品线">'+otherLine.map(optOf).join('')+'</optgroup></select>'
+    +'<span title="按锚定品销量的倍数:1=一样多,0.5=一半,2=两倍">档位(锚定品的倍数)×</span><input type="number" id="scaleIn" step="0.05" min="0" value="'+(dec&&dec.scale!=null?dec.scale:1)+'">'
+    +'<label><input type="radio" name="mode" value="base"'+(effMode==='base'?' checked':'')+'> 基础周销</label>'
+    +'<input type="number" id="baseIn" min="0" value="'+(dec&&dec.base!=null?dec.base:(it.cur.avgWeeklySO?Math.round(it.cur.avgWeeklySO):10))+'">/周'
+    +'<label title="平销引擎:剔除首销/清尾/大促/缺货周后的中位周销×漂移×季节×增速;与参考去年双轨,逐产品选用"><input type="radio" name="mode" value="flat"'+(effMode==='flat'?' checked':'')+'> 按平销推演'
+      +(it.bl&&it.bl.base!=null?'（b̂≈'+it.bl.base+'/周·样本'+it.bl.n+'·'+({high:'高',mid:'中',low:'低'}[it.bl.conf]||'—')+'置信）':'（暂无平销数据）')+'</label>'
+    +'<label><input type="radio" name="mode" value="skip"'+(effMode==='skip'?' checked':'')+'> 停售不推演</label>'
+    +'<span style="border-left:1px solid var(--line);padding-left:10px">增长系数 <input type="number" id="growthIn" step="0.05" min="0" value="'+g+'">'
+    +(it.yoyHint!=null?' <button class="ghost" id="btnYoy" title="按今年YTD÷去年同期自动填">YTD同比 '+it.yoyHint.toFixed(2)+' 一键应用</button>':'')+'</span>'
+    +'<button class="ghost" id="btnResetOv">清除本品全部手工改写</button>'
+    +'</div>'
+    +'<div class="note">参考模式：预测SO = 去年同周SO × 档位 × 增长系数 ×（周系数÷默认周系数），系数取「'+esc(it.kl.label)+'」层；缺同期参考的周用去年均值×系数补估（蓝色），并由合理性校验监控。全部四舍五入到 '+state.cfg.roundTo+'；手工改写原样保留。</div>'
+    +'</div>';
+  /* 推演网格 */
+  const histAll=u.periods;
+  const histN=state.ui.histN==='all'?histAll.length:Math.min(histAll.length,parseInt(state.ui.histN,10)||8);
+  const hist=histAll.slice(-histN);
+  h+='<div class="bar"><span class="note">历史显示</span>'
+    +'<select id="histNSel"><option value="8"'+(state.ui.histN==='8'?' selected':'')+'>近8周</option>'
+    +'<option value="16"'+(state.ui.histN==='16'?' selected':'')+'>近16周</option>'
+    +'<option value="all"'+(state.ui.histN==='all'?' selected':'')+'>全部</option></select>'
+    +'<span class="note">未来 SO / SI 单元格可直接点击编辑（清空即恢复公式值）</span></div>';
+  h+='<div class="tblwrap"><table class="grid"><thead><tr><th class="met">指标</th>';
+  hist.forEach(function(p){ h+='<th class="wk hist">'+F.weekLabel(p)+'<div class="d">'+F.weekRangeLabel(p)+'</div></th>'; });
+  D.fw.forEach(function(p,i){ h+='<th class="wk'+(i===0?' futStart':'')+'">'+F.weekLabel(p)+'<div class="d">'+F.weekRangeLabel(p)+'</div></th>'; });
+  h+='</tr></thead><tbody>';
+  const simRow=function(i){ return it.sim.blocked?null:it.sim.rows[i]; };
+  const mkRow=function(name,histFn,futFn){
+    let r='<tr><td class="met">'+name+'</td>';
+    hist.forEach(function(p){ r+=histFn(p); });
+    D.fw.forEach(function(p,i){ r+=futFn(p,i,i===0?' futStart':''); });
+    return r+'</tr>';
+  };
+  h+=mkRow('SI 进货',function(p){ return '<td class="hist">'+F.fmt(u.weeks.get(p).si)+'</td>'; },
+    function(p,i,fs){ const r=simRow(i);
+      if(!r)return '<td class="'+fs+' muted">—</td>';
+      const ov=r.siSrc==='override';
+      return '<td class="'+fs+(ov?' ov':'')+'" contenteditable data-kind="si" data-p="'+p+'">'+F.fmt(r.si)+'</td>'; });
+  h+=mkRow('ST 出货(→下游)',function(p){ const v=it.histST.get(p);
+      return '<td class="hist muted">'+(v==null?'·':F.fmt(v))+'</td>'; },
+    function(p,i,fs){ const r=simRow(i); return '<td class="'+fs+'">'+(r?F.fmt(r.st):'—')+'</td>'; });
+  h+=mkRow('SO 零售',function(p){ const w=u.weeks.get(p); const so=w.so;
+      const norep=u.audio&&it.cur.lastSOP!=null&&p>it.cur.lastSOP;
+      if(norep)return '<td class="hist norep" title="音频未报量">未报</td>';
+      return '<td class="hist">'+F.fmt(so)+'</td>'; },
+    function(p,i,fs){ const f=it.fc[i]; const cls=f.src==='override'?' ov':(f.src==='fill'?' fill':'');
+      if(f.so==null)return '<td class="'+fs+' muted" title="待确认推演方式">待确认</td>';
+      const rs=(it.sim&&it.sim.rows)?it.sim.rows[i]:null; const lt=rs?F.lineageText(rs):'';
+      return '<td class="'+fs+cls+'" contenteditable data-kind="so" data-p="'+p+'" title="'+esc(lt||({ref:'参考去年同周',fill:'去年均值补估',base:'基础周销×系数',override:'手工改写',skip:'停售'}[f.src]||''))+'">'+F.fmt(f.so)+'</td>'; });
+  h+=mkRow('INV 渠道总库存',function(p){ return '<td class="hist">'+F.fmt(u.weeks.get(p).inv)+'</td>'; },
+    function(p,i,fs){ const r=simRow(i); return '<td class="'+fs+'">'+(r?F.fmt(r.inv):'—')+'</td>'; });
+  h+=mkRow('INV1 FSD自有',function(p){ return '<td class="hist">'+F.fmt(u.weeks.get(p).inv1)+'</td>'; },
+    function(p,i,fs){ const r=simRow(i); return '<td class="'+fs+'">'+(r?F.fmt(r.inv1):'—')+'</td>'; });
+  h+=mkRow('DOS',function(p){ return '<td class="hist muted">'+F.fmt(u.weeks.get(p).dos)+'</td>'; },
+    function(p,i,fs){ const r=simRow(i); if(!r)return '<td class="'+fs+' muted">—</td>';
+      const cls=r.dos!=null&&r.dos<params.trigger?' dosLow':(r.dos!=null&&r.dos<params.trigger+20?' dosMid':'');
+      return '<td class="'+fs+cls+'">'+F.fmt(r.dos)+'</td>'; });
+  h+='</tbody></table></div>';
+  h+='<div class="legend">'
+    +'<span><i style="background:var(--hist)"></i>历史(底表)</span>'
+    +'<span><i style="background:var(--ov)"></i>手工改写</span>'
+    +'<span><i style="background:var(--fill)"></i>缺参考·均值补估</span>'
+    +'<span>历史ST由 INV1 变动推导(·=无法推导,负数=回调)</span>'
+    +'<span>历史DOS为底表原值;未来DOS为推演值</span></div>';
+  el.innerHTML=h;
+  const cp=fsdChartParts(it);
+  renderChartInto($('#detailChart'),cp.xs,cp.series,state.chartSmooth);
+  /* 事件 */
+  $('#unitSel').onchange=function(){ const x=D.list[+this.value];
+    if(x)state.ui.unit=x.u.key; render(); };
+  $('#histNSel').onchange=function(){ state.ui.histN=this.value; render(); };
+  el.querySelectorAll('input[name=mode]').forEach(function(r){
+    r.onchange=function(){ applyMode(u.key,this.value); }; });
+  $('#anchorSel').onchange=function(){ if(effMode==='anchor')applyMode(u.key,'anchor'); };
+  $('#scaleIn').onchange=function(){ if((state.decisions[u.key]||{}).mode==='anchor')applyMode(u.key,'anchor'); };
+  $('#baseIn').onchange=function(){ if((state.decisions[u.key]||{}).mode==='base')applyMode(u.key,'base'); };
+  $('#growthIn').onchange=function(){ const v=F.parseCellNum(this.value);
+    if(v==null||v===1)delete state.growth[u.key]; else state.growth[u.key]=v; recompute(); };
+  const yoyBtn=$('#btnYoy');
+  if(yoyBtn)yoyBtn.onclick=function(){ state.growth[u.key]=+it.yoyHint.toFixed(2); recompute(); };
+  $('#btnResetOv').onclick=function(){ delete state.ovSO[u.key]; delete state.ovSI[u.key]; delete state.ovTail[u.key]; recompute(); };
+  el.querySelectorAll('td[contenteditable]').forEach(function(td){
+    td.addEventListener('keydown',function(e){ if(e.key==='Enter'){e.preventDefault();td.blur();} });
+    td.addEventListener('blur',function(){
+      if(td.dataset.orig!=null&&td.textContent===td.dataset.orig)return;   // 未改动不提交:点进点走不许把公式值凝固成手工改写
+      const kind=td.dataset.kind,p=+td.dataset.p;
+      const v=F.parseCellNum(td.textContent);
+      if(v!=null&&v<0){ if(td.dataset.orig!=null)td.textContent=td.dataset.orig; xgFlash('请输入非负数字'); return; }
+      const r=planWrite({src:'fsd',key:u.key,bag:kind==='so'?'ovSO':'ovSI',p:p,val:v});
+      planCommit(r.scope);   // 阶段2:单格拍数走唯一写入口 + 增量重算(此前每格全量重算)
+    });
+  });
+}
+function applyMode(key,mode){
+  const it=D.byKey.get(key);
+  if(mode==='self'){ if(it.cls.status==='auto')delete state.decisions[key];
+    else state.decisions[key]={mode:'self'}; }
+  else if(mode==='anchor'){ const sel=$('#anchorSel'),sc=F.parseCellNum(($('#scaleIn')||{}).value);
+    if(!sel||!sel.value)return;
+    state.decisions[key]={mode:'anchor',anchor:sel.value,scale:sc==null?1:sc}; }
+  else if(mode==='base'){ const b=F.parseCellNum(($('#baseIn')||{}).value);
+    state.decisions[key]={mode:'base',base:b==null?0:b}; }
+  else if(mode==='flat'){ state.decisions[key]={mode:'flat'}; }
+  else if(mode==='skip'){ state.decisions[key]={mode:'skip'}; }
+  recompute();
+}
+

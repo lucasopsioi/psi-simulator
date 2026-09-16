@@ -1,0 +1,168 @@
+/* ===== 导出预览:所有看板导出统一入口 =====
+   exportTable 先开预览弹窗——行可勾选、列可左右移动/隐藏、列格式可存为模板(按导出名记忆,下次自动套用);
+   确认后才真正写文件(exportTableRaw)。模板按列名匹配:底表新增列自动附尾显示,缺失列自动忽略。 */
+let expCtx=null;
+function expApplyTpl(cols,tpl){
+  if(!tpl||!tpl.cols)return cols;
+  const pool=cols.slice(); const out=[];
+  tpl.cols.forEach(function(tc){
+    for(let i=0;i<pool.length;i++){
+      if(pool[i].h===tc.h){ pool[i].on=tc.on!==false; out.push(pool[i]); pool.splice(i,1); return; } }
+  });
+  pool.forEach(function(c){ out.push(c); });
+  return out;
+}
+/* 导出落盘统一出口(2026-09-04 阶段0):门禁通过 window.__exportHook 截获每种导出的表头与行,作为「导出基线」逐位比对 */
+function saveXlsxHooked(o){
+  if(window.__exportHook){
+    (o.sheets||[]).forEach(function(sh){ window.__exportHook((o.name||'')+'/'+sh.name,(sh.rows&&sh.rows[0])||[],(sh.rows||[]).slice(1)); });
+    return Promise.resolve({ok:true,hooked:true});
+  }
+  return SHELL.saveXlsx(o);
+}
+function exportTable(name,headers,rows){
+  if(window.__exportHook){ window.__exportHook(name,headers,rows); return; }
+  let cols=headers.map(function(hh,i){ return {h:String(hh),i:i,on:true}; });
+  cols=expApplyTpl(cols,state.expTpl&&state.expTpl[name]);
+  expCtx={name:name,headers:headers,rows:rows,cols:cols,
+    sel:rows.map(function(){ return true; }),filter:''};
+  let ov=document.getElementById('expOv');
+  if(!ov){ ov=document.createElement('div'); ov.id='expOv'; document.body.appendChild(ov); }
+  ov.style.display='flex';
+  renderExpPreview();
+}
+function renderExpPreview(){
+  const c=expCtx; const ov=document.getElementById('expOv'); if(!c||!ov)return;
+  const visCols=c.cols.filter(function(x){ return x.on; });
+  const q=(c.filter||'').toLowerCase();
+  const visIdx=[];
+  c.rows.forEach(function(r,i){
+    if(q){ let hit=false;
+      for(let j=0;j<r.length;j++){ if(String(r[j]==null?'':r[j]).toLowerCase().indexOf(q)>=0){ hit=true; break; } }
+      if(!hit)return; }
+    visIdx.push(i);
+  });
+  let selN=0; c.sel.forEach(function(s){ if(s)selN++; });
+  const CAP=200;
+  let h='<div class="expCard">'
+    +'<div class="expHead"><b>导出预览：'+esc(c.name)+'</b>'
+    +'<span class="note">共 '+c.rows.length+' 行 · 已勾选 <b id="expSelCnt">'+selN+'</b> 行 · 显示列 '+visCols.length+'/'+c.cols.length
+    +(state.expTpl[c.name]?' · <span style="color:var(--ok)">已套用保存的模板</span>':'')+'</span>'
+    +'<button class="ghost" id="expClose">取消</button></div>'
+    +'<div class="bar" style="margin:8px 0 6px">'
+    +'<input type="text" id="expQ" placeholder="筛选行（任意列包含即命中）" value="'+esc(c.filter)+'" style="min-width:220px">'
+    +'<button class="mini" id="expSelVis" title="将当前筛选结果全部勾选">勾选筛选结果</button>'
+    +'<button class="mini" id="expUnselVis" title="将当前筛选结果全部取消勾选">取消筛选结果</button>'
+    +'<button class="mini" id="expSelAll">全选</button>'
+    +'<button class="mini" id="expSelNone">清空勾选</button>'
+    +'<span style="flex:1"></span>'
+    +'<button class="ghost" id="expTplSave" title="记住当前列顺序与显隐;下次此看板导出时自动套用">保存为模板</button>'
+    +(state.expTpl[c.name]?'<button class="mini" id="expTplClr" title="删除已保存的模板并恢复默认列">恢复默认列</button>':'')
+    +'</div>';
+  const hid=c.cols.filter(function(x){ return !x.on; });
+  if(hid.length){
+    h+='<div class="bar" style="margin:0 0 6px"><span class="note">已隐藏列（点击恢复）：</span>'
+      +hid.map(function(x){ return '<button class="mini" data-expshow="'+esc(x.h)+'">'+esc(x.h)+'</button>'; }).join('')+'</div>';
+  }
+  h+='<div class="tblwrap" style="max-height:52vh"><table><thead><tr>'
+    +'<th style="width:30px"><input type="checkbox" id="expCkAll"'+(c.rows.length&&selN===c.rows.length?' checked':'')+' title="全选/清空"></th>';
+  visCols.forEach(function(x,vi){
+    h+='<th class="l" style="white-space:nowrap">'
+      +'<button class="mini" data-expmv="-1" data-h="'+esc(x.h)+'" title="左移一列"'+(vi===0?' disabled':'')+'>◀</button>'
+      +'<button class="mini" data-expmv="1" data-h="'+esc(x.h)+'" title="右移一列"'+(vi===visCols.length-1?' disabled':'')+'>▶</button>'
+      +'<button class="mini" data-exphide="'+esc(x.h)+'" title="隐藏此列（不导出）">✕</button> '
+      +esc(x.h)+'</th>';
+  });
+  h+='</tr></thead><tbody>';
+  visIdx.slice(0,CAP).forEach(function(i){
+    const r=c.rows[i];
+    h+='<tr><td><input type="checkbox" class="expCk" data-i="'+i+'"'+(c.sel[i]?' checked':'')+'></td>';
+    visCols.forEach(function(x){ const v=String(r[x.i]==null?'':r[x.i]);
+      h+='<td class="l ell" style="max-width:220px" title="'+esc(v)+'">'+esc(v)+'</td>'; });
+    h+='</tr>';
+  });
+  h+='</tbody></table></div>';
+  if(visIdx.length>CAP)h+='<div class="note">预览仅显示筛选结果的前 '+CAP+' 行；导出包含全部勾选行，不受预览截断影响。</div>';
+  h+='<div class="bar" style="margin-top:10px;justify-content:flex-end">'
+    +'<button class="ghost" id="expClose2">取消</button>'
+    +'<button class="act" id="expGo">导出 Excel（<span id="expGoN">'+selN+'</span> 行 × '+visCols.length+' 列）</button>'
+    +'</div></div>';
+  ov.innerHTML=h;
+  const closeFn=function(){ ov.style.display='none'; expCtx=null; };
+  $('#expClose').onclick=closeFn; $('#expClose2').onclick=closeFn;
+  const updCnt=function(){ let n=0; c.sel.forEach(function(s){ if(s)n++; });
+    const e1=document.getElementById('expSelCnt'); if(e1)e1.textContent=String(n);
+    const e2=document.getElementById('expGoN'); if(e2)e2.textContent=String(n); };
+  $('#expQ').oninput=function(){ c.filter=this.value; c.__refocus=true; renderExpPreview(); };
+  $('#expCkAll').onchange=function(){ const on=this.checked;
+    c.sel=c.rows.map(function(){ return on; }); renderExpPreview(); };
+  ov.querySelectorAll('.expCk').forEach(function(k){
+    k.onchange=function(){ c.sel[+k.dataset.i]=k.checked; updCnt(); }; });
+  $('#expSelVis').onclick=function(){ visIdx.forEach(function(i){ c.sel[i]=true; }); renderExpPreview(); };
+  $('#expUnselVis').onclick=function(){ visIdx.forEach(function(i){ c.sel[i]=false; }); renderExpPreview(); };
+  $('#expSelAll').onclick=function(){ c.sel=c.rows.map(function(){ return true; }); renderExpPreview(); };
+  $('#expSelNone').onclick=function(){ c.sel=c.rows.map(function(){ return false; }); renderExpPreview(); };
+  ov.querySelectorAll('button[data-expmv]').forEach(function(b){
+    b.onclick=function(){
+      const dir=+b.dataset.expmv, hh=b.dataset.h, arr=c.cols;
+      let i=-1;
+      for(let k2=0;k2<arr.length;k2++){ if(arr[k2].h===hh&&arr[k2].on){ i=k2; break; } }
+      if(i<0)return;
+      let j=i+dir;
+      while(j>=0&&j<arr.length&&!arr[j].on)j+=dir;
+      if(j<0||j>=arr.length)return;
+      const t=arr[i]; arr[i]=arr[j]; arr[j]=t;
+      renderExpPreview(); };
+  });
+  ov.querySelectorAll('button[data-exphide]').forEach(function(b){
+    b.onclick=function(){ const hh=b.dataset.exphide;
+      for(let k2=0;k2<c.cols.length;k2++){ if(c.cols[k2].h===hh&&c.cols[k2].on){ c.cols[k2].on=false; break; } }
+      renderExpPreview(); };
+  });
+  ov.querySelectorAll('button[data-expshow]').forEach(function(b){
+    b.onclick=function(){ const hh=b.dataset.expshow;
+      for(let k2=0;k2<c.cols.length;k2++){ if(c.cols[k2].h===hh&&!c.cols[k2].on){ c.cols[k2].on=true; break; } }
+      renderExpPreview(); };
+  });
+  $('#expTplSave').onclick=function(){
+    state.expTpl[c.name]={cols:c.cols.map(function(x){ return {h:x.h,on:x.on}; })};
+    saveState(); renderExpPreview();
+  };
+  const tclr=$('#expTplClr');
+  if(tclr)tclr.onclick=function(){
+    delete state.expTpl[c.name]; saveState();
+    c.cols=c.headers.map(function(hh,i){ return {h:String(hh),i:i,on:true}; });
+    renderExpPreview();
+  };
+  $('#expGo').onclick=function(){
+    const vis=c.cols.filter(function(x){ return x.on; });
+    if(!vis.length){ alert('至少保留一列。'); return; }
+    const hdr=vis.map(function(x){ return x.h; });
+    const data=[];
+    c.rows.forEach(function(r,i){ if(!c.sel[i])return;
+      data.push(vis.map(function(x){ return r[x.i]; })); });
+    if(!data.length){ alert('未勾选任何行。'); return; }
+    const nm=c.name;
+    closeFn();
+    exportTableRaw(nm,hdr,data);
+  };
+  if(c.__refocus){ c.__refocus=false;
+    const qi=document.getElementById('expQ');
+    if(qi){ qi.focus(); qi.setSelectionRange(qi.value.length,qi.value.length); } }
+}
+async function exportTableRaw(name,headers,rows){
+  if(window.__exportHook){ window.__exportHook(name,headers,rows); return; }
+  if(SHELL&&SHELL.saveXlsx){
+    const res=await saveXlsxHooked({name:name+'.xlsx',sheets:[{name:name.slice(0,28),rows:[headers].concat(rows)}]});
+    if(res&&res.ok)alert('已导出: '+res.path);
+    else if(res&&!res.canceled)alert('导出失败: '+(res.error||''));
+    return;
+  }
+  const csv=[headers].concat(rows).map(function(r){
+    return r.map(function(c){ c=String(c==null?'':c);
+      return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c; }).join(','); }).join('\n');
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,%EF%BB%BF'+encodeURIComponent(csv);
+  a.download=name+'.csv'; a.click();
+}
+

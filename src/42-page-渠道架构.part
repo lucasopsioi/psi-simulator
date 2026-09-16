@@ -1,0 +1,91 @@
+/* ===== 渠道架构(2026-09-02 用户:每个国家一张连线图——直接渠道来自 FSD 底表,下游渠道来自间接零售伙伴底表;
+   下游连到某个直接渠道或「国家FSD合计」;直签渠道(直签零售/运营商/电商/自营)没有下游、直达消费者;
+   连线与类型可按产业单独设(不同产业用的分销/直签可能不同),没单独设的产业沿用「全部产业」默认层;
+   连线用于 ①下游页对账按直接渠道细分 ②锁量对下游的约束取上游直接渠道自有库存 INV1) ===== */
+/* 用语(2026-09-02 用户纠正):FSD 底表里的账户都是「直签渠道」(直接渠道);区别在 带下游(分销,挂间接伙伴) 还是 直达消费者(无下游) */
+const CHAN_TYPES=[['dist','带下游(分销)'],['retail','直达·零售'],['operator','直达·运营商'],['online','直达·电商平台'],['own','直达·自营']];
+const CHAN_TYPE_LABEL={dist:'带下游',retail:'直达·零售',operator:'直达·运营商',online:'直达·电商',own:'直达·自营',unwired:'未连线',country:'国家合计'};
+function chanTypeGuess(name){ return F.chanTypeGuess(name); }   // 没命中=按分销(用户口径:FSD=直接渠道加总,下游是其拆分);可在渠道架构页改
+function chanTreeOf(country){ return (state.chanTree&&state.chanTree[country])||{}; }
+function chanTreeLineOf(country,line){ return (line&&state.chanTreeLine&&state.chanTreeLine[country]&&state.chanTreeLine[country][line])||null; }
+function chanTypeLineOf(country,line){ return (line&&state.chanTypeLine&&state.chanTypeLine[country]&&state.chanTypeLine[country][line])||null; }
+/* 生效连线:产业层('-'=该产业明确不连) > 默认层;返回 null=未连线,'*'=国家FSD合计,其余=直接渠道名 */
+function chanParentOf(country,dsAcct,line){
+  const ov=chanTreeLineOf(country,line); if(ov&&ov[dsAcct]!=null)return ov[dsAcct]==='-'?null:ov[dsAcct];
+  const tr=chanTreeOf(country); return tr[dsAcct]!=null?tr[dsAcct]:null; }
+function chanParentSrc(country,dsAcct,line){ const ov=chanTreeLineOf(country,line); if(ov&&ov[dsAcct]!=null)return 'line'; const tr=chanTreeOf(country); return tr[dsAcct]!=null?'default':null; }
+function chanTypeEff(country,acct,line){
+  const ov=chanTypeLineOf(country,line); if(ov&&ov[acct])return ov[acct];
+  return (state.chanType&&state.chanType[country+'||'+acct])||chanTypeGuess(acct)||'dist'; }
+function chanTypeSrc(country,acct,line){ const ov=chanTypeLineOf(country,line); if(ov&&ov[acct])return 'line'; return (state.chanType&&state.chanType[country+'||'+acct])?'default':'guess'; }
+function chanSetParent(country,line,ds,par){   // par: 直接渠道名|'*'|null(断开);产业层断开写 '-'(明确不连),传 undefined=删除产业覆盖(沿用默认)
+  if(line){ const L=(state.chanTreeLine[country]=state.chanTreeLine[country]||{}); const ov=(L[line]=L[line]||{});
+    if(par===undefined)delete ov[ds]; else if(par==null)ov[ds]='-'; else ov[ds]=par; }
+  else { const tr=(state.chanTree[country]=state.chanTree[country]||{}); if(par==null)delete tr[ds]; else tr[ds]=par; } }
+function chanSetType(country,line,acct,type){
+  if(line){ const L=(state.chanTypeLine[country]=state.chanTypeLine[country]||{}); const ov=(L[line]=L[line]||{}); if(!type)delete ov[acct]; else ov[acct]=type; }
+  else { if(!type)delete state.chanType[country+'||'+acct]; else state.chanType[country+'||'+acct]=type; } }
+function chanTypesMap(){ const m={}; if(store)store.units.forEach(function(u){ if(u.audio)return; const k=u.country+'||'+(u.line||'')+'||'+u.account; if(m[k]==null)m[k]=chanTypeEff(u.country,u.account,u.line); }); return m; }
+function chanTreeMap(){ const m={}; if(retailStore)retailStore.units.forEach(function(u){ if(u.audio)return; const k=u.country+'||'+(u.line||''); const e=m[k]=m[k]||{}; if(e[u.account]===undefined)e[u.account]=chanParentOf(u.country,u.account,u.line); }); return m; }
+function chanCountries(){ const s={};
+  if(store)store.units.forEach(function(u){ if(u.country&&!u.audio)s[u.country]=1; });
+  if(retailStore)retailStore.units.forEach(function(u){ if(u.country&&!u.audio)s[u.country]=1; });
+  return Object.keys(s).sort(); }
+function chanLinesOf(country){ const s={};
+  if(store)store.units.forEach(function(u){ if(u.country===country&&!u.audio&&u.line)s[u.line]=1; });
+  if(retailStore)retailStore.units.forEach(function(u){ if(u.country===country&&!u.audio&&u.line)s[u.line]=1; });
+  return Object.keys(s).sort(); }
+function chanArchOf(country,line){   // 该国(该产业)架构快照:直接渠道(FSD)与下游渠道(间接零售伙伴)+生效连线;line 空=全部产业
+  line=line||'';
+  const direct={},ds={};
+  const curOf=function(Dx,u){ const it=Dx&&Dx.byKey?Dx.byKey.get(u.key):null; return it?it.cur:F.unitCurrent(u,state.cfg); };
+  const okL=function(u){ return !line||u.line===line; };
+  if(store)store.units.forEach(function(u){ if(u.country!==country||u.audio||!okL(u))return;
+    let e=direct[u.account]; if(!e)e=direct[u.account]={account:u.account,raw:u.rawNames||[],units:0,so4:0,inv:0,inv1:0,products:{},lines:{}};
+    e.units++; e.products[u.product]=1; if(u.line)e.lines[u.line]=1; const c=curOf(D,u); e.so4+=c.avgWeeklySO||0; e.inv+=c.curInv||0; e.inv1+=c.curInv1||0; });
+  if(retailStore)retailStore.units.forEach(function(u){ if(u.country!==country||u.audio||!okL(u))return;
+    let e=ds[u.account]; if(!e)e=ds[u.account]={account:u.account,raw:u.rawNames||[],units:0,so4:0,inv:0,products:{},lines:{}};
+    e.units++; e.products[u.product]=1; if(u.line)e.lines[u.line]=1; const c=curOf(Dr,u); e.so4+=c.avgWeeklySO||0; e.inv+=c.curInv||0; });
+  const dList=Object.keys(direct).sort().map(function(k){ const e=direct[k]; e.type=chanTypeEff(country,k,line); e.typeSrc=chanTypeSrc(country,k,line); e.explicit=e.typeSrc!=='guess'; e.children=[]; return e; });
+  const sList=Object.keys(ds).sort().map(function(k){ const e=ds[k]; e.parent=chanParentOf(country,k,line); e.parentSrc=chanParentSrc(country,k,line);
+    if(e.parent&&e.parent!=='*'){ if(direct[e.parent])direct[e.parent].children.push(k); else e.parentMissing=true; }
+    e.isMirror=!!(e.parent&&e.parent!=='*'&&direct[e.parent]&&direct[e.parent].type!=='dist');   // 连到直达渠道 = 同一家(镜像)
+    return e; });
+  /* 数据识别(2026-09-02):直签渠道的总库存(Inventory)≈自有库存(INV1)——没有下游压货;分销型却 INV1≈总库存 且没连下游 → 疑似直签;标了直签却总库存≫INV1 → 疑似有下游 */
+  dList.forEach(function(e){ e.sig=e.inv>0?e.inv1/e.inv:null; e.hint=null; e.hintKind=null;
+    if(e.type==='dist'&&!e.children.length&&e.sig!=null&&e.sig>=0.95&&e.inv>=20){ e.hint='疑似直达消费者:总库存 '+F.fmt(e.inv)+' ≈ INV1 '+F.fmt(e.inv1)+',且没连下游'; e.hintKind='direct'; }
+    else if(e.type!=='dist'&&!e.children.length&&e.sig!=null&&e.sig<0.8&&(e.inv-e.inv1)>=20){ e.hint='标为直达但总库存比 INV1 多 '+F.fmt(Math.round(e.inv-e.inv1))+' 台,疑似有下游压货'; e.hintKind='dist'; } });
+  return {country:country,line:line,direct:dList,ds:sList};
+}
+function chanDetectDirect(country,line){   // 一键采纳识别:类型是猜的、疑似直达的带下游型 → 设为 直达·零售(当前层)
+  const a=chanArchOf(country,line); let cnt=0;
+  a.direct.forEach(function(d){ if(d.typeSrc==='guess'&&d.hintKind==='direct'){ chanSetType(country,line,d.account,'retail'); cnt++; } });
+  return cnt;
+}
+function chanAutoWire(country,line){   // 按名称自动连线:下游原名/简称与直接渠道名互相包含且唯一命中才连;不覆盖已有连线(当前层)
+  const a=chanArchOf(country,line); let cnt=0;
+  const norm=function(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,''); };
+  a.ds.forEach(function(d){ if(d.parent!=null)return;
+    const names=[d.account].concat(d.raw||[]).map(norm).filter(function(v){ return v.length>=3; });
+    const hits=a.direct.filter(function(x){ const dn=[x.account].concat(x.raw||[]).map(norm).filter(function(v){ return v.length>=3; });
+      return dn.some(function(v){ return names.some(function(nm){ return nm.indexOf(v)>=0||v.indexOf(nm)>=0; }); }); });
+    if(hits.length===1){ chanSetParent(country,line,d.account,hits[0].account); cnt++; } });
+  return cnt;
+}
+/* 分组排布(2026-09-02 用户:连完线很乱):先排 有下游的分销(子节点贴着它,上游居中对齐)→ 无下游的分销 → 直签(直达消费者)→ 国家FSD合计(+其子)→ 未连线;同层顺序一致,连线不交叉 */
+function chanLayout(a){
+  const dirMap={}; a.direct.forEach(function(d){ dirMap[d.account]=d; });
+  const kids={}; a.ds.forEach(function(d){ if(d.parent&&d.parent!=='*'&&dirMap[d.parent])(kids[d.parent]=kids[d.parent]||[]).push(d); });
+  const dist=a.direct.filter(function(d){ return d.type==='dist'; }), signed=a.direct.filter(function(d){ return d.type!=='dist'; });
+  const withKids=dist.filter(function(d){ return (kids[d.account]||[]).length; }), noKids=dist.filter(function(d){ return !(kids[d.account]||[]).length; });
+  const order=withKids.concat(noKids).concat(signed);
+  const starKids=a.ds.filter(function(d){ return d.parent==='*'; });
+  const loose=a.ds.filter(function(d){ return d.parent==null||d.parentMissing; });
+  let row=0; const dirRow={},dsRow={},blocks=[];
+  order.forEach(function(d){ const ks=kids[d.account]||[];
+    if(ks.length){ const r0=row; ks.forEach(function(k){ dsRow[k.account]=row++; }); dirRow[d.account]=(r0+row-1)/2; blocks.push({r0:r0,r1:row-1,label:d.account}); }
+    else dirRow[d.account]=row++; });
+  let starRow; if(starKids.length){ const r0=row; starKids.forEach(function(k){ dsRow[k.account]=row++; }); starRow=(r0+row-1)/2; blocks.push({r0:r0,r1:row-1,label:'国家FSD合计'}); } else starRow=row++;
+  if(loose.length){ const r0=row; loose.forEach(function(k){ dsRow[k.account]=row++; }); blocks.push({r0:r0,r1:row-1,label:'未连线',loose:true}); }
+  return {order:order,dirRow:dirRow,dsRow:dsRow,starRow:starRow,rows:Math.max(row,1),blocks:blocks,kids:kids};
+}

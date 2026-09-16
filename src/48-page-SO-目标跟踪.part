@@ -1,0 +1,223 @@
+/* ===== SO 目标跟踪:国家回填的月度 SO 目标 vs 实际达成 + DOS 管控告警 ===== */
+function renderTargets(elOpt){
+  const el=elOpt||$('#view-targets');
+  if(!elOpt){ const c=$('#view-monitor'); if(c)c.innerHTML=''; }
+  if(!targetRows||!targetRows.length){
+    el.innerHTML='<div class="panel">尚未载入国家 SO 目标回填表。'
+      +'<br><span class="note">流程：从各看板导出高库存清单发给国家 → 国家在表中回填 9–12 月各渠道×产品的 SO 目标 → '
+      +'将回填表放入「数据」页的「国家 SO 目标回填表文件夹」自动解析。'
+      +'解析后本页跟踪：月度 SO 目标 vs 实际达成、各月底/年底 DOS 是否满足管控红线、产品系族年底 DOS 是否满足基线（见设置页）。</span></div>';
+    return;
+  }
+  if(!Dt){ el.innerHTML='<div class="panel note">目标数据已载入,等待底表数据以完成匹配计算。</div>'; return; }
+  const reps=[],cs=[],lines=[];
+  Dt.rows.forEach(function(r){
+    if(reps.indexOf(r.rep)<0)reps.push(r.rep);
+    if(cs.indexOf(r.tr.country)<0)cs.push(r.tr.country);
+    const ln=r.fam?r.fam.line:(r.tr.line||'(未知)');
+    if(lines.indexOf(ln)<0)lines.push(ln);
+  });
+  reps.sort();cs.sort();lines.sort();
+  const q=(state.ui.tgQ||'').toLowerCase();
+  const alertOnly=!!state.ui.tgAlertOnly;
+  const rows=Dt.rows.filter(function(r){
+    if(!msMatch(state.ui.tgRep,r.rep))return false;
+    if(!msMatch(state.ui.tgC,r.tr.country))return false;
+    if(!msMatch(state.ui.tgL,r.fam?r.fam.line:(r.tr.line||'(未知)')))return false;
+    if(alertOnly&&!r.flags.length)return false;
+    if(q&&(r.tr.country+' '+r.tr.channel+' '+r.tr.product+' '+(r.fam?r.fam.family:'')).toLowerCase().indexOf(q)<0)return false;
+    return true;
+  });
+  const A=Dt.alerts;
+  let filled=0; Dt.rows.forEach(function(r){ if(r.filled)filled++; });
+  let h='<div class="cards">'
+    +'<div class="kpi"><div class="v">'+Dt.rows.length+'</div><div class="t">目标行(已回填 '+filled+' / 未回填 '+A.unfilled.length+')</div></div>'
+    +'<div class="kpi'+(A.monthFail.length?' warn':'')+'"><div class="v">'+A.monthFail.length+'</div><div class="t">月度SO未达成(已结束月)</div></div>'
+    +'<div class="kpi'+(A.paceLag.length?' warn':'')+'"><div class="v">'+A.paceLag.length+'</div><div class="t">进行中月进度落后</div></div>'
+    +'<div class="kpi'+(A.monthDos.length?' warn':'')+'"><div class="v">'+A.monthDos.length+'</div><div class="t">月底DOS未达承诺</div></div>'
+    +'<div class="kpi'+(A.yearOver.length?' warn':'')+'"><div class="v">'+A.yearOver.length+'</div><div class="t">年底DOS超基线</div></div>'
+    +'<div class="kpi'+(A.famOver.length?' warn':'')+'"><div class="v">'+A.famOver.length+'</div><div class="t">产品系族超年底基线</div></div>'
+    +'<div class="kpi'+(A.overSell.length?' warn':'')+'"><div class="v">'+A.overSell.length+'</div><div class="t">目标超可用库存</div></div>'
+    +'</div>';
+  h+='<div class="bar">'
+    +'<button class="'+((state.ui.tgView||'track')==='track'?'act':'ghost')+'" id="tgVTrack">跟踪视图</button>'
+    +'<button class="'+(state.ui.tgView==='tpl'?'act':'ghost')+'" id="tgVTpl" title="与发给国家的模板同列结构;月度目标与备注可直接改写">模板视图(可编辑)</button>'
+    +msHtml('tgRep','国家办',reps,state.ui.tgRep)
+    +msHtml('tgC','国家',cs,state.ui.tgC)
+    +msHtml('tgL','产品线',lines,state.ui.tgL)
+    +'<input type="text" id="tgQ" placeholder="搜索(国家/渠道/产品/系族)" value="'+esc(state.ui.tgQ||'')+'">'
+    +'<label><input type="checkbox" id="tgAlertOnly"'+(alertOnly?' checked':'')+'> 只看告警行</label>'
+    +'<button class="ghost" id="btnExpTg">导出明细 Excel</button>'
+    +'<button class="ghost" id="btnExpTgAlert">导出告警清单 Excel</button>'
+    +'</div>';
+  if(state.ui.tgView==='tpl'){
+    h+='<div class="bar" style="margin-bottom:6px">'
+      +'<button class="ghost" id="btnTplGen" title="扫描三个数据源,把 当前DOS≥通用红线或∞ 的 渠道×产品 追加为模板行(已有行及目标保留)">从当前底表生成模板行</button>'
+      +'<button class="ghost" id="btnTplXlsx" title="导出发国家的回填模板:月底库存/月底DOS/年底列为活公式,国家改目标后 Excel 自动重算">导出模板 Excel（带公式）</button>'
+      +'<span class="note">点击目标/备注单元格直接改写，回车确认——即改即全局重算（与国家对表时逐格调整）。</span></div>';
+    h+='<div class="tblwrap" style="max-height:60vh"><table><thead><tr>'
+      +'<th class="l">产品线</th><th class="l">产品</th><th class="l">国家</th><th class="l">渠道</th><th class="l">原始渠道名</th>'
+      +'<th>当前INV</th><th>近4周周均SO</th><th>当前DOS</th>';
+    [9,10,11,12].forEach(function(m){
+      h+='<th title="可点击改写">'+m+'月SO目标</th>';
+      if(m<12)h+='<th>'+m+'月底库存</th><th>'+m+'月底DOS</th>';
+    });
+    h+='<th>年底库存</th><th>年底DOS</th><th class="l">备注</th></tr></thead><tbody>';
+    rows.slice(0,CAP2).forEach(function(r,ri){
+      const t2=r.tr; const c=r.calc;
+      const dosCur=(r.w4&&r.w4>0&&r.curInv!=null)?Math.round(r.curInv/(r.w4/7)):null;
+      h+='<tr><td class="l">'+esc(r.fam?r.fam.line:(t2.line||''))+'</td>'
+        +'<td class="l ell" title="'+esc(t2.product)+'">'+esc(t2.product)+'</td>'
+        +'<td class="l">'+esc(t2.country)+'</td>'
+        +'<td class="l ell" title="'+esc(t2.channel)+'">'+esc(t2.channel)+'</td>'
+        +'<td class="l ell" style="max-width:160px" title="'+esc(t2.rawName)+'">'+esc(t2.rawName)+'</td>'
+        +'<td>'+(r.curInv!=null?F.fmt(r.curInv):'—')+'</td>'
+        +'<td>'+(r.w4!=null?F.fmt(r.w4):'—')+'</td>'
+        +'<td'+dosRiskClsOct(dosCur,false,(r.curInv||0)>0&&dosCur==null)+'>'+(dosCur!=null?dosCur:((r.curInv||0)>0?'∞':'—'))+'</td>';
+      [0,1,2,3].forEach(function(mi){
+        const m=9+mi;
+        h+='<td class="ov" contenteditable data-tgi="'+ri+'" data-tgm="'+m+'">'+(t2.t[m]!=null?F.fmt(t2.t[m]):'')+'</td>';
+        const cc2=c?c[mi]:null;
+        if(m<12)h+='<td>'+(cc2?F.fmt(cc2.endInv):'—')+'</td>'
+          +'<td'+dosRiskClsOct(cc2?cc2.endDos:null,m===10,false,m)+'>'+(cc2&&cc2.endDos!=null?cc2.endDos:'—')+'</td>';
+      });
+      const c12=c?c[3]:null;
+      h+='<td'+(c12&&c12.endInv<0?' class="dosLow"':'')+'>'+(c12?F.fmt(c12.endInv):'—')+'</td>'
+        +'<td'+dosRiskClsOct(c12?c12.endDos:null,false,false,12)+'>'+(c12&&c12.endDos!=null?c12.endDos:'—')+'</td>'
+        +'<td class="l ov" contenteditable data-tgnote="'+ri+'" style="min-width:120px">'+esc(t2.note||'')+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+    if(rows.length>CAP2)h+='<div class="bar"><span class="note">已显示 '+CAP2+' / '+rows.length+' 行</span><button class="ghost" id="btnTgMore2">再显示 500 行</button></div>';
+    h+='<div class="note">列结构与发国家的模板一致；当前INV / 近4周周均SO / 当前DOS 为软件实时值；'
+      +'月底库存 = 上月底库存 − 该月目标，月底DOS = 月底库存 ÷ (该月目标/28)；月底DOS 按国家承诺口径,标色按月度红线。</div>';
+    el.innerHTML=h;
+    el.querySelectorAll('td[data-tgm]').forEach(function(td){
+      td.addEventListener('focus',function(){ td.dataset.orig=td.textContent; });
+      td.addEventListener('keydown',function(e){
+        if(e.key==='Enter'){ e.preventDefault(); td.blur(); }
+        else if(e.key==='Escape'){ td.textContent=td.dataset.orig||''; td.blur(); } });
+      td.addEventListener('blur',function(){
+        if(td.textContent===td.dataset.orig)return;
+        const r=rows[+td.dataset.tgi]; if(!r)return;
+        const v=F.parseCellNum(td.textContent);
+        r.tr.t[+td.dataset.tgm]=(v!=null&&v>=0)?Math.round(v):null;
+        saveData4(); recompute();
+      });
+    });
+    el.querySelectorAll('td[data-tgnote]').forEach(function(td){
+      td.addEventListener('focus',function(){ td.dataset.orig=td.textContent; });
+      td.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); td.blur(); } });
+      td.addEventListener('blur',function(){
+        if(td.textContent===td.dataset.orig)return;
+        const r=rows[+td.dataset.tgnote]; if(!r)return;
+        r.tr.note=td.textContent.trim();
+        saveData4();
+      });
+    });
+    bindMs(el,'tgRep',function(a){ state.ui.tgRep=a; state.ui.tgLimit=500; render(); });
+    bindMs(el,'tgC',function(a){ state.ui.tgC=a; state.ui.tgLimit=500; render(); });
+    bindMs(el,'tgL',function(a){ state.ui.tgL=a; state.ui.tgLimit=500; render(); });
+    $('#tgQ').oninput=function(){ state.ui.tgQ=this.value; state.ui.tgLimit=500; render(); };
+    $('#tgAlertOnly').onchange=function(){ state.ui.tgAlertOnly=this.checked; render(); };
+    const vT0=$('#tgVTrack'); if(vT0)vT0.onclick=function(){ state.ui.tgView='track'; render(); };
+    const vP0=$('#tgVTpl'); if(vP0)vP0.onclick=function(){ state.ui.tgView='tpl'; render(); };
+    const gB=$('#btnTplGen'); if(gB)gB.onclick=function(){ genTplFromStores(); };
+    const xB=$('#btnTplXlsx'); if(xB)xB.onclick=function(){ exportTplXlsx(rows); };
+    const m2=$('#btnTgMore2'); if(m2)m2.onclick=function(){ state.ui.tgLimit=(state.ui.tgLimit||500)+500; render(); };
+    const e1=$('#btnExpTg'); if(e1)e1.onclick=function(){ alert('请切换到跟踪视图导出明细,或使用「导出模板 Excel(带公式)」。'); };
+    const e2=$('#btnExpTgAlert'); if(e2)e2.onclick=e1.onclick;
+    return;
+  }
+  h+='<div class="note" style="margin-bottom:6px">口径：当前INV/近4周均SO 取软件当前底表（非回填表快照）；'
+    +'月底库存 = 上月底库存 − 该月SO目标；月底DOS = 月底库存 ÷ (该月目标/28天)，即国家的<b>承诺水位</b>。'
+    +'月度评判：已结束月份看结果——SO 实际 vs 目标、实际月底 DOS vs 承诺 DOS；进行中月份（当前 '+Dt.curM+'月）看进度——实际累计低于 目标×时间进度 即预警。'
+    +'年底行级告警按产品系族基线（无系族按 12 月红线兜底）；商城Eshop 渠道不参与 DOS 考核；格子标色按月度红线仅作视觉参考。'
+    +'月归属为该周周四所在月；实际SO为该渠道×产品当月各周实际之和（音频未报量周不计入）。</div>';
+  h+='<div class="tblwrap" style="max-height:56vh"><table class="sortable"><thead><tr>'
+    +'<th class="l">国家办</th><th class="l">国家</th><th class="l">渠道</th><th class="l">产品系族</th><th class="l">产品</th>'
+    +'<th class="l" title="目标行匹配到的底表数据源">源</th>'
+    +'<th>当前INV</th><th>近4周均SO</th>';
+  [9,10,11,12].forEach(function(m){
+    h+='<th title="'+m+'月目标 / 实际(月度累计) / 月底DOS">'+m+'月 目标·实际·DOS</th>'; });
+  h+='<th>年底库存</th><th>年底DOS</th><th class="l noSort">判定</th></tr></thead><tbody>';
+  const CAP2=(state.ui.tgLimit||500);
+  rows.slice(0,CAP2).forEach(function(r){
+    const tr2=r.tr;
+    h+='<tr><td class="l">'+esc(r.rep)+'</td><td class="l">'+esc(tr2.country)+'</td>'
+      +'<td class="l ell" title="'+esc(tr2.channel+'（原名:'+tr2.rawName+'）')+'">'+esc(tr2.channel)+'</td>'
+      +'<td class="l">'+(r.fam?esc(r.fam.family):'<span class="muted" title="产品未在产品映射表中,请核对产品名">未映射</span>')+'</td>'
+      +'<td class="l ell" title="'+esc(tr2.product)+'">'+esc(tr2.product)+'</td>'
+      +'<td class="l">'+(r.src?esc(r.src):'<span class="dosLow">无匹配</span>')+'</td>'
+      +'<td>'+(r.curInv!=null?F.fmt(r.curInv):'—')+'</td>'
+      +'<td>'+(r.w4!=null?F.fmt(r.w4):'—')+'</td>';
+    [9,10,11,12].forEach(function(m,mi){
+      const t=tr2.t[m];
+      const c=r.calc?r.calc[mi]:null;
+      if(t==null){ h+='<td class="muted">未填</td>'; return; }
+      const a=r.act[m]||0;
+      const done=Dt.curM>m;
+      const actTxt=done?(' / '+F.fmt(a)+(a<t?'<b style="color:var(--warn)">✗</b>':'<b style="color:var(--ok)">✓</b>')):(a>0?' / '+F.fmt(a)+'…':'');
+      const dosTxt=(c&&c.endDos!=null)?(' · '+c.endDos+'天'):'';
+      h+='<td'+dosRiskClsOct(c?c.endDos:null,m===10,false,m)+' title="目标 '+F.fmt(t)+(done?' · 实际 '+F.fmt(a)+' · 达成率 '+Math.round(a/t*100)+'%':'')+(c?' · 月底库存 '+F.fmt(c.endInv):'')+'">'
+        +F.fmt(t)+actTxt+dosTxt+'</td>';
+    });
+    const c12=r.calc?r.calc[3]:null;
+    h+='<td'+(c12&&c12.endInv<0?' class="dosLow"':'')+'>'+(c12?F.fmt(c12.endInv):'—')+'</td>'
+      +'<td'+dosRiskClsOct(c12?c12.endDos:null,false,false,12)+'>'+(c12&&c12.endDos!=null?c12.endDos:'—')+'</td>'
+      +'<td class="l">'+(r.eshop?'<span class="chip skip" title="商城Eshop 不参与 DOS 考核(SO 达成仍考核)">商城·不考核DOS</span> ':'')
+      +(r.flags.length?r.flags.map(function(f2){ return '<span class="chip pend">'+esc(f2)+'</span>'; }).join(' '):'<span class="chip auto">正常</span>')+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  if(rows.length>CAP2)h+='<div class="bar"><span class="note">已显示 '+CAP2+' / '+rows.length+' 行</span><button class="ghost" id="btnTgMore">再显示 500 行</button></div>';
+  /* 产品系族年底 DOS vs 基线 */
+  if(Dt.famRows.length){
+    h+='<div class="panel" style="margin-top:12px"><h3>产品系族年底 DOS（按国家回填目标聚合） vs 管控基线</h3>'
+      +'<div class="note">聚合口径：Σ各行年底库存 ÷ Σ(12月目标/28)；只聚合已填 12 月目标的行。基线在设置页「产品系族年底 DOS 基线」维护，空 = 不管控。</div>'
+      +'<div class="tblwrap" style="max-height:30vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">产品线</th><th class="l">产品系族</th><th>覆盖目标行</th><th>年底库存合计</th><th>年底DOS</th><th>管控基线</th><th class="l">判定</th></tr></thead><tbody>';
+    Dt.famRows.forEach(function(fr){
+      h+='<tr><td class="l">'+esc(fr.line)+'</td><td class="l">'+esc(fr.family)+'</td>'
+        +'<td>'+fr.n+'</td><td>'+F.fmt(fr.endInv)+'</td>'
+        +'<td'+(fr.over?' class="dosLow"':'')+'>'+(fr.endDos!=null?fr.endDos:'—')+'</td>'
+        +'<td>'+(fr.base!=null?fr.base:'<span class="muted">未设</span>')+'</td>'
+        +'<td class="l">'+(fr.base==null?'<span class="chip">未设基线</span>'
+          :(fr.over?'<span class="chip pend">超基线,需国家上调 SO 目标</span>':'<span class="chip auto">满足基线</span>'))+'</td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+  }
+  el.innerHTML=h;
+  bindMs(el,'tgRep',function(a){ state.ui.tgRep=a; state.ui.tgLimit=500; render(); });
+  bindMs(el,'tgC',function(a){ state.ui.tgC=a; state.ui.tgLimit=500; render(); });
+  bindMs(el,'tgL',function(a){ state.ui.tgL=a; state.ui.tgLimit=500; render(); });
+  $('#tgQ').oninput=function(){ state.ui.tgQ=this.value; state.ui.tgLimit=500; render(); };
+  $('#tgAlertOnly').onchange=function(){ state.ui.tgAlertOnly=this.checked; render(); };
+  const vT1=$('#tgVTrack'); if(vT1)vT1.onclick=function(){ state.ui.tgView='track'; render(); };
+  const vP1=$('#tgVTpl'); if(vP1)vP1.onclick=function(){ state.ui.tgView='tpl'; render(); };
+  const tgMore=$('#btnTgMore'); if(tgMore)tgMore.onclick=function(){ state.ui.tgLimit=(state.ui.tgLimit||500)+500; render(); };
+  const expRows=function(list){
+    const headers=['国家办','国家','渠道','原始渠道名','产品线','产品系族','产品','数据源','当前INV','近4周均SO',
+      '9月目标','9月实际','9月底库存','9月底DOS','10月目标','10月实际','10月底库存','10月底DOS',
+      '11月目标','11月实际','11月底库存','11月底DOS','12月目标','12月实际','年底库存','年底DOS','判定','备注'];
+    const data=list.map(function(r){ const t2=r.tr;
+      const cells=[r.rep,t2.country,t2.channel,t2.rawName,(r.fam?r.fam.line:t2.line||''),(r.fam?r.fam.family:''),t2.product,
+        r.src||'无匹配',r.curInv!=null?r.curInv:'',r.w4!=null?r.w4:''];
+      [0,1,2,3].forEach(function(mi){
+        const m=9+mi; const c=r.calc?r.calc[mi]:null;
+        cells.push(t2.t[m]!=null?t2.t[m]:'');
+        cells.push(r.act[m]!=null?r.act[m]:'');
+        if(m!==12){ cells.push(c?c.endInv:''); cells.push((c&&c.endDos!=null)?c.endDos:''); }
+      });
+      cells.push(r.calc?r.calc[3].endInv:''); cells.push((r.calc&&r.calc[3].endDos!=null)?r.calc[3].endDos:'');
+      cells.push(r.flags.join('；')||'正常'); cells.push(t2.note||'');
+      return cells; });
+    return {headers:headers,data:data};
+  };
+  $('#btnExpTg').onclick=function(){ const e2=expRows(rows); exportTable('SO目标跟踪明细',e2.headers,e2.data); };
+  $('#btnExpTgAlert').onclick=function(){
+    const list=Dt.rows.filter(function(r){ return r.flags.length; });
+    if(!list.length){ alert('当前没有告警行。'); return; }
+    const e2=expRows(list); exportTable('SO目标告警清单',e2.headers,e2.data);
+  };
+  makeSortable(el);
+}
+

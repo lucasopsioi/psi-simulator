@@ -1,0 +1,186 @@
+<script>
+(function(){
+'use strict';
+const F=window.FsdCore;
+const LS_STATE='fsdpsi.state.v1', LS_DATA='fsdpsi.data.v1', LS_DATA2='fsdpsi.data2.v1', LS_DATA3='fsdpsi.data3.v1';
+const $=function(sel){ return document.querySelector(sel); };
+const esc=function(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); };
+
+let store=null, rawText='', D=null;
+let retailStore=null, rawText2='', Dr=null, retailReport='', activeScanKind='fsd';
+let audioStore=null, rawText3='', Da=null, audioReport='', folderInfo3=null;
+let targetRows=null, Dt=null, folderInfo4=null;   // 国家 SO 目标回填表(第四数据源,缓存为 JSON)
+/* 产品系族年底 DOS 基线默认值(用户 2026-08-26 拍板;0=年底须清零,有库存即告警;未列=不管控) */
+const FAM_BASE_DEF={
+  'P系列':45,'Astra系列':0,'nimbus精品系列':45,'nimbus Y系列':55,
+  '智能手表系列':45,'轻智能手表系列':35,'FLEX系列':35,'智能手环系列':45,
+  '运动健康智能硬件':50,'儿童系列':50,
+  '开放式耳机':40,'TWS基础系列':40,'TWS精品系列':45,'TWS旗舰系列':45,
+  'Slate Pro':65,'Slate Air':60,'Slate Tab':40,'Slate SE':35
+};
+let lastFsdRows=null;   // 原始 FSD 行(含 rawAccount),渠道类别改名时就地重放
+let state={
+  cfg:{dosWindow:4,roundTo:5,minHistWeeks:8,minRefCov:0.6,tailWeeks:12,blHead:8,blKappa:1.25,kLayers:2},
+  decisions:{}, growth:{}, ovSO:{}, ovSI:{}, kedit:{}, lineParams:{},
+  expTpl:{},                             // 导出模板(按导出名记忆列顺序/显隐,下次导出自动套用)
+  famBase:{},                            // 产品系族年底 DOS 管控基线(family→天;空=不管控)
+  lifecycle:{},                          // 产品生命周期(产品→{eolSI:period,eolSO:period,succ:产品名})
+  chanPromo:{},                          // 已确认的渠道级周期大促(账户→[{w1,w2,name}])
+  chanPromoDeny:{},                      // 已否决的渠道大促建议(账户|w1-w2→1,不再重复建议)
+  newProducts:[],                        // 新品规划(虚拟单元,不混入底表事实数据)
+  buyMode:{},                            // 一次性铺货渠道拍板:单元键->'auto'(按规则补)|'manual'(维持一次性不补)
+  rrp:{},                                // RRP 价格(产品→{国家→本币单价}),预算底表金额用
+  lockQty:{},                            // 锁量(产品||型号→{on,total,byC:{国家:配额}});约束 FSD 未来 SI
+  burst:{},                              // 大促爆发系数覆盖(产品||型号→倍数;设了才生效,平销类模式大促周用)
+  blOv:{},                               // 平销覆盖(产品||型号→大区总平销台/周;按占比折算到各单元)
+  modelGrowth:{},                        // 型号级增长系数(单元手工>型号>系族>产品线>全局)
+  countryShare:{},                       // 国家占比覆盖(产品||型号→{国家:百分比};顶层拍数分配权重)
+  budgetName:{},                         // 预算表传播名映射(产品→预算名;空=用原名,SUMIFS 匹配用)
+  finParams:{},                          // 产品经营参数(传播名\u0001国家→{rrp:[4],vat,ch,neg:[4],fx:[4],zero:[4],r1,r2,r3});空=用国家默认/RRP 设置
+  finCountry:{},                         // 产品经营国家默认(国家→{vat,ch,neg,fx});空=内置附件默认 C.FIN_DRIFT_DEF
+  ovTail:{},                             // 清尾标记(覆盖层键→{周期→1|2});2=该周 SI 由清尾冻结(清除清尾时一并清)
+  chanClass:{},                          // FSD 渠道类别标记(原始账户名→{cls:'fsd'|'indirect',alias})
+  chanProp:{},                           // 渠道属性(账户名→{type:'offline'|'ecom'|'eshop',leadDays});eshop 不参与 DOS 考核
+  chanTree:{},                           // 渠道架构连线(国家→{下游渠道:上游直接渠道名|'*'=国家FSD合计});2026-09-02 用户
+  chanType:{},                           // 直接渠道类型(国家||账户→dist/retail/operator/online/own;没设按名称猜,猜不出=分销)
+  chanTreeLine:{},                       // 按产业的连线覆盖(国家→产业→{下游:上游|'*'|'-'=本产业不连});没设的产业沿用 chanTree
+  chanTypeLine:{},                       // 按产业的类型覆盖(国家→产业→{账户:类型})
+  bigGrowth:{global:null,line:{},family:{}},   // 大盘增速倍数(如 1.10=+10%);系族>产品线>全局>1
+  exempt:{global:100,line:{},model:{}},   // 免推演阈值:渠道库存≤阈值 → 不确认/不推演/不算DOS风险
+  glide:{m10:100,m11:70,m12:50,useLastYear:true},   // 年末收官DOS上限(平销口径),优先参考去年同期
+  ignored:{},        // 手动豁免的下游单元(买断或低量库存,移出风险监控)
+  riskSel:{fsd:{},retail:{},audio:{},sum:{}},   // 风险勾选清单(人工圈选,用于导出;sum=推演汇总层级行)
+  watch:{fsd:{},retail:{},audio:{},sum:{}},     // 监控名单(每周对账;sum=推演汇总层级节点,值为{src,labels})
+  ecom:{},                               // 电渠标记(渠道名→1):补货动销效率分口径评估
+  watchBase:{},                          // 加入监控时的基线快照 {key:{p,inv,inv1,dos,so4}}
+  channelAlias:{},   // 渠道原名→自定义显示名(优先于内置映射)
+  chartSmooth:false, showRetailAudio:false,
+  folder:'', folder2:'', folder3:'', folder4:'', autoScan:true,
+  ui:{tab:'channels',clSrc:'fsd',unit:null,acct:[],line:[],status:'',q:'',histN:'8',country:[],
+      retailUnit:null,rcC:[],rcCh:[],rcL:[],rcQ:'',rcLimit:500,meView:'fsd',meLine:[],meQ:'',meLimit:500,
+      smSrc:'fsd',smDims:'line',smLine:[],smQ:'',smView:'tree',smOpen:{},
+      pvSrc:'fsd',pvMetric:'so',pvOpen:{},pvSelR:0,pvSelC:0,pvSelC2:0,
+      auUnit:null,auC:[],auA:[],auQ:'',auLimit:500}
+};
+const UI_DEFAULTS=JSON.parse(JSON.stringify(state.ui));
+const SHELL=window.fsdShell||null;
+/* SO 推演辅助工具模式(2026-09-15 用户拍板 Q4:单独 exe)。同一份文件、同一套引擎,由 exe 身份决定开哪些视图:
+   SO 工具只回答「每个渠道×型号未来卖多少」,矩阵只留 SO 行,导航只剩 SO 推演 / 待办 / 配置;PSI 全量不变。 */
+function soTool(){ if(window.__soToolForce)return true; if(window.__soToolOff)return false; return !!(SHELL&&SHELL.soTool); }   // __soToolOff:自检期间按 PSI 全量跑,两个 exe 同一套门禁同一份基线
+function kOnly2(){ return (state.cfg.kLayers||2)===2; }
+let folderInfo=null;    // FSD 文件夹扫描结果 {files,total,at} | {error} | {scanning:true}
+let folderInfo2=null;   // 下游渠道文件夹扫描结果,同结构
+
+/* 年末画像回退链(2026-09-01 用户拍板:不许卡死 DOS,按各渠道×型号回测的年末水平模拟):
+   单元自身(至少一个完整历史Q4) > 同渠道×同产业聚合(跨型号 DOS 中位) > 该产业去年实际(lastYearMonthEndCaps) > 无约束(纯规则)。
+   FSD 直签不走此链(其年末收官梯度是要货管理纪律,非渠道行为模拟)。按数据代缓存 */
+function siCapOf(u){
+  const c=calcCache(); if(!c.siCap)c.siCap=new Map();
+  let v=c.siCap.get(u.key);
+  if(v===undefined){ const mx=F.maxWeeklySI(u); v=mx!=null?mx*1.2:null; c.siCap.set(u.key,v); }
+  return v;
+}
+function yearEndProfileFor(u){
+  const c=calcCache(); if(!c.yep)c.yep=new Map();
+  let v=c.yep.get(u.key);
+  if(v===undefined){ v=F.yearEndProfileOf(u,state.cfg)||null; c.yep.set(u.key,v); }
+  return v;
+}
+function yearEndProfileChain(stx,u){
+  const own=yearEndProfileFor(u);
+  if(own)return {m:own.m,src:'unit',n:own.n,medDos:own.medDos};
+  const c=calcCache(); if(!c.yepAL)c.yepAL={};
+  const sid=stx===audioStore?'a':(stx===retailStore?'r':'f');
+  const key=sid+'|'+u.account+'|'+(u.line||'');
+  let al=c.yepAL[key];
+  if(al===undefined){
+    const acc={}; F.MONTHS.forEach(function(m){ acc[m]=[]; });
+    stx.units.forEach(function(u2){
+      if(u2.account!==u.account||(u2.line||'')!==(u.line||''))return;
+      const pr=yearEndProfileFor(u2); if(!pr)return;
+      F.MONTHS.forEach(function(m){ if(pr.m[m]&&pr.m[m].dos!=null)acc[m].push(pr.m[m].dos); });
+    });
+    const mm={}; let nn=0;
+    F.MONTHS.forEach(function(m){ if(acc[m].length){ mm[m]={dos:Math.round(F.medianOf(acc[m])),n:acc[m].length}; if(acc[m].length>nn)nn=acc[m].length; } });
+    al=c.yepAL[key]=nn?{m:mm,src:'acctLine',n:nn,medDos:(function(){ const a=[]; F.MONTHS.forEach(function(m){ if(mm[m]&&mm[m].dos!=null)a.push(mm[m].dos); }); return a.length?Math.round(F.medianOf(a)):null; })()}:null;
+  }
+  if(al)return al;
+  const refYear=F.periodY(stx.maxPeriod)-1;
+  const tagL=sid+'|ly|'+refYear;
+  if(!c.lyc)c.lyc={};
+  if(c.lyc[tagL]===undefined)c.lyc[tagL]=F.lastYearMonthEndCaps(stx,refYear);
+  const r=c.lyc[tagL][u.line];
+  if(r){ const mm={}; let nn=0;
+    F.MONTHS.forEach(function(m){ if(r[m]&&r[m].dos!=null){ mm[m]={dos:r[m].dos,n:1}; nn=1; } });
+    if(nn){ const a=[]; F.MONTHS.forEach(function(m){ if(mm[m]&&mm[m].dos!=null)a.push(mm[m].dos); });
+      return {m:mm,src:'line',n:1,medDos:a.length?Math.round(F.medianOf(a)):null}; } }
+  return null;
+}
+/* 年末画像 → simulateRetail 检查点 [{idx,level}]:水位型策略且画像来自单元自身时用绝对库存,否则 DOS×本年平销日均 */
+function yearEndLevelsFor(stx,fw,u,pol,dailyBase,nl){
+  const pr=yearEndProfileChain(stx,u); if(!pr)return [];
+  const fwIdx={}; fw.forEach(function(p,i){ fwIdx[p]=i; });
+  const out=[];
+  F.monthEndPeriods(stx.maxPeriod).forEach(function(me){
+    const e=pr.m[me.m]; if(!e||fwIdx[me.p]==null)return;
+    if(!(dailyBase>0))return;   // 无前瞻需求不设水平:濒死 SKU 不按历史库存回补
+    const abs=!!(pol&&pol.type==='inv'&&pr.src==='unit'&&e.inv!=null);
+    if(!abs&&e.dos==null)return;
+    /* 画像按该渠道正常经营水位夹紧:月末 DOS 只许在 平销DOS 的 0.6~1.5 倍内浮动(季节备货/消化),历史异常月不照搬;
+       无平销水位时退回 典型水位×1.6;绝对台数受 平销库存×1.5 封顶 */
+    let dosM=e.dos;
+    if(nl&&nl.dos>0&&dosM!=null)dosM=Math.max(nl.dos*0.6,Math.min(nl.dos*1.5,dosM));
+    out.push({p:me.p,idx:fwIdx[me.p],dos:dosM,abs:abs,level:abs?(nl?Math.min(e.inv,nl.inv*1.5):e.inv):null,
+      maxDos:nl&&nl.dos>0?nl.dos*1.5:((pr.medDos!=null&&pr.medDos>0)?pr.medDos*1.6:null),
+      maxInv:nl?nl.inv*1.5:null,src:pr.src});
+  });
+  return out;
+}
+function lineParamsOf(line){
+  const saved=state.lineParams[line];
+  const audio=F.isAudioLine(line);
+  const def={trigger:audio?100:90,target:120,downTarget:60};
+  if(!saved) return def;
+  return {trigger:saved.trigger!=null?saved.trigger:def.trigger,
+          target:saved.target!=null?saved.target:def.target,
+          downTarget:saved.downTarget!=null?saved.downTarget:def.downTarget};
+}
+/* 方案持久化:文件为主(userData,升级换 exe 不丢),localStorage 兜底。写文件走防抖,关窗即时落盘 */
+let stateSaveTimer=null, stateLoadedFromFile=false, SHELL_PATHS=null;
+let lsSaveTimer=null;
+function saveState(){
+  /* 兜底存储改空闲写:同步 stringify 整个方案曾拖慢每次拍数(2026-09-01 用户:"每拍一个数要隔一秒") */
+  clearTimeout(lsSaveTimer);
+  lsSaveTimer=setTimeout(function(){ try{ localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){} },800);
+  if(SHELL&&SHELL.stateSave){
+    clearTimeout(stateSaveTimer);
+    stateSaveTimer=setTimeout(function(){
+      try{ SHELL.stateSave(JSON.parse(JSON.stringify(state))).catch(function(){}); }catch(e){}
+    },400);
+  }
+}
+window.addEventListener('beforeunload',function(){
+  try{ clearTimeout(lsSaveTimer); localStorage.setItem(LS_STATE,JSON.stringify(state)); }catch(e){}
+  if(SHELL&&SHELL.stateSaveNow){ clearTimeout(stateSaveTimer);
+    try{ SHELL.stateSaveNow(JSON.parse(JSON.stringify(state))); }catch(e){} }
+});
+function saveData(){
+  try{ if(rawText&&rawText.length<3500000) localStorage.setItem(LS_DATA,rawText);
+    else localStorage.removeItem(LS_DATA); }catch(e){}
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('fsd',rawText||'').catch(function(){}); }catch(e){} }
+}
+function saveData2(){
+  try{ if(rawText2&&rawText2.length<3500000) localStorage.setItem(LS_DATA2,rawText2);
+    else localStorage.removeItem(LS_DATA2); }catch(e){}
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('retail',rawText2||'').catch(function(){}); }catch(e){} }
+}
+function saveData4(){
+  const txt=targetRows&&targetRows.length?JSON.stringify(targetRows):'';
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('target',txt).catch(function(){}); }catch(e){} }
+}
+function saveData3(){
+  try{ if(rawText3&&rawText3.length<3500000) localStorage.setItem(LS_DATA3,rawText3);
+    else localStorage.removeItem(LS_DATA3); }catch(e){}
+  if(SHELL&&SHELL.dataSave){ try{ SHELL.dataSave('audio',rawText3||'').catch(function(){}); }catch(e){} }
+}
+

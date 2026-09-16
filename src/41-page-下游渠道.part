@@ -1,0 +1,46 @@
+/* ===== 下游渠道 ===== */
+/* 渠道改名:把 oldName 下所有原名写入别名表,迁移手工改写/不管标记的 key,重放重建 */
+function renameChannel(oldName,newName,raws){
+  raws.forEach(function(raw){ state.channelAlias[String(raw).trim()]=newName; });
+  /* key = 国家::渠道::型号,渠道段在中间 */
+  const mid=F.SEP+oldName+F.SEP, midNew=F.SEP+newName+F.SEP;
+  const migrate=function(bag){
+    if(!bag)return;
+    Object.keys(bag).forEach(function(k){
+      if(k.indexOf(mid)>=0){
+        const nk=k.replace(mid,midNew);
+        if(bag[nk]==null)bag[nk]=bag[k];
+        delete bag[k];
+      }
+    });
+  };
+  migrate(state.ovSO); migrate(state.ovSI); migrate(state.ignored);
+  migrate(state.decisions); migrate(state.growth);
+  migrate(state.riskSel&&state.riskSel.retail);
+  migrate(state.watch&&state.watch.retail);
+  migrate(state.watchBase);
+  migrateNameExtras(oldName,newName);
+  if(state.ui.retailUnit&&state.ui.retailUnit.indexOf(mid)>=0)
+    state.ui.retailUnit=state.ui.retailUnit.replace(mid,midNew);
+  applyAliasAndRebuild();
+}
+function applyAliasAndRebuild(){
+  bumpDataGen();
+  if(!lastRetailRows){ recompute(); return; }
+  F.applyChannelMap(lastRetailRows,state.channelAlias);
+  retailStore=F.buildStore(lastRetailRows,{retail:true});
+  recompute();
+}
+function retailStatusChips(it){
+  const u=it.u; let s='';
+  if(it.ignored)s+=' <span class="chip skip" title="已手动豁免（买断或低量库存）；点「恢复」重新纳入监控">已豁免</span>';
+  else if(it.exempt)s+=' <span class="chip skip" title="库存 '+F.fmt(it.cur.curInv)+' ≤ 阈值 '+it.thr+' 台,不算DOS风险(设置页可调)">免推演·低库存</span>';
+  else if(it.cur.curInv>0&&it.cur.dosCalc==null)s+=' <span class="chip pend" title="存在库存但近'+state.cfg.dosWindow+'周销量为 0（音频为无报量记录）,库存滞留,风险等级最高">有库存·零动销</span>';
+  if(it.tail&&!it.ignored&&!it.exempt)
+    s+=' <span class="chip skip" title="库存仅可支撑约 '+Math.round(it.cur.curInv/it.cur.avgWeeklySO)+' 周（低于收尾阈值 '+(state.cfg.tailWeeks||12)+' 周,设置页可调）：SO 按近4周均量平推至清库,不参考去年、不乘季节系数">自然收尾</span>';
+  if(u.audio&&it.cur.lastSOP!=null&&retailStore&&it.cur.lastSOP<retailStore.maxPeriod)
+    s+=' <span class="chip audio" title="音频为人工报量,最近有数周为 '+F.weekLabel(it.cur.lastSOP)+'">报量滞后</span>';
+  if(u.unmapped)s+=' <span class="chip" title="该渠道名不在内置映射表中,按底表原名显示；可在「设置」页自定义命名">渠道未映射</span>';
+  if(it.warns&&it.warns.length)s+=' <span class="chip pend" title="'+esc(warnText(it))+'">⚠推演异常</span>';
+  return s;
+}

@@ -1,0 +1,493 @@
+/* ===== XGrid:Excel 式表格交互层(选区/求和/键盘/剪贴板/批量拍数) =====
+   作用范围:main 内所有数据表。一次全局委托接线,重绘零成本。
+   - 选区:拖框选/Ctrl+点=加选/Shift+点=扩选;底部状态条实时 求和·平均·计数(Excel 状态栏口径)
+   - 键盘:Enter↓ Shift+Enter↑ Tab→ Shift+Tab← 提交并移格;↑↓提交移格,←→未输入时移格、已输入时移光标;
+     进格自动全选(输入即替换,同 Excel);Esc 还原退出
+   - 剪贴板:选区 Ctrl+C → TSV 可直接贴回 Excel;可编辑格 Ctrl+V 多行多列(来自 Excel)自动向右向下逐格拍入;单值粘贴纯文本
+   - 拍数提效:格内输 +10%/-5%/*1.2/+200 按当前值运算;选区批量[按占比分配总量][每格运算][恢复公式]
+   - 撤销哲学:拍数=手工改写,「恢复公式」即撤销;不做 Ctrl+Z */
+let xgAnchor=null,xgDown=null,xgPristine=true,xgBarEl=null,xgFlashT=null;
+const XG_EXPR=/^\s*([+\-*/×÷])\s*([0-9][0-9,.\s]*)\s*(%?)\s*$/;
+function xgCalc(base,m){
+  const num=F.parseCellNum(m[2]); if(num==null)return null;
+  const op=m[1],pct=m[3]==='%';
+  let v=null;
+  if(op==='+')v=pct?base*(1+num/100):base+num;
+  else if(op==='-')v=pct?base*(1-num/100):base-num;
+  else if(op==='*'||op==='×')v=pct?base*num/100:base*num;
+  else if(op==='/'||op==='÷')v=(num!==0)?(pct?base/(num/100):base/num):null;
+  if(v==null||!isFinite(v))return null;
+  return Math.max(0,Math.round(v));
+}
+function xgEditableTd(td){ return !!(td&&td.hasAttribute&&td.hasAttribute('contenteditable')); }
+function xgPos(td){ return {r:td.parentElement.rowIndex,c:td.cellIndex}; }
+/* 逻辑列号:带 rowspan 首列的表(如推演矩阵)物理 cellIndex 会跨行错位——渲染层打 data-ci 标注真实列,几何操作优先用它 */
+function xgLCol(td){ return td.dataset&&td.dataset.ci!=null?+td.dataset.ci:td.cellIndex; }
+function xgFindCell(tr,lc){
+  for(let i=0;i<tr.cells.length;i++){ const c=tr.cells[i]; if(xgLCol(c)===lc)return c; }
+  return tr.cells[lc]||null;
+}
+function xgSelCells(){ return Array.prototype.slice.call(document.querySelectorAll('main td.xsel')); }
+function xgClearSel(){
+  const cs=xgSelCells();
+  cs.forEach(function(td){ td.classList.remove('xsel'); });
+  if(cs.length)xgBarUpdate();
+}
+window.__xgClear=xgClearSel;
+/* 用 data-* 全量属性生成可跨重绘重定位的选择器(各页可编辑格 data 组合均唯一) */
+function xgSelOf(td){
+  let s='td';
+  Array.prototype.forEach.call(td.attributes,function(a){
+    if(a.name.indexOf('data-')===0&&a.name!=='data-orig')
+      s+='['+a.name+'="'+String(a.value).replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'"]';
+  });
+  return s;
+}
+function xgQ(sel){ return document.querySelector('main '+sel); }
+function xgSelectAllIn(td){
+  try{
+    const r=document.createRange(); r.selectNodeContents(td);
+    const s=getSelection(); s.removeAllRanges(); s.addRange(r);
+  }catch(e){}
+}
+/* 逐格拍入:记 orig→写值→合成 blur(各页既有提交监听必然执行:解析/守恒分配/重算/重绘),重绘后按选择器重定位下一格。
+   用合成事件而非真实焦点:不受窗口焦点状态影响;「未改动不提交」护栏保证后续真实 blur 只是无害空操作 */
+function xgApply(items){
+  let n=0;
+  /* 批量提交(粘贴/填满/清尾):推演编辑的各格 blur 只登记范围,循环结束合并成一次增量重算(此前每格一次全量重算) */
+  const outer=!window.__pvBatch;
+  if(outer)window.__pvBatch={scopes:[],n:0,written:{},dup:0};
+  try{
+    items.forEach(function(it){
+      const td=(it.td&&it.td.isConnected)?it.td:xgQ(it.sel);   // 有元素引用就直接用(2026-09-02 性能:粘贴时每格一次 document.querySelector)
+      if(!td||!xgEditableTd(td))return;
+      td.dataset.orig=td.textContent;
+      td.textContent=it.val;
+      td.dispatchEvent(new Event('blur'));
+      n++;
+    });
+  } finally {
+    if(outer){ const b=window.__pvBatch; window.__pvBatch=null; if(b&&b.n&&window.__pv2Flush)window.__pv2Flush(b);
+      if(b&&b.dup)setTimeout(function(){ xgFlash('本次批量有 '+b.dup+' 处父子层级写到同一格,已按更细的层级为准逐格重算'); },0); }
+  }
+  return n;
+}
+function xgNeighbor(td,dr,dc){
+  const tbl=td.closest('table'); if(!tbl)return null;
+  const p=xgPos(td);
+  if(dc!==0){
+    let r=p.r,c=p.c+dc;
+    for(let guard=0;guard<10000;guard++){
+      const tr=tbl.rows[r];
+      if(!tr)return null;
+      if(c<0){ r-=1; const t2=tbl.rows[r]; if(!t2)return null; c=t2.cells.length-1; continue; }
+      if(c>=tr.cells.length){ r+=1; c=0; continue; }
+      const t3=tr.cells[c];
+      if(t3&&xgEditableTd(t3))return t3;
+      c+=dc;
+    }
+    return null;
+  }
+  const lc=xgLCol(td);
+  let r=p.r+dr;
+  while(r>=0&&r<tbl.rows.length){
+    const tr=tbl.rows[r];
+    const t2=xgFindCell(tr,lc);
+    if(t2&&xgEditableTd(t2))return t2;
+    r+=dr;
+  }
+  return null;
+}
+function xgMarkRect(tbl,r0,c0,r1,c1){
+  /* c0/c1 为逻辑列号(xgLCol) */
+  xgSelCells().forEach(function(td){ td.classList.remove('xsel'); });
+  const rA=Math.min(r0,r1),rB=Math.max(r0,r1),cA=Math.min(c0,c1),cB=Math.max(c0,c1);
+  for(let r=rA;r<=rB;r++){
+    const tr=tbl.rows[r]; if(!tr)continue;
+    for(let c=cA;c<=cB;c++){
+      const td=xgFindCell(tr,c);
+      if(td&&td.tagName==='TD')td.classList.add('xsel');
+    }
+  }
+  xgBarUpdate();
+}
+function xgFlash(msg){
+  let el=document.getElementById('xgFlash');
+  if(!el){ el=document.createElement('div'); el.id='xgFlash'; document.body.appendChild(el); }
+  el.textContent=msg; el.classList.add('on');
+  if(xgFlashT)clearTimeout(xgFlashT);
+  xgFlashT=setTimeout(function(){ el.classList.remove('on'); },2200);
+}
+function xgBarUpdate(){
+  if(!xgBarEl)return;
+  const cells=xgSelCells();
+  const anyEd=cells.some(xgEditableTd);
+  if(cells.length<2&&!anyEd){ xgBarEl.style.display='none'; return; }
+  let sum=0,n=0;
+  cells.forEach(function(td){ const v=F.parseCellNum(td.textContent); if(v!=null){ sum+=v; n++; } });
+  const st=document.getElementById('xgStats');
+  if(st)st.innerHTML=n
+    ?('<b>'+F.fmt(Math.round(sum))+'</b> 求和 · <b>'+F.fmt(Math.round(sum/n))+'</b> 平均 · <b>'+n+'</b> 计数')
+    :('已选 '+cells.length+' 格(无数字)');
+  ['xgTotal','xgTotalBtn','Sable','SableBtn','xgRestoreBtn','xgSep1','xgSep2'].forEach(function(id){
+    const e2=document.getElementById(id); if(e2)e2.style.display=anyEd?'':'none'; });
+  const aiB=document.getElementById('xgAiBtn');
+  if(aiB){
+    aiB.style.display=cells.some(function(td){ return td.dataset&&td.dataset.mkm!=null; })?'':'none';
+    aiB.textContent=aiT('AI 解释');
+  }
+  xgBarEl.style.display='';
+}
+/* 选区恢复公式:总控格按 型号/国家/月/指标 精准清手工;周格与目标格走空值提交;汇总模拟面板用其自身按钮 */
+function xgRestoreMaster(d){
+  const m=+d.mkm,bag=(d.mkk==='so')?state.ovSO:state.ovSI;
+  const walk=function(list,skipAudio,src){
+    if(!list)return;
+    list.forEach(function(it){
+      if(skipAudio&&it.u.audio)return;
+      if(mkKey(it.u)!==d.mk)return;
+      if(d.mkc&&it.u.country!==d.mkc)return;
+      const k=ovKey(src,it.u.key);
+      ((it.sim&&it.sim.rows)||[]).forEach(function(rr){
+        if(F.monthOfP(rr.p)!==m)return;
+        const o=bag[k];
+        if(o&&o[rr.p]!=null){ delete o[rr.p]; if(!Object.keys(o).length)delete bag[k]; }
+        if(d.mkk==='so'){ const t=state.ovTail[k]; if(t&&t[rr.p]!=null){ if(t[rr.p]===2&&state.ovSI[k]&&state.ovSI[k][rr.p]!=null){ delete state.ovSI[k][rr.p]; if(!Object.keys(state.ovSI[k]).length)delete state.ovSI[k]; } delete t[rr.p]; if(!Object.keys(t).length)delete state.ovTail[k]; } }
+      });
+    });
+  };
+  walk(D&&D.list,true,'fsd'); walk(Da&&Da.list,false,'audio');
+}
+function xgInit(){
+  if(xgBarEl)return;
+  xgBarEl=document.createElement('div');
+  xgBarEl.id='xgBar'; xgBarEl.style.display='none';
+  xgBarEl.innerHTML='<span id="xgStats"></span>'
+    +'<span class="xgsep" id="xgSep1"></span>'
+    +'<input id="xgTotal" placeholder="总量" title="把一个总量按各格现值占比守恒分配到所选可编辑格(现值全 0 时均分)">'
+    +'<button id="xgTotalBtn" title="按占比分配">分配</button>'
+    +'<input id="Sable" placeholder="+10% / *1.2 / 500 / 清尾" title="每格运算:+10% -5% *1.2 /2 +200 -200;直接输一个数=每格都拍成该数;输 清尾 = 所选 SO 格拍成可售量(期末库存归零)">'
+    +'<button id="SableBtn" title="对每个所选可编辑格执行运算">运算</button>'
+    +'<span class="xgsep" id="xgSep2"></span>'
+    +'<button id="xgRestoreBtn" title="清除所选格的手工拍数,恢复公式推演">恢复公式</button>'
+    +'<button id="xgAiBtn" title="解释选中的总控月度格:确定性因子分解(为什么是这个数),配了模型再追加 AI 叙述">AI 解释</button>'
+    +'<button id="xgCloseBtn" title="清除选区(Esc)">✕</button>';
+  document.body.appendChild(xgBarEl);
+  document.getElementById('xgCloseBtn').onclick=function(){ xgClearSel(); };
+  document.getElementById('xgAiBtn').onclick=function(){ aiExplainSelection(); };
+  document.getElementById('xgTotalBtn').onclick=function(){
+    const v=F.parseCellNum(document.getElementById('xgTotal').value);
+    if(v==null||v<0){ alert('请输入非负总量。'); return; }
+    const cells=xgSelCells().filter(xgEditableTd);
+    if(!cells.length)return;
+    const cur=cells.map(function(td){ const x=F.parseCellNum(td.textContent); return x==null?0:x; });
+    const al=distStep(Math.round(v),cur,'fsd');
+    const items=cells.map(function(td,i){ return {sel:xgSelOf(td),val:String(al[i])}; });
+    const n=xgApply(items);
+    xgFlash('已按占比把 '+F.fmt(Math.round(v))+' 分配到 '+n+' 格');
+  };
+  document.getElementById('SableBtn').onclick=function(){
+    const t=(document.getElementById('Sable').value||'').trim();
+    const cells=xgSelCells().filter(xgEditableTd);
+    if(!cells.length)return;
+    if(/^(清尾|=库存|清库存)$/.test(t)){ const its=cells.filter(function(td){ return td.dataset.pv2k==='so'; }).map(function(td){ return {sel:xgSelOf(td),val:'清尾',td:td}; }); const k=xgApply(its); xgFlash('已清尾 '+k+' 格(SO=可售量,期末库存归零)'); return; }
+    const m=XG_EXPR.exec(t);
+    const abs=m?null:F.parseCellNum(t);
+    if(!m&&(abs==null||abs<0)){ alert('支持:+10% / -5% / *1.2 / /2 / +200 / -200;或直接一个数=每格拍成该数。'); return; }
+    const items=[];
+    cells.forEach(function(td){
+      const cur=F.parseCellNum(td.textContent);
+      const v=m?xgCalc(cur==null?0:cur,m):Math.round(abs);
+      if(v==null)return;
+      items.push({sel:xgSelOf(td),val:String(v)});
+    });
+    const n=xgApply(items);
+    xgFlash('已运算拍入 '+n+' 格');
+  };
+  document.getElementById('xgRestoreBtn').onclick=function(){
+    const cells=xgSelCells().filter(xgEditableTd);
+    if(!cells.length)return;
+    if(!confirm('清除所选 '+cells.length+' 格的手工拍数、恢复公式推演？'))return;
+    xgRestoreCells(cells);
+  };
+  /* 选区恢复公式(2026-09-02 用户:要和 Excel 一样——选中多格按 Delete 直接清值);推演编辑矩阵的清除进撤销栈(Ctrl+Z 可回) */
+  window.xgRestoreCells=function(cells){
+    let master=0,skip=0,mkmN=0; const weekly=[]; const und=[]; const pvPm={}; let pvNp=false;
+    const sels=cells.map(xgSelOf);
+    cells.forEach(function(td){
+      const d=td.dataset;
+      if(d.mkm!=null){ xgRestoreMaster(d); master++; mkmN++; }
+      else if(d.pv2n!=null){                                          // 推演编辑矩阵:只清该节点×该桶的手工
+        const node=window.__pv2NodeIdx&&window.__pv2NodeIdx[d.pv2n];
+        const bk=(window.__pv2Bks||[]).filter(function(b2){ return b2.key===d.pv2b; })[0];
+        if(node&&bk){
+          node.items.forEach(function(it){ pvPm[mkNorm(it.u.product)]=1; if(it.np)pvNp=true; });
+          const metric=d.pv2k==='si'?'si':(d.pv2k==='so'?'so':null);   // 只清该格指标(SO 或 SI),不清另一行
+          const srcP=state.ui.pvSrc||'fsd';
+          if(bk.mode==='ext'){
+            node.items.forEach(function(it){
+              const kx=ovExtKeyOf(srcNameOf(srcP),pv2UKey(it.u.country,it.u.account,it.u.model));
+              const o=state.ovExt[kx]; if(!o)return;
+              bk.months.forEach(function(ym){ const oe=o[ym]; if(!oe)return;
+                ['so','si'].forEach(function(f2){ if(metric&&f2!==metric)return; if(oe[f2]!=null){ und.push({bag:'ovExt',key:kx,ym:ym,field:f2,old:oe[f2]}); delete oe[f2]; ovExtGen++; } });
+                if(!Object.keys(oe).length)delete o[ym]; });
+              if(!Object.keys(o).length)delete state.ovExt[kx];
+            });
+          } else {
+            const futSet={}; bk.fut.forEach(function(p2){ futSet[p2]=1; });
+            node.items.forEach(function(it){
+              const kk=ovKey(srcP,it.u.key);
+              /* 周集合取 未来周(不依赖 sim.rows:免推演/停售单元残留的手工也能清) */
+              bk.fut.forEach(function(p){ const r={p:p};
+                if(!futSet[r.p])return;
+                [['ovSO',state.ovSO],['ovSI',state.ovSI]].forEach(function(pair){
+                  if(metric&&((metric==='so'&&pair[0]!=='ovSO')||(metric==='si'&&pair[0]!=='ovSI')))return;
+                  const o=pair[1][kk];
+                  if(o&&o[r.p]!=null){ und.push(undoTakeOv(pair[0],kk,r.p)); delete o[r.p]; if(!Object.keys(o).length)delete pair[1][kk]; }
+                });
+                if(!metric||metric==='so'){ const t=state.ovTail[kk]; if(t&&t[r.p]!=null){ und.push(undoTakeOv('ovTail',kk,r.p));
+                  if(t[r.p]===2&&state.ovSI[kk]&&state.ovSI[kk][r.p]!=null){ und.push(undoTakeOv('ovSI',kk,r.p)); delete state.ovSI[kk][r.p]; if(!Object.keys(state.ovSI[kk]).length)delete state.ovSI[kk]; }
+                  delete t[r.p]; if(!Object.keys(t).length)delete state.ovTail[kk]; } }
+              });
+            });
+          }
+          master++;
+        } else skip++;
+      }
+      else if(d.smm!=null)skip++;                                    // 汇总模拟面板:请用该月「恢复公式」按钮
+      else if(d.kind!=null||d.key!=null||d.tgi!=null)weekly.push({sel:xgSelOf(td),val:''});
+      else skip++;
+    });
+    if(und.length)pushUndo(und);
+    if(weekly.length)xgApply(weekly);
+    if(master&&!mkmN&&window.__pv2Patch&&state.ui.tab==='pv'){   // 只清了推演编辑的格:增量重算+原地更新(不整页重绘)
+      const tT0=performance.now(); computeAll({light:true,scope:{products:pvPm,npAll:pvNp}}); window.__pv2Patch(window.__incStat&&window.__incStat.changed); window.__calcLog.tapMs=Math.round(performance.now()-tT0);
+    } else if(master)recompute();
+    xgReselect(sels);
+    xgFlash('已恢复 '+(master+weekly.length)+' 格'+(skip?'（'+skip+' 格不支持,汇总模拟请用该月按钮）':'')+(und.length?' · Ctrl+Z 可撤销':''));
+  };
+  /* 重算/重绘后按选择器把选区找回来(Excel:Delete/粘贴后选区还在) */
+  window.xgReselect=function(sels){
+    try{ let k=0; sels.forEach(function(s){ const td=xgQ(s); if(td){ td.classList.add('xsel'); k++; } }); if(k)xgBarUpdate(); }catch(e){}
+  };
+  /* 活动格:选区里的锚点格(没有就取第一格) */
+  window.xgActiveCell=function(){
+    const cells=xgSelCells(); if(!cells.length)return null;
+    if(xgAnchor&&xgAnchor.tbl&&xgAnchor.tbl.rows[xgAnchor.r]){ const td=xgFindCell(xgAnchor.tbl.rows[xgAnchor.r],xgAnchor.c); if(td&&td.classList.contains('xsel'))return td; }
+    return cells[0];
+  };
+  /* 方向键移动/扩展选区(无焦点时):Shift 扩选从锚点到游标;不带 Shift 选区变成相邻单格 */
+  let xgCursor=null;
+  window.xgMoveSel=function(key,shift){
+    const cur=(xgCursor&&document.contains(xgCursor.td))?xgCursor.td:xgActiveCell(); if(!cur)return;
+    const dr=key==='ArrowDown'?1:(key==='ArrowUp'?-1:0), dc=key==='ArrowRight'?1:(key==='ArrowLeft'?-1:0);
+    const nx=xgNeighbor(cur,dr,dc); if(!nx)return;
+    const tbl=nx.closest('table'); const pN={r:xgPos(nx).r,c:xgLCol(nx)};
+    if(shift&&xgAnchor&&xgAnchor.tbl===tbl){ xgMarkRect(tbl,xgAnchor.r,xgAnchor.c,pN.r,pN.c); }
+    else { xgSelCells().forEach(function(td){ td.classList.remove('xsel'); }); nx.classList.add('xsel'); xgAnchor={tbl:tbl,r:pN.r,c:pN.c}; xgBarUpdate(); }
+    xgCursor={td:nx};
+    try{ nx.scrollIntoView({block:'nearest',inline:'nearest'}); }catch(e){}
+  };
+  /* --- 焦点:进格记 orig+全选,输入即替换 --- */
+  document.addEventListener('focusin',function(e){
+    const td=e.target&&e.target.closest?e.target.closest('main td[contenteditable]'):null;
+    if(!td)return;
+    td.dataset.orig=td.textContent;
+    xgPristine=true;
+    xgSelectAllIn(td);
+  });
+  /* --- 提交前变换:+10% 等相对运算按 orig 现值换算成绝对数(capture 先于各页 blur 提交) --- */
+  document.addEventListener('blur',function(e){
+    const td=e.target&&e.target.closest?e.target.closest('main td[contenteditable]'):null;
+    if(!td)return;
+    const m=XG_EXPR.exec(td.textContent||'');
+    if(!m)return;
+    const cur=F.parseCellNum(td.dataset.orig!=null?td.dataset.orig:'');
+    if(cur==null)return;
+    const v=xgCalc(cur,m);
+    if(v!=null)td.textContent=String(v);
+  },true);
+  /* --- 键盘:Enter/Tab/方向键 提交并移格;Esc 还原(capture 抢在各页处理器前,防重复提交) --- */
+  document.addEventListener('keydown',function(e){
+    const td=e.target&&e.target.closest?e.target.closest('main td[contenteditable]'):null;
+    if((e.ctrlKey||e.metaKey)&&(e.key==='z'||e.key==='Z')&&!td&&!(e.target&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName||''))){
+      e.preventDefault(); undoLast(); return;   // 非编辑态 Ctrl+Z=撤销最近一次拍数(编辑格内保留原生文本撤销)
+    }
+    if(!td){
+      const cells=xgSelCells();
+      if(e.key==='Escape'&&cells.length){ xgClearSel(); return; }
+      if(!cells.length)return;
+      if(e.target&&/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName||''))return;
+      /* 选区态键盘(2026-09-02 用户:要和 Excel 一模一样) */
+      if(e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); const ed=cells.filter(xgEditableTd); if(ed.length)xgRestoreCells(ed); return; }
+      if(e.key==='ArrowDown'||e.key==='ArrowUp'||e.key==='ArrowLeft'||e.key==='ArrowRight'){ e.preventDefault(); xgMoveSel(e.key,e.shiftKey); return; }
+      if(e.key==='Enter'||e.key==='F2'){ e.preventDefault(); const c0=xgActiveCell(); if(c0&&xgEditableTd(c0)){ xgClearSel(); c0.focus(); xgSelectAllIn(c0); } return; }
+      if(e.key&&e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey){ const c0=xgActiveCell(); if(c0&&xgEditableTd(c0)){ xgClearSel(); c0.focus(); xgSelectAllIn(c0); } return; }   // 直接打字=进活动格替换输入(不 preventDefault,让这一键落进格里)
+      return;
+    }
+    const nav=function(dr,dc){
+      e.preventDefault(); e.stopPropagation();
+      const nx=xgNeighbor(td,dr,dc);
+      const sel=nx?xgSelOf(nx):null;
+      td.dispatchEvent(new Event('blur'));         // 合成 blur 提交(可能整页重绘);有改动时重绘会拆掉旧格,真实 blur 不再发生
+      if(sel){ const nt=xgQ(sel); if(nt)nt.focus(); }   // 无改动时真实焦点转移触发的 blur 因「未改动不提交」护栏而无害
+    };
+    if(e.key==='Enter')return nav(e.shiftKey?-1:1,0);
+    if(e.key==='Tab')return nav(0,e.shiftKey?-1:1);
+    if(e.key==='ArrowDown')return nav(1,0);
+    if(e.key==='ArrowUp')return nav(-1,0);
+    if(e.key==='ArrowRight'&&xgPristine)return nav(0,1);
+    if(e.key==='ArrowLeft'&&xgPristine)return nav(0,-1);
+    if(e.key==='Escape'){
+      e.preventDefault(); e.stopPropagation();
+      td.textContent=td.dataset.orig!=null?td.dataset.orig:td.textContent;
+      xgPristine=true; td.blur(); return;
+    }
+    if((e.key&&e.key.length===1)||e.key==='Backspace'||e.key==='Delete')xgPristine=false;
+  },true);
+  /* --- 列宽拖拽:任意表头右缘 6px 按下拖动;持久到 state.ui.colW(按 页签|列文本|列号) --- */
+  let colDrag=null;
+  document.addEventListener('mousedown',function(e){
+    const th=e.target.closest&&e.target.closest('main th');
+    if(!th||e.button!==0)return;
+    const rc=th.getBoundingClientRect();
+    if(rc.right-e.clientX>6)return;
+    e.preventDefault(); e.stopPropagation();
+    colDrag={th:th,x0:e.clientX,w0:rc.width,moved:false,
+      key:state.ui.tab+'|'+String(th.textContent||'').slice(0,20)+'|'+th.cellIndex,
+      pvCol:(th.closest('#view-pv')&&th.parentElement&&th.parentElement.rowIndex===0&&th.cellIndex<=1)?th.cellIndex:null};
+  },true);
+  document.addEventListener('mousemove',function(e){
+    if(!colDrag)return;
+    const w=Math.max(44,Math.round(colDrag.w0+e.clientX-colDrag.x0));
+    colDrag.moved=true;
+    if(colDrag.pvCol!=null){
+      state.ui['pv2W'+colDrag.pvCol]=w;
+      updatePv2ColStyle();
+    } else {
+      colDrag.th.style.minWidth=w+'px'; colDrag.th.style.width=w+'px';
+    }
+    if(!state.ui.colW)state.ui.colW={};
+    state.ui.colW[colDrag.key]=w;
+  },true);
+  document.addEventListener('mouseup',function(){
+    if(!colDrag)return;
+    const moved=colDrag.moved;
+    colDrag=null;
+    if(moved){
+      saveState();
+      if(state.ui.tab==='pv'){ const s=document.querySelector('#view-pv'); if(s)pv2SyncSticky(s); }
+      const sup=function(ev){ ev.stopPropagation(); ev.preventDefault(); document.removeEventListener('click',sup,true); };
+      document.addEventListener('click',sup,true);   // 吞一次拖拽后的 click,防误触排序/展开
+      setTimeout(function(){ document.removeEventListener('click',sup,true); },80);
+    }
+  },true);
+  /* --- 鼠标:拖框选/Ctrl加选/Shift扩选;点可编辑格=全选进格,再点=落光标 --- */
+  document.addEventListener('mousedown',function(e){
+    if(e.button!==0)return;
+    if(e.target.closest&&e.target.closest('#xgBar'))return;
+    if(e.target.closest&&e.target.closest('button,input,select,label,a,textarea'))return;
+    const td=e.target.closest?e.target.closest('main table td'):null;
+    if(!td){ xgClearSel(); return; }
+    const tbl=td.closest('table');
+    const p={r:xgPos(td).r,c:xgLCol(td)};
+    if(e.shiftKey&&xgAnchor&&xgAnchor.tbl===tbl){
+      e.preventDefault();
+      xgMarkRect(tbl,xgAnchor.r,xgAnchor.c,p.r,p.c);
+      return;
+    }
+    if(e.ctrlKey||e.metaKey){
+      e.preventDefault();
+      td.classList.toggle('xsel');
+      xgAnchor={tbl:tbl,r:p.r,c:p.c};
+      xgBarUpdate();
+      return;
+    }
+    if(td===document.activeElement)return;         // 正在编辑本格:原生光标/文本选择
+    xgAnchor={tbl:tbl,r:p.r,c:p.c};
+    xgDown={tbl:tbl,r:p.r,c:p.c,td:td,moved:false};
+    e.preventDefault();                            // 不落光标:单击=整格,拖动=框选(同 Excel)
+    if(xgSelCells().length)xgClearSel();
+  });
+  document.addEventListener('mousemove',function(e){
+    if(!xgDown)return;
+    const td=e.target.closest?e.target.closest('td'):null;
+    if(!td||td.closest('table')!==xgDown.tbl)return;
+    const p={r:xgPos(td).r,c:xgLCol(td)};
+    if(!xgDown.moved&&(p.r!==xgDown.r||p.c!==xgDown.c))xgDown.moved=true;
+    if(xgDown.moved)xgMarkRect(xgDown.tbl,xgDown.r,xgDown.c,p.r,p.c);
+  });
+  document.addEventListener('mouseup',function(){
+    if(!xgDown)return;
+    const d=xgDown; xgDown=null;
+    if(!d.moved&&xgEditableTd(d.td)){ d.td.focus(); xgSelectAllIn(d.td); }
+    else if(!d.moved){ d.td.classList.add('xsel'); xgBarUpdate(); }
+  });
+  /* --- 复制:选区→TSV(几何矩形,空缺补空),可直接贴回 Excel --- */
+  document.addEventListener('copy',function(e){
+    const cells=xgSelCells();
+    if(!cells.length)return;
+    const ae=document.activeElement;
+    if(ae&&ae.tagName==='TD'&&ae.hasAttribute('contenteditable'))return;
+    const rows={};
+    cells.forEach(function(td){ const p={r:xgPos(td).r,c:xgLCol(td)}; (rows[p.r]=rows[p.r]||{})[p.c]=td.textContent.trim(); });
+    const rk=Object.keys(rows).map(Number).sort(function(a,b){return a-b;});
+    let c0=Infinity,c1=-Infinity;
+    rk.forEach(function(r){ Object.keys(rows[r]).forEach(function(c){ c0=Math.min(c0,+c); c1=Math.max(c1,+c); }); });
+    const tsv=rk.map(function(r){
+      const line=[];
+      for(let c=c0;c<=c1;c++)line.push(rows[r][c]!=null?rows[r][c]:'');
+      return line.join('\t');
+    }).join('\n');
+    e.preventDefault();
+    e.clipboardData.setData('text/plain',tsv);
+    xgFlash('已复制 '+cells.length+' 格(TSV,可贴回 Excel)');
+  });
+  /* --- 粘贴:多行多列 TSV(来自 Excel)自动向右向下铺开逐格拍入;单值只贴纯文本 --- */
+  document.addEventListener('paste',function(e){
+    let td=e.target&&e.target.closest?e.target.closest('main td[contenteditable]'):null;
+    const selEd=xgSelCells().filter(xgEditableTd);
+    const fromSel=!td;
+    if(!td){ if(e.target&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName||''))return; if(!selEd.length)return; td=xgActiveCell(); if(!td||!xgEditableTd(td))return; }   // 无焦点:从选区活动格(左上)铺开(2026-09-02 Excel 等价)
+    const txt=((e.clipboardData||window.clipboardData).getData('text/plain')||'');
+    e.preventDefault();
+    const sels=selEd.map(xgSelOf);
+    if(fromSel&&selEd.length>1&&!/[\t\n]/.test(txt.trim())){   // 单值 + 多格选区:每格都拍成该值(Excel 行为)
+      const v=F.parseCellNum(txt); if(v==null||v<0){ xgFlash('剪贴板不是数字'); return; }
+      const k=xgApply(selEd.map(function(t2){ return {sel:xgSelOf(t2),val:String(v),td:t2}; }));
+      xgReselect(sels); xgFlash('已把 '+F.fmt(v)+' 拍入 '+k+' 格'); return;
+    }
+    if(/[\t\n]/.test(txt.trim())){
+      const tbl=td.closest('table'),p0={r:xgPos(td).r,c:xgLCol(td)};
+      const items=[];
+      txt.replace(/\r/g,'').split('\n').forEach(function(line,ri){
+        if(line==='')return;
+        line.split('\t').forEach(function(vv,ci){
+          const tr=tbl.rows[p0.r+ri],t2=tr&&xgFindCell(tr,p0.c+ci);
+          const v=F.parseCellNum(vv);
+          if(t2&&xgEditableTd(t2)&&v!=null&&v>=0)items.push({sel:xgSelOf(t2),val:String(v),td:t2});
+        });
+      });
+      const n=xgApply(items);
+      if(fromSel)xgReselect(sels);
+      xgFlash('已从剪贴板拍入 '+n+' 格');
+    } else if(fromSel){
+      const v=F.parseCellNum(txt); if(v==null||v<0){ xgFlash('剪贴板不是数字'); return; }
+      xgApply([{sel:xgSelOf(td),val:String(v),td:td}]); xgReselect(sels); xgFlash('已拍入 1 格');
+    } else {
+      try{ document.execCommand('insertText',false,txt.trim()); }
+      catch(e2){ td.textContent=txt.trim(); }
+    }
+  },true);
+  /* 截图演示:框选总控型号网格前4个SO月份格 */
+  window.__xgShotSel=function(){
+    const so=document.querySelectorAll('#view-master td[data-mkk="so"]:not([data-mkc])');
+    if(so.length<2)return;
+    const tbl=so[0].closest('table');
+    const p0=xgPos(so[0]),p1=xgPos(so[Math.min(3,so.length-1)]);
+    xgAnchor={tbl:tbl,r:p0.r,c:p0.c};
+    xgMarkRect(tbl,p0.r,p0.c,p1.r,p1.c);
+  };
+}
+window.__xg={selOf:xgSelOf,apply:xgApply,calc:xgCalc,markRect:xgMarkRect,neighbor:xgNeighbor,restoreMaster:xgRestoreMaster,cells:xgSelCells};
+

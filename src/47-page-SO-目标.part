@@ -1,0 +1,67 @@
+/* ===== SO 目标:模板生成/带公式导出 ===== */
+function genTplFromStores(){
+  const th=dosThOf(null).red;
+  const cand=[];
+  const scan=function(Dx){
+    if(!Dx)return;
+    Dx.list.forEach(function(it){
+      if(it.exempt||it.ignored)return;
+      const u=it.u;
+      if(chanTypeOf(u.account)==='eshop')return;
+      const dosV=it.cur.dosCalc;
+      const inf=(it.cur.curInv||0)>0&&dosV==null;
+      if(!inf&&!(dosV!=null&&dosV>=th))return;
+      cand.push(u);
+    });
+  };
+  scan(Dr); scan(Da); scan(D);
+  if(!cand.length){ alert('当前没有 DOS≥'+th+' 天(或 ∞)的渠道×产品。'); return; }
+  const byKey={}; (targetRows||[]).forEach(function(tr){ byKey[tr.country+'|'+tr.channel+'|'+tr.product]=1; });
+  let added=0;
+  const out=(targetRows||[]).slice();
+  cand.forEach(function(u){
+    const k=u.country+'|'+u.account+'|'+u.product;
+    if(byKey[k])return;
+    byKey[k]=1; added++;
+    out.push({line:u.line||'',product:u.product,country:u.country,channel:u.account,
+      rawName:(u.rawNames&&u.rawNames.length)?u.rawNames.join('，'):u.account,
+      t:{9:null,10:null,11:null,12:null},note:''});
+  });
+  if(!added){ alert('高库存 渠道×产品 均已在模板中,无新增。'); return; }
+  if(!confirm('新增 '+added+' 行高库存 渠道×产品 到模板（已有 '+(targetRows?targetRows.length:0)+' 行及其目标保留），确认？'))return;
+  targetRows=out; saveData4(); recompute();
+}
+function exportTplXlsx(list){
+  if(!SHELL||!SHELL.saveXlsx){ alert('带公式导出仅在桌面版中可用。'); return; }
+  if(!list||!list.length){ alert('当前筛选下没有模板行。'); return; }
+  const headers=['产品线','产品','国家','渠道','原始渠道名','当前INV','近4周周均SO','当前DOS',
+    '9月SO目标','9月底库存','9月底DOS','10月SO目标','10月底库存','10月底DOS',
+    '11月SO目标','11月底库存','11月底DOS','12月SO目标','年底库存','年底DOS','备注'];
+  const aoa=[headers]; const formulas=[];
+  list.forEach(function(r,i){
+    const t2=r.tr; const c=r.calc; const rr=i+1; const xn=i+2;
+    const dosCur=(r.w4&&r.w4>0&&r.curInv!=null)?Math.round(r.curInv/(r.w4/7)):null;
+    aoa.push([(r.fam?r.fam.line:(t2.line||'')),t2.product,t2.country,t2.channel,t2.rawName,
+      r.curInv!=null?r.curInv:'',r.w4!=null?r.w4:'',dosCur!=null?dosCur:'',
+      t2.t[9]!=null?t2.t[9]:'', c?c[0].endInv:(r.curInv||0), (c&&c[0].endDos!=null)?c[0].endDos:'-',
+      t2.t[10]!=null?t2.t[10]:'', c?c[1].endInv:(r.curInv||0), (c&&c[1].endDos!=null)?c[1].endDos:'-',
+      t2.t[11]!=null?t2.t[11]:'', c?c[2].endInv:(r.curInv||0), (c&&c[2].endDos!=null)?c[2].endDos:'-',
+      t2.t[12]!=null?t2.t[12]:'', c?c[3].endInv:(r.curInv||0), (c&&c[3].endDos!=null)?c[3].endDos:'-',
+      t2.note||'']);
+    const vI=function(mi){ return c?c[mi].endInv:(r.curInv||0); };
+    const vD=function(mi){ return (c&&c[mi].endDos!=null)?c[mi].endDos:'-'; };
+    formulas.push({r:rr,c:9, f:'F'+xn+'-IF(I'+xn+'="",0,I'+xn+')',v:vI(0)});
+    formulas.push({r:rr,c:10,f:'IF(AND(I'+xn+'<>"",I'+xn+'>0),ROUND(J'+xn+'/(I'+xn+'/28),0),"-")',v:vD(0)});
+    formulas.push({r:rr,c:12,f:'J'+xn+'-IF(L'+xn+'="",0,L'+xn+')',v:vI(1)});
+    formulas.push({r:rr,c:13,f:'IF(AND(L'+xn+'<>"",L'+xn+'>0),ROUND(M'+xn+'/(L'+xn+'/28),0),"-")',v:vD(1)});
+    formulas.push({r:rr,c:15,f:'M'+xn+'-IF(O'+xn+'="",0,O'+xn+')',v:vI(2)});
+    formulas.push({r:rr,c:16,f:'IF(AND(O'+xn+'<>"",O'+xn+'>0),ROUND(P'+xn+'/(O'+xn+'/28),0),"-")',v:vD(2)});
+    formulas.push({r:rr,c:18,f:'P'+xn+'-IF(R'+xn+'="",0,R'+xn+')',v:vI(3)});
+    formulas.push({r:rr,c:19,f:'IF(AND(R'+xn+'<>"",R'+xn+'>0),ROUND(S'+xn+'/(R'+xn+'/28),0),"-")',v:vD(3)});
+  });
+  saveXlsxHooked({name:'SO目标回填模板.xlsx',sheets:[{name:'SO目标',rows:aoa,formulas:formulas}]})
+    .then(function(res){
+      if(res&&res.ok)alert('已导出（月底库存/DOS 为活公式，国家改目标后 Excel 自动重算）：'+res.path);
+      else if(res&&!res.canceled)alert('导出失败: '+(res.error||''));
+    });
+}

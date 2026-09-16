@@ -16,6 +16,7 @@ function ok(cond, name, extra) {
   else { fail++; console.log('FAIL  ' + name + (extra !== undefined ? '  got=' + JSON.stringify(extra) : '')); }
 }
 function eq(a, b, name) { ok(JSON.stringify(a) === JSON.stringify(b), name, a); }
+const noF = (x) => { const y = Object.assign({}, x); delete y.f; return y; };   // R5 之后推演行带血缘 f,老断言只看 p/so/src
 
 /* ---------- UI 脚本块语法防线:渲染进程语法错误=整软件白屏,必须在出厂前拦截 ---------- */
 (function () {
@@ -149,10 +150,10 @@ eq(clsNew.status, 'new', '2026-only history -> new');
 const sF = C.buildStore(yearRows('平板', 2025, 1, 52, 100));
 const uF = sF.units.values().next().value;
 const base = { unit: uF, store: sF, futureWeeks: [2026040], refYear: 2025, decision: null, growth: null, kdef: {}, kedit: {}, ovSO: null, cfg: { roundTo: 5 }, cls: { status: 'auto' } };
-eq(C.buildForecastForUnit(base)[0], { p: 2026040, so: 100, src: 'ref' }, 'auto self: copy last-year same week');
+eq(noF(C.buildForecastForUnit(base)[0]), { p: 2026040, so: 100, src: 'ref' }, 'auto self: copy last-year same week');
 eq(C.buildForecastForUnit(Object.assign({}, base, { growth: 1.1 }))[0].so, 110, 'growth 1.1 -> 110');
 eq(C.buildForecastForUnit(Object.assign({}, base, { kedit: { 40: 1.2 } }))[0].so, 120, 'kedit 1.2 over default 1 -> 120');
-eq(C.buildForecastForUnit(Object.assign({}, base, { ovSO: { 2026040: 7 } }))[0], { p: 2026040, so: 7, src: 'override' }, 'override kept exact (no rounding)');
+eq(noF(C.buildForecastForUnit(Object.assign({}, base, { ovSO: { 2026040: 7 } }))[0]), { p: 2026040, so: 7, src: 'override' }, 'override kept exact (no rounding)');
 const fcNone = C.buildForecastForUnit(Object.assign({}, base, { cls: { status: 'new' } }));
 eq(fcNone[0].src, 'none', 'new without decision -> none (no fabrication)');
 const fcBase = C.buildForecastForUnit(Object.assign({}, base, { cls: { status: 'new' }, decision: { mode: 'base', base: 22 } }));
@@ -161,7 +162,7 @@ eq(fcBase[0].so, 20, 'base mode 22 -> round5 -> 20');
 const sFill = C.buildStore(yearRows('平板', 2025, 1, 30, 60));
 const uFill = sFill.units.values().next().value;
 const fcFill = C.buildForecastForUnit({ unit: uFill, store: sFill, futureWeeks: [2026045], refYear: 2025, decision: { mode: 'self' }, growth: null, kdef: {}, kedit: {}, ovSO: null, cfg: { roundTo: 5 }, cls: { status: 'partial' } });
-eq(fcFill[0], { p: 2026045, so: 60, src: 'fill' }, 'missing ref week -> mean fill (60)');
+eq(noF(fcFill[0]), { p: 2026045, so: 60, src: 'fill' }, 'missing ref week -> mean fill (60)');
 
 /* ---------- simulate ---------- */
 const simUnitRows = mkRows('平板', [[2026033, 70, null], [2026034, 70, 1000]]);
@@ -290,7 +291,7 @@ const rfCur = C.unitCurrent(rfU, { dosWindow: 4 });
 eq(rfCur.curInv, 200, 'retail current inv from inv1');
 const rfFw = [2026035, 2026036];
 const rfFc = C.buildRetailForecast({ unit: rfU, futureWeeks: rfFw, refYear: 2025, kdef: {}, kedit: {}, ovSO: null, cfg: { roundTo: 5 }, cur: rfCur });
-eq(rfFc[0], { p: 2026035, so: 15, src: 'avg' }, 'retail forecast: no last-year -> avg4 (14->15) x coef');
+eq(noF(rfFc[0]), { p: 2026035, so: 15, src: 'avg' }, 'retail forecast: no last-year -> avg4 (14->15) x coef');
 const rfSim = C.simulateRetail({ unit: rfU, cur: rfCur, forecast: rfFc, cfg: { dosWindow: 4, roundTo: 5 }, ovSI: null });
 eq(rfSim.rows[0].inv, 185, 'retail sim: zero-purchase drain 200-15');
 eq(rfSim.rows[1].inv, 170, 'retail sim: drain continues');
@@ -1963,6 +1964,27 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const np = C.parseGrid(rows);
   ok(np.rows.length === 0 && /PSI Type 没有一个能识别/.test(np.report.error || ''), '契约: PSI 全不识别 → 拒绝', np.report.error);
   eq(C.DICT.GARNET_AUDIO, '音频与智能配件', 'DICT: 音频线名只此一处');
+})();
+
+
+/* ---------- R5(2026-09-15):计算期血缘 ---------- */
+(function () {
+  const weeks = new Map(), periods = [];
+  for (let w = 1; w <= 52; w++) { weeks.set(2025000 + w, { so: 10, si: 10, inv: 100 }); periods.push(2025000 + w); }
+  const u = { key: 'A::X::M', country: 'A', account: 'X', model: 'M', line: 'L', product: 'P', weeks: weeks, periods: periods };
+  const st = { units: new Map([[u.key, u]]), maxPeriod: 2026030 };
+  const fw = []; for (let w = 31; w <= 40; w++) fw.push(2026000 + w);
+  const fc = C.buildForecastForUnit({ unit: u, store: st, futureWeeks: fw, refYear: 2025, decision: { mode: 'self', scale: 1.2 }, growth: 1.1, kdef: {}, kedit: {}, cfg: { roundTo: 5 }, ovSO: { 2026033: 30 }, carryTaps: true });
+  ok(fc.every(f => f.f), '血缘: 每周都带因子');
+  const r0 = fc[0].f;
+  ok(Math.abs(r0.base * r0.scale * r0.k * r0.g * (r0.carry || 1) - r0.raw) < 1e-9, '血缘: 四因子相乘 = 原始', r0);
+  eq([r0.base, r0.scale, r0.g, r0.how], [10, 1.2, 1.1, '去年同周'], '血缘: 去年同周 基线10 档位1.2 增速1.1');
+  ok(fc[2].f.override === true && fc[2].f.raw === 30, '血缘: 手拍周标 override');
+  ok(fc[3].f.carry != null && fc[3].f.carry !== 1, '血缘: 手拍后的周记录承接比例', fc[3].f);
+  const raws = fc.filter(f => !f.f.override).map(f => f.f.raw), plans = fc.filter(f => !f.f.override).map(f => f.f.plan);
+  eq(C.quantizeSeq(raws, 5), plans, '血缘: 取整序列 = 计划');
+  const txt = C.lineageText({ lin: fc[3].f, so: fc[3].so, soPlan: fc[3].so, capped: false });
+  ok(/去年同周.*基线.*档位.*系数.*增速.*承接.*取整/.test(txt), '血缘文案: 含全部因子', txt);
 })();
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

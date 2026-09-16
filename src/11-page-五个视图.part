@@ -1,0 +1,146 @@
+/* ===== 五个视图(2026-09-10 看板收敛 阶段4.5)=====
+   顶层只剩 工作台 / 推演编辑 / 产品总控 / 对外 / 配置;每个视图下是既有页面作二级页签。
+   页面与渲染函数一行不动——这一步只改导航,所以 37 个视图变体、20 张导出的指纹天然不变(门禁仍逐位比)。
+   工作台的顺序就是每天的工作流:先看待办,再看清单,再看监控,最后才碰渠道架构。 */
+const VIEW_DEFS=[
+  ['work','工作台',[['confirm','待办'],['channels','单元清单'],['monitor','监控与目标'],['chantree','渠道架构与对账']]],
+  ['pv','推演编辑',[['pv','拍数与切面']]],
+  ['ctl','产品总控',[['master','产品总控'],['newprod','新品规划']]],
+  ['ext','对外',[['fin','产品经营']]],
+  ['cfg','配置',[['rules','规则与模型'],['data','数据']]]
+];
+/* SO 工具的三个视图(2026-09-15):只回答 SO,别的不进 */
+const VIEW_DEFS_SO=[
+  ['pv','SO 推演',[['pv','SO 矩阵']]],
+  ['work','待办',[['confirm','待办'],['channels','单元清单']]],
+  ['cfg','配置',[['rules','规则与模型'],['data','数据']]]
+];
+function viewDefs(){ return soTool()?VIEW_DEFS_SO:VIEW_DEFS; }
+/* 旧页签(legacy)归属哪个视图,只用于高亮 */
+const LEGACY_HOME={overview:'work',retail:'work',audio:'work',watch:'work',targets:'work',detail:'pv',summary:'pv',monthend:'pv',coef:'cfg',settings:'cfg'};
+function viewOfTab(tab){ const V=viewDefs(); for(let i=0;i<V.length;i++){ if(V[i][2].some(function(t){ return t[0]===tab; }))return V[i][0]; } return LEGACY_HOME[tab]||V[0][0]; }
+function renderViewNav(){
+  const v=viewOfTab(state.ui.tab);
+  if(!state.ui.lastTab)state.ui.lastTab={};
+  state.ui.lastTab[v]=state.ui.tab;
+  const V=viewDefs();
+  document.querySelectorAll('#viewNav button[data-view]').forEach(function(b){
+    const d=V.filter(function(x){ return x[0]===b.dataset.view; })[0];
+    b.style.display=d?'':'none'; if(d){ const bd=b.querySelector('.badge'); b.textContent=d[1]; if(bd)b.appendChild(bd); }   // SO 工具只显示它的三个视图并改标签
+    b.classList.toggle('on',b.dataset.view===v); });
+  const def=V.filter(function(d){ return d[0]===v; })[0];
+  const sub=document.getElementById('subNav'); if(!sub)return;
+  sub.innerHTML=(def&&def[2].length>1)?def[2].map(function(t){
+    return '<button class="'+(state.ui.tab===t[0]?'on':'')+'" data-subtab="'+t[0]+'">'+t[1]+'</button>'; }).join(''):'';
+  sub.querySelectorAll('[data-subtab]').forEach(function(b){ b.onclick=function(){ state.ui.tab=b.dataset.subtab; render(); }; });
+}
+function bindViewNav(){
+  document.querySelectorAll('#viewNav button[data-view]').forEach(function(b){
+    b.onclick=function(){ const v=b.dataset.view; const def=viewDefs().filter(function(d){ return d[0]===v; })[0]; if(!def)return;
+      const last=state.ui.lastTab&&state.ui.lastTab[v];
+      state.ui.tab=(last&&def[2].some(function(t){ return t[0]===last; }))?last:def[2][0][0]; render(); }; });
+}
+function render(){
+  if(window.__xgClear)window.__xgClear();   // 重绘即失选区(DOM 重建),同步收起状态条
+  const sameTab=lastRenderedTab===state.ui.tab;
+  const actPrev=document.querySelector('main section.on');
+  const scrollSnap=(sameTab&&actPrev)
+    ?Array.prototype.map.call(actPrev.querySelectorAll('.tblwrap'),function(w){ return {t:w.scrollTop,l:w.scrollLeft}; })
+    :null;
+  const winY=sameTab?window.scrollY:0;
+  document.querySelectorAll('nav button').forEach(function(b){
+    b.classList.toggle('on',b.dataset.tab===state.ui.tab); });
+  document.querySelectorAll('main section').forEach(function(s){
+    s.classList.toggle('on',s.id==='view-'+state.ui.tab); });
+  renderViewNav();
+  const pend=pendingList();
+  const osN=buyReviewList().length;
+  const badge=$('#pendBadge');
+  const pn=pend.length+osN;
+  badge.style.display=pn?'':'none'; badge.textContent=pn;
+  badge.title=osN?('待确认 '+pend.length+' + 补货口径待审视 '+osN):'';
+  const parts=[];
+  if(store&&store.units.size) parts.push('FSD 截至 '+F.weekLabel(store.maxPeriod)+'('+F.weekRangeLabel(store.maxPeriod)+') '+store.units.size+' 单元');
+  if(retailStore&&retailStore.units.size) parts.push('下游 截至 '+F.weekLabel(retailStore.maxPeriod)+' '+retailStore.units.size+' 单元');
+  if(D&&D.fw.length) parts.push('推演至 '+F.weekLabel(D.fw[D.fw.length-1]));
+  $('#dataline').textContent=parts.length?parts.join(' · '):'未载入数据';
+  if(state.ui.tab==='watch')renderWatch();
+  else if(state.ui.tab==='master')renderMaster();
+  else if(state.ui.tab==='fin')renderFin();
+  else if(state.ui.tab==='rules')renderRules();
+  else if(state.ui.tab==='monitor')renderMonitor();
+  else if(state.ui.tab==='channels')renderChannels();
+  else if(state.ui.tab==='overview')renderOverview();
+  else if(state.ui.tab==='detail')renderDetail();
+  else if(state.ui.tab==='summary')renderSummary();
+  else if(state.ui.tab==='pv'){ if(pvMode()==='grid')renderPivot(); else renderPivotModes(); }
+  else if(state.ui.tab==='confirm')renderConfirm();
+  else if(state.ui.tab==='retail')renderRetail();
+  else if(state.ui.tab==='chantree')renderChanTree();
+  else if(state.ui.tab==='audio')renderAudio();
+  else if(state.ui.tab==='monthend')renderMonthEnd();
+  else if(state.ui.tab==='targets')renderTargets();
+  else if(state.ui.tab==='newprod')renderNewProd();
+  else if(state.ui.tab==='coef')renderCoef();
+  else if(state.ui.tab==='settings')renderSettings();
+  else renderData();
+  try{ applyCaliberTitles(); }catch(e){}
+  if(scrollSnap){
+    const actNow=document.querySelector('main section.on');
+    if(actNow){
+      const wraps=actNow.querySelectorAll('.tblwrap');
+      scrollSnap.forEach(function(s,i){ if(wraps[i]){ wraps[i].scrollTop=s.t; wraps[i].scrollLeft=s.l; } });
+    }
+  }
+  window.scrollTo(0,winY);
+  if(state.ui.colW){
+    document.querySelectorAll('main section.on th').forEach(function(th){
+      const w=state.ui.colW[state.ui.tab+'|'+String(th.textContent||'').slice(0,20)+'|'+th.cellIndex];
+      if(w){ th.style.minWidth=w+'px'; th.style.width=w+'px'; }
+    });
+    if(state.ui.tab==='pv'){ const s=document.querySelector('#view-pv'); if(s)pv2SyncSticky(s); }
+  }
+  lastRenderedTab=state.ui.tab;
+}
+
+function emptyHint(el){ el.innerHTML='<div class="panel">尚未载入数据 —— 去「数据」页粘贴底表，或点击「载入内置演示数据」。</div>'; }
+
+/* 口径标签(2026-09-04 阶段0):每个 DOS/库存类列头挂上 C.CALIBER 的 id(data-cal)与公式(title)。
+   同名列在不同页可能是不同口径(如 SO 目标页的 ÷28),按页映射;只改属性,不改文本与数值。 */
+const CAL_HEAD={'当前DOS':'dosCur','月末DOS':'dos','年末DOS':'dos','年底DOS':'dos','DOS':'dos','当前INV':'invCur','未来SO合计':'futSO','未来SO':'futSO'};
+const CAL_TAB={
+  targets:{'当前DOS':'dosCur','年底DOS':'dosTarget28','月底DOS':'dosTarget28'},
+  watch:{'DOS 基线→当前':'dosWatch','当前DOS':'dosCur'},
+  fin:{'DOS':'dosFinQ'},
+  detail:{'DOS':'dosTrigger'},retail:{'DOS':'dosTrigger'},audio:{'DOS':'dosTrigger'},
+  master:{'当前DOS':'dosCur','当前INV':'invCurF'},
+  overview:{'当前DOS':'dosCur'}
+};
+function applyCaliberTitles(){
+  const tab=state.ui.tab; const sec=document.getElementById('view-'+tab); if(!sec)return;
+  const map=CAL_TAB[tab]||{};
+  sec.querySelectorAll('th,td.l,td.met').forEach(function(th){
+    if(th.dataset.cal)return;
+    const n0=th.childNodes[0];
+    const t=String((n0&&n0.nodeType===3)?n0.textContent:(th.textContent||'')).replace(/\s+/g,' ').trim();
+    if(!t)return;
+    let id=map[t];
+    if(!id){ if(/^\d+月(底|末)DOS$/.test(t))id=(tab==='targets')?'dosTarget28':'dos'; else id=CAL_HEAD[t]; }
+    if(!id)return;
+    th.dataset.cal=id;
+    const tip=F.calTitle(id); if(tip)th.title=th.title?(th.title+' ｜ '+tip):tip;
+  });
+}
+
+/* 主题:跟随系统/浅色/深色 三态循环(🌓按钮),持久化 state.theme */
+function applyTheme(){
+  const t=state.theme||'auto';
+  if(t==='auto')delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme=t;
+  const b=document.getElementById('btnTheme');
+  if(b){
+    b.textContent=t==='auto'?'🌓':(t==='light'?'☀️':'🌙');
+    b.title='主题:'+(t==='auto'?'跟随系统':(t==='light'?'浅色':'深色'))+'(点击切换)';
+  }
+}
+

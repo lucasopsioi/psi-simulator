@@ -1,0 +1,29 @@
+/* ===== 通用:多选下拉筛选（空选=全部;按钮显示已选数） ===== */
+function msMatch(sel,v){ return !sel||!sel.length||sel.indexOf(v)>=0; }
+function msHtml(id,label,options,selected){
+  selected=selected||[];
+  return '<span class="msWrap" id="'+id+'"><button class="ghost msBtn">'+esc(label)
+    +(selected.length?'（'+selected.length+'）':'')+' ▾</button>'
+    +'<div class="msPop">'
+    +options.map(function(o){ return '<label class="msOpt"><input type="checkbox" value="'+esc(o)+'"'
+      +(selected.indexOf(o)>=0?' checked':'')+'> '+esc(o)+'</label>'; }).join('')
+    +'<div class="bar" style="margin-top:6px"><button class="ghost msClear">清空(=全部)</button></div>'
+    +'</div></span>';
+}
+function bindMs(root,id,onChange){
+  const wrap=root.querySelector('#'+id); if(!wrap)return;
+  const pop=wrap.querySelector('.msPop'), btn=wrap.querySelector('.msBtn');
+  btn.onclick=function(e){ e.stopPropagation();
+    document.querySelectorAll('.msPop').forEach(function(p){ if(p!==pop)p.style.display='none'; });
+    pop.style.display=pop.style.display==='block'?'none':'block'; };
+  pop.onclick=function(e){ e.stopPropagation(); };
+  const emit=function(){
+    const arr=Array.prototype.map.call(pop.querySelectorAll('input:checked'),function(c){return c.value;});
+    onChange(arr); };
+  pop.querySelectorAll('input[type=checkbox]').forEach(function(c){ c.onchange=emit; });
+  wrap.querySelector('.msClear').onclick=function(){
+    pop.querySelectorAll('input:checked').forEach(function(c){ c.checked=false; }); emit(); };
+}
+document.addEventListener('click',function(){
+  document.querySelectorAll('.msPop').forEach(function(p){ p.style.display='none'; }); });
+

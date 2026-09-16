@@ -1,0 +1,84 @@
+/* ===== 图表数据组装 ===== */
+function chartConnect(hn,actual,fcast){   // 推演线从最后一个实际点接上,视觉连续
+  for(let i=hn-1;i>=0;i--){ if(actual[i]!=null){ fcast[i]=actual[i]; break; } }
+}
+function fsdChartParts(it){
+  const u=it.u;
+  const hist=u.periods.slice();
+  const xs=hist.concat(D.fw), hn=hist.length;
+  const soA=[],soF=[],si=[],st=[],inv=[];
+  hist.forEach(function(p){ const w=u.weeks.get(p);
+    const norep=u.audio&&it.cur.lastSOP!=null&&p>it.cur.lastSOP;
+    soA.push(norep?null:(w.so==null?null:w.so));
+    soF.push(null);
+    si.push(w.si==null?null:w.si);
+    const stv=it.histST.get(p); st.push(stv==null?null:Math.max(0,stv));
+    inv.push(w.inv==null?null:w.inv);
+  });
+  D.fw.forEach(function(p,i){ const r=it.sim&&it.sim.rows[i]?it.sim.rows[i]:null; const f=it.fc[i];
+    soA.push(null);
+    soF.push(f&&f.so!=null?f.so:null);
+    si.push(r?r.si:null); st.push(r?r.st:null); inv.push(r?r.inv:null);
+  });
+  chartConnect(hn,soA,soF);
+  return {xs:xs,series:[
+    {name:'SO 实际',color:'var(--accent)',vals:soA},
+    {name:'SO 推演',color:'var(--accent)',dash:'5 4',vals:soF},
+    {name:'SI 进货',color:'#3f7fd4',vals:si},
+    {name:'ST 出货',color:'#2fa46a',vals:st},
+    {name:'INV 库存',color:'#8a8f98',dash:'2 3',vals:inv,right:true}
+  ]};
+}
+function retailChartParts(it){
+  const u=it.u;
+  const hist=u.periods.slice();
+  const xs=hist.concat(Dr.fw), hn=hist.length;
+  const soA=[],soF=[],buy=[],inv=[];
+  hist.forEach(function(p){ const w=u.weeks.get(p);
+    const norep=u.audio&&it.cur.lastSOP!=null&&p>it.cur.lastSOP;
+    soA.push(norep?null:(w.so==null?null:w.so));
+    soF.push(null);
+    buy.push(w.si==null?null:w.si);
+    inv.push(w.inv==null?null:w.inv);
+  });
+  Dr.fw.forEach(function(p,i){ const r=it.sim.rows[i];
+    soA.push(null);
+    soF.push(r?r.so:null);   // 库存约束后的实际可售
+    buy.push(r?r.buy:null); inv.push(r?r.inv:null);
+  });
+  chartConnect(hn,soA,soF);
+  return {xs:xs,series:[
+    {name:'SO 实际',color:'var(--accent)',vals:soA},
+    {name:'SO 推演',color:'var(--accent)',dash:'5 4',vals:soF},
+    {name:'Purchase 进货',color:'#3f7fd4',vals:buy},
+    {name:'INV 库存',color:'#8a8f98',dash:'2 3',vals:inv,right:true}
+  ]};
+}
+
+function audioChartParts(it){
+  const u=it.u;
+  const hist=u.periods.slice();
+  const xs=hist.concat(Da.fw), hn=hist.length;
+  const soA=[],soF=[],si=[],inv=[],inv1=[];
+  hist.forEach(function(p){ const w=u.weeks.get(p);
+    const norep=it.cur.lastSOP!=null&&p>it.cur.lastSOP;
+    soA.push(norep?null:(w.so==null?null:w.so));
+    soF.push(null);
+    si.push(w.si==null?null:w.si);
+    inv.push(w.inv==null?null:w.inv);
+    inv1.push(w.inv1==null?null:w.inv1);
+  });
+  Da.fw.forEach(function(p,i){ const r=it.sim.rows[i];
+    soA.push(null); soF.push(r?r.so:null);
+    si.push(r?r.buy:null); inv.push(r?r.inv:null); inv1.push(null);
+  });
+  chartConnect(hn,soA,soF);
+  return {xs:xs,series:[
+    {name:'SO 报量(实际)',color:'var(--accent)',vals:soA},
+    {name:'SO 推演',color:'var(--accent)',dash:'5 4',vals:soF},
+    {name:'SI/Purchase',color:'#3f7fd4',vals:si},
+    {name:'INV 渠道总',color:'#8a8f98',dash:'2 3',vals:inv,right:true},
+    {name:'INV1 客户自有',color:'#b07cd8',dash:'6 3',vals:inv1,right:true}
+  ]};
+}
+

@@ -1,0 +1,331 @@
+/* ===== 预算底表:长表导出(SUMIFS 到预算表) =====
+   粒度=单元×月;今年剩余段=看板同款推演数字(含手工改写);明年延伸段=平销引擎外推+补货规则续跑。
+   FSD 源库存口径=渠道总库存单池(Δ库存=SI−SO,ST 为内部转移不改总量);下游/音频=零补货消化(拍数除外)。 */
+let __budUnitCache=new Map(),__budUnitGen=-1;
+let __budRowsCache={};
+/* 只留最近 2 个年份:一套底表数万行,今年/明年/后年三套同时在内存里(四年跨度导出诊断)会把打包版渲染进程顶爆
+   (2026-09-04 冻结门禁在该处静默退出,开发态因内存宽裕看不出来) */
+const budCacheEvict=function(keep){ Object.keys(__budRowsCache).filter(function(y){ return +y!==keep; }).slice(0,-1).forEach(function(y){ delete __budRowsCache[y]; }); };   // endYear→{seq:[各单元产出的行对象引用],rows:拼好的整表}(2026-09-02 性能:没有单元变化就不再重拼数万行)
+function buildBudgetRows(endYear){
+  if(__budUnitGen!==dataGen){ __budUnitCache=new Map(); __budUnitGen=dataGen; __budRowsCache={}; }
+  const seq=[];
+  const rows=[];
+  rows.__cov={};   // 行号→该月因「手拍 SO 高于可售」补足的进货台数(2026-09-02 审计 R1:这部分是手拍的直接后果,锁量分配里与手拍同级)
+  const q4=function(m){ return 'Q'+Math.ceil(m/3); };
+  /* 周→月归属(周四归属,与 pushMonthRows 一致);ovExt 的月键就是 年-月 */
+  const ymKeyOf=function(p){ const th=new Date(F.mondayOf(F.periodY(p),F.periodW(p)).getTime()+3*86400000);
+    return th.getUTCFullYear()+'-'+F.monthOfP(p); };
+  const mkMonthRows=function(meta,wk){   // wk:[{p,so,si,inv,note,cov}] 周序列→按月聚合,返回该单元的行(可缓存复用)
+    const out=[],covOut=[];
+    const byM={};
+    wk.forEach(function(r){
+      const y=F.periodY(r.p), m=F.monthOfP(r.p);
+      /* 周四归属:周属月的年取周四所在年(跨年周) */
+      const th=new Date(F.mondayOf(F.periodY(r.p),F.periodW(r.p)).getTime()+3*86400000);
+      const ym=th.getUTCFullYear()+'|'+m;
+      let e=byM[ym]; if(!e)e=byM[ym]={y:th.getUTCFullYear(),m:m,so:0,si:0,endInv:0,lastP:0,notes:{},cov:0};
+      e.so+=r.so||0; e.si+=r.si||0; e.cov+=r.cov||0;
+      if(r.note)String(r.note).split(';').forEach(function(x){ if(x)e.notes[x]=1; });
+      if(r.p>e.lastP){ e.lastP=r.p; e.endInv=r.inv!=null?r.inv:e.endInv; }
+    });
+    const rrp=(state.rrp[meta.product]&&state.rrp[meta.product][meta.country]!=null)
+      ?state.rrp[meta.product][meta.country]:null;
+    Object.keys(byM).sort().forEach(function(ym){
+      const e=byM[ym];
+      const noteM=[meta.note||''].concat(Object.keys(e.notes)).filter(Boolean).join(';');
+      out.push([meta.line,meta.product,state.budgetName[meta.product]||meta.product,
+        meta.family||'',meta.country,meta.account,meta.src,
+        e.y,q4(e.m),e.m,
+        Math.round(e.so),Math.round(e.si),Math.round(e.endInv),
+        rrp!=null?rrp:'',
+        rrp!=null?Math.round(e.so*rrp):'',
+        rrp!=null?Math.round(e.si*rrp):'',
+        noteM,
+        meta.model!=null?String(meta.model):'']);   // 型号列(尾部追加,不动既有 SUMIFS 列位)
+      covOut.push(e.cov>0?Math.round(e.cov):0);
+    });
+    return {rows:out,cov:covOut};
+  };
+  const emitRows=function(res){ seq.push(res); };
+  const pushMonthRows=function(meta,wk){ emitRows(mkMonthRows(meta,wk)); };
+  /* 在售单元:三源 */
+  [[D,store,'FSD'],[Dr,retailStore,'下游'],[Da,audioStore,'音频专表']].forEach(function(tri){
+    const Dx=tri[0],stx=tri[1],srcName=tri[2];
+    if(!Dx||!stx)return;
+    /* 延伸段多算一年只为前瞻需求(2026-09-02 第二轮审计):8 周前瞻在窗口末端被截断会让 endYear 年的最后两个月
+       随「算到哪一年」变化——同一个 2027-12 在 推演编辑三年视图(endYear=2028) 与 财经Q表/总控(endYear=2027) 是两个数。
+       现统一按 endYear+1 排计划与补货,只输出到 endYear。 */
+    const fwExt=F.futureWeeksTo(stx.maxPeriod,endYear+1);
+    const lastOutP=F.mkPeriod(endYear,F.weeksInISOYear(endYear));
+    const fwNow=Dx.fw;
+    const nowSet={}; fwNow.forEach(function(p){ nowSet[p]=1; });
+    Dx.list.forEach(function(it){
+      const u=it.u;
+      if(it.ignored)return;
+      if(srcName==='FSD'&&u.audio)return;   // 音频以专表为准(2026-09-02):底表 FSD 源一律不出 FSD 表音频行(财经Q表此前已剔,现底表/明年列/pv 明年列一并剔)
+      const fam=F.familyOf(u.product);
+      const ovE=state.ovExt[ovExtKeyOf(srcName,pv2UKey(u.country,u.account,u.model))]||null;   // 明年手工拍数(按源;2026-09-02 审计 R4:进引擎第一遍,补货随之重排)
+      const ovSig=ovE?JSON.stringify(ovE):'';
+      const ck=srcName+'|'+u.key+'|'+endYear;
+      const hit0=__budUnitCache.get(ck);
+      if(hit0&&hit0.it===it&&hit0.ovSig===ovSig&&hit0.rg===__rrpGen&&hit0.res){ emitRows(hit0.res); return; }   // 增量:该单元推演对象与手拍未变 → 直接复用上轮产出的行(2026-09-02 性能:连按月聚合都不用重跑)
+      const lc=state.lifecycle[u.product]||null;
+      const wk=[];
+      /* 今年段:看板同款 */
+      const simRows=it.sim&&it.sim.rows?it.sim.rows:[];
+      let inv=null,lastSo=0;
+      simRows.forEach(function(r){
+        wk.push({p:r.p,so:r.so||0,si:(r.si!=null?r.si:(r.buy||0)),inv:r.inv});
+        inv=r.inv; lastSo=r.so||0;
+      });
+      if(inv==null){ const stk=it.cur.curInv!=null?it.cur.curInv:it.cur.curInv1; inv=stk||0;
+        /* 免推演/待确认单元今年段没有推演行(2026-09-02 审计 R5):此前底表缺今年 12 月行,
+           财经Q表的「上年年底库存」取不到 → 同一行「26 年底 0 台」而「27 年 1 月期初 399 台」自相矛盾。
+           现补出今年剩余月份的库存结转行(SO/SI=0、月末库存=当前库存),口径与推演编辑今年段(0)一致。 */
+        fwNow.forEach(function(p){ wk.push({p:p,so:0,si:0,inv:inv,note:it.exempt?'免推演·今年不推演(库存结转)':'待确认·推演方式未拍板(库存结转)'}); });
+      }
+      /* 延伸段:平销外推 + 轻量补货循环 */
+      const bl=it.bl||{};
+      const kd=(it.kl&&it.kl.kdef)||{};
+      const keX=(it.kl&&keditOf(it.kl.key))||{};   // 周系数手工改写(2026-09-02 审计:延伸段此前只读学习层,改系数对明年无效)
+      const g=(state.growth[u.key]!=null?state.growth[u.key]:gDefaultOf(u));
+      const learned=learnOfCached(u);
+      const params=learned||lineParamsOf(u.line);
+      const isFsd=srcName==='FSD';
+      const rho=eolRhoOf(u);
+      const rStep=state.cfg.roundTo||5;
+      const glideX=state.glide||{};
+      const capDefX={10:(glideX.m10!=null?glideX.m10:100),11:(glideX.m11!=null?glideX.m11:70),12:(glideX.m12!=null?glideX.m12:50)};
+      const isIndX=isFsd&&(function(){ const cc=chanClassOf(u); return !!(cc&&cc.cls==='indirect'); })();
+      const likeRetail=!isFsd||isIndX;                        // 间接渠道与下游同款(2026-09-01 拍板)
+      const polR=likeRetail?(policyOfCached(u)||params):null;   // 渠道策略>学习DOS>线默认
+      const yepR=likeRetail?yearEndProfileChain(stx,u):null;     // 多年历史月末画像(缺月兜底)
+      const tyP=likeRetail?F.thisYearProfileOf(u,simRows,stx.maxPeriod):null;   // 今年画像优先(2026-09-02 用户:明年库存水位跟今年走)
+      const siCap=siCapOf(u);                                // 单周进货能力上限(三源同用)
+      const nlX=F.normalLevelOf(u,bl);                        // 正常经营水位(平销库存/平销DOS)
+      const carryX=(it.fc&&it.fc.carryEnd)||1;                // 今年最后一次拍数的承接比例接力到延伸段
+      const win=[];
+      simRows.slice(-4).forEach(function(r){ win.push(r.so||0); });
+      let anchor=lastSo;
+      /* 单元级增量缓存:拍数只改少数单元,其余单元的延伸段直接复用上次结果(签名=推演结果+全部影响延伸段的参数) */
+      const metaX={line:u.line||'',product:u.product,family:fam?fam.family:'',
+        country:u.country,account:u.account,src:srcName,model:u.model,
+        note:(it.cls&&it.cls.status==='stock')?'纯库存管控':(bl.conf==='low'||bl.base==null?'平销低置信·延伸段用近4周均':'')};
+      let sSo=0,sSi=0; simRows.forEach(function(r){ sSo+=r.so||0; sSi+=(r.si!=null?r.si:(r.buy||0)); });
+      const sig=[simRows.length,sSo,sSi,inv,lastSo,bl.base,bl.delta,bl.conf,g,lc?lc.eolSI+'/'+lc.eolSO:'',
+        polR?JSON.stringify(polR):'',yepR?(yepR.src+'/'+yepR.medDos+'/'+JSON.stringify(yepR.m)):'',tyP?JSON.stringify(tyP.m):'',siCap,
+        glideX.m10,glideX.m11,glideX.m12,rStep,state.buyMode[u.key]||'',carryX,nlX?nlX.inv+'/'+nlX.dos:'',buyAutoOf(u),
+        params.trigger,params.target,isIndX?1:0,rho,JSON.stringify(keX),win.join(','),ovSig].join('|');   // 2026-09-02 审计:补货参数/周系数/间接口径/衰减/近4周/明年手拍 也进签名
+      const hit=hit0;
+      if(hit&&hit.sig===sig){ hit.it=it; hit.meta=metaX; hit.ovSig=ovSig;
+        if(hit.rg!==__rrpGen||!hit.res){ hit.res=mkMonthRows(metaX,hit.wk); hit.rg=__rrpGen; }
+        emitRows(hit.res); return; }
+      /* 第一遍:按公式排出延伸段计划SO(不受库存约束),供第二遍取"接下来要卖多少"——补货看前瞻需求,不看被大促放大的近4周 */
+      const planSO=[],planIdx={};
+      (function(){
+        const win1=win.slice(); let anchor1=anchor;
+        fwExt.forEach(function(p,i){
+          if(p<=fwNow[fwNow.length-1])return;
+          const w=F.periodW(p); const k=keX[w]!=null?keX[w]:(kd[w]!=null?kd[w]:1); let so1;   // 手工系数优先(与今年段 kBase 同口径)
+          if(lc&&lc.eolSI&&p>lc.eolSI){ anchor1=anchor1*rho; so1=Math.max(0,anchor1); }
+          else if(bl.base!=null&&bl.conf!=='low'){ so1=Math.max(0,bl.base*Math.pow(1+(bl.delta||0),i)*k*g*carryX); }   // 承接今年拍数比例
+          else { let s1=0; win1.forEach(function(v){s1+=v;}); const avg1=win1.length?s1/win1.length:0; so1=Math.max(0,avg1*k*g); }
+          if(lc&&lc.eolSO&&p>lc.eolSO)so1=0;
+          planIdx[p]=planSO.length; planSO.push(so1);
+          win1.push(so1); while(win1.length>4)win1.shift();
+          if(!(lc&&lc.eolSI&&p>lc.eolSI))anchor1=so1||anchor1;
+        });
+      })();
+      (function(){ const q=F.quantizeSeq(planSO,rStep); for(let q4=0;q4<planSO.length;q4++)planSO[q4]=q[q4]; })();   // 累计取整:5 台倍数且总量不丢
+      /* 明年手工拍数进第一遍计划(2026-09-02 第二轮审计 R4):此前只在 budgetRowsOv 里改月 SO 数字、SI 冻结在基表,
+         于是拍高被 inv+si 压回(基表 SI=0 的月整月归零、5 个月甚至低于不拍时的基表),拍低则 SI 照旧进货、库存累到 DOS 944 天。
+         现在:手拍月的 SO 按周权重拆进计划,承接月按「连续手拍段合计 Σ拍值÷Σ基表值」(拍 0 不承接),第二遍的补货规则据此重排;
+         手拍 SI 的月固定不走规则(均摊到该月各周),手拍 SO 高于可售且该月未手拍 SI 时当月进货补足。 */
+      const soTapP={},siFixP={},noteP={};
+      if(ovE)(function(){
+        const byM={},ord=[];
+        fwExt.forEach(function(p){ if(planIdx[p]==null)return; const ym=ymKeyOf(p);
+          if(!byM[ym]){ byM[ym]=[]; ord.push(ym); } byM[ym].push(p); });
+        let carryR=1,segOv=0,segRaw=0,inSeg=false;
+        ord.forEach(function(ym){
+          const ps=byM[ym]; const e=ovE[ym];
+          let base=0; ps.forEach(function(p){ base+=planSO[planIdx[p]]||0; });
+          if(e&&e.so!=null){
+            inSeg=true; if(base>0){ segOv+=e.so; segRaw+=base; }
+            const al=F.distribute(e.so,ps.map(function(p){ return planSO[planIdx[p]]||0; }),rStep);
+            ps.forEach(function(p,k){ planSO[planIdx[p]]=al[k]; soTapP[p]=1; noteP[p]='含手工外推拍数'; });
+          } else {
+            if(inSeg){ inSeg=false; if(state.cfg.carryTaps!==false&&segRaw>0&&segOv>0)carryR=Math.max(0.2,Math.min(5,segOv/segRaw)); segOv=0; segRaw=0; }
+            if(carryR!==1&&base>0){
+              const al=F.distribute(F.round5(base*carryR,rStep),ps.map(function(p){ return planSO[planIdx[p]]||0; }),rStep);   /* 同上:月合计先取到步长,distribute 才能让每周都是 5 的倍数 */
+              ps.forEach(function(p,k){ planSO[planIdx[p]]=al[k]; noteP[p]='承接拍数比例'; });
+            }
+          }
+          if(e&&e.si!=null){
+            const al=F.distribute(e.si,ps.map(function(){ return 1; }),rStep);
+            ps.forEach(function(p,k){ siFixP[p]=al[k]; noteP[p]=(noteP[p]?noteP[p]+';':'')+'含手工外推拍数'; });
+          }
+        });
+      })();
+      const fwdAt=function(j){ let s=0,c=0; for(let q3=j;q3<planSO.length&&c<8;q3++){ s+=planSO[q3]; c++; } return c?s/c/7:0; };
+      fwExt.forEach(function(p,i){
+        if(p<=fwNow[fwNow.length-1])return;   // 已含在今年段
+        let so=planSO[planIdx[p]];   // 第二遍:计划SO 来自第一遍
+        const jP=planIdx[p];
+        const dFwdE=fwdAt(jP);       // 前瞻需求(本周起 8 周计划SO日均)
+        const dNx=dFwdE>0?dFwdE:((bl.base!=null&&bl.base>0)?bl.base/7:0);
+        let si=0;
+        const siFx=siFixP[p];
+        const noAuto=(function(){ const cc=chanClassOf(u); return !!(cc&&cc.cls==='indirect'); })();
+        if(siFx!=null){ si=siFx; }   // 明年手拍 SI:原样固定,不走规则也不受水位/进货能力上限
+        else if(isFsd&&!isIndX&&!(lc&&lc.eolSI&&p>lc.eolSI)){
+          let s=0; win.forEach(function(v){s+=v;});
+          const dailyW=win.length?s/win.length/7:0;
+          const daily=dFwdE>0?dFwdE:((bl.base!=null&&bl.base>0&&bl.conf!=='low')?bl.base/7:dailyW);   // 前瞻需求优先(接下来要卖多少),再平销,再滚动均值
+          const dos=daily>0?(inv-so)/daily:null;
+          if(daily>0&&dos!=null&&dos<params.trigger){
+            si=Math.max(0,F.round5(params.target*daily-(inv-so),rStep)||0);
+            /* 延伸年年末收官:10/11/12 月底按默认梯度粗约束 */
+            const m=F.monthOfP(p);
+            const capD=capDefX[m];
+            if(capD!=null&&daily>0){
+              const capInv=capD*daily+so-inv;
+              if(capInv<si)si=Math.max(0,F.round5(Math.max(0,capInv),rStep)||0);
+            }
+          }
+        } else if(likeRetail&&buyAutoOf(u)&&!(lc&&lc.eolSI&&p>lc.eolSI)){
+          /* 下游/音频延伸段:与今年段同款,按渠道学习策略补货(水位型/DOS门槛型;2026-09-01 拍板,原为零补货) */
+          const pre2=inv-so;
+          let sR=0; win.forEach(function(v){sR+=v;});
+          const dailyR=win.length?sR/win.length/7:0;
+          const dRule=dFwdE>0?dFwdE:((bl.base!=null&&bl.base>0&&bl.conf!=='low')?bl.base/7:dailyR);   // 前瞻需求优先(接下来要卖多少),再平销,再滚动均值
+          if(polR.type==='inv'){
+            if(dRule>0&&pre2<=polR.triggerInv){
+              let tgt=polR.targetInv;
+              if(polR.targetDos!=null)tgt=Math.min(tgt,polR.targetDos*dRule*1.5);
+              si=Math.max(0,F.round5(tgt-pre2,rStep)||0);
+            }
+          } else {
+            if(dRule>0&&(pre2/dRule)<polR.trigger)si=Math.max(0,F.round5(polR.target*dRule-pre2,rStep)||0);
+          }
+          /* 延伸年全年:按历史月末画像"月末补到位"——高于画像不进,低于画像按到月末剩余周数均摊补上 */
+          const mY=F.monthOfP(p);
+          const eY=(tyP&&tyP.m[mY]&&tyP.m[mY].dos!=null)?tyP.m[mY]:((yepR&&yepR.m[mY])?yepR.m[mY]:null);   // 今年画像优先,缺月才用多年历史画像
+          if(eY&&dRule>0){
+            const pe=F.monthEndPeriodOf(F.periodY(p),mY);
+            const dMe0=planIdx[pe]!=null?fwdAt(planIdx[pe]+1):0;
+            const dMe=dMe0>0?dMe0:dRule;   // 月末水平按月末之后的前瞻需求折算
+            let level=null;
+            const dosC=(nlX&&nlX.dos>0&&eY.dos!=null)?Math.max(nlX.dos*0.6,Math.min(nlX.dos*1.15,eY.dos)):eY.dos;   // 画像按平销水位夹紧(上限 1.15,2026-09-02:不平白无故压货)
+            const unitLike=(tyP&&tyP.m[mY])||(yepR&&yepR.src==='unit');
+            if(polR.type==='inv'&&unitLike&&eY.inv!=null){
+              level=nlX?Math.min(eY.inv,nlX.inv*1.15):eY.inv; if(dosC!=null)level=Math.min(level,dosC*dMe*1.15);
+            } else if(dosC!=null)level=dosC*dMe;
+            if(level!=null){ const ceil=nlX&&nlX.dos>0?nlX.dos*1.15*dMe:((yepR&&yepR.medDos!=null&&yepR.medDos>0)?yepR.medDos*1.2*dMe:null); if(ceil!=null&&level>ceil)level=ceil; }
+            if(level!=null&&nlX&&level>nlX.inv*1.15)level=nlX.inv*1.15;
+            if(level!=null){
+              const remain=Math.max(1,F.weekIndex(pe)-F.weekIndex(p)+1);
+              const allow=level+so*remain-inv;
+              if(si>allow)si=Math.max(0,F.round5(Math.max(0,allow),rStep)||0);
+              const short=allow-si;
+              if(short>0)si+=Math.max(0,F.round5(short/remain,rStep)||0);
+            }
+          }
+        }
+        if(siFx==null&&nlX&&si>0&&dNx>0){   // 正常经营水位:进货后库存不超 min(平销库存×1.5, 平销DOS×1.5×需求),至少留 30 天需求
+          const ceilN=Math.max(Math.min(nlX.inv*1.15,nlX.dos*1.15*dNx),dNx*30);   // 延伸段水位上限 1.15(此前 1.5 让明年库存无故抬高)
+          const room=ceilN-(inv-so); if(si>room)si=Math.max(0,F.round5(Math.max(0,room),rStep)||0);
+        }
+        if(siFx==null&&siCap!=null&&si>siCap)si=Math.max(0,F.round5(siCap,rStep)||0);   // 渠道从没吃过的量,客户也不会有预算
+        let nt=noteP[p]||'';
+        let covQ=0;
+        if(soTapP[p]&&siFx==null&&so>inv+si&&!(lc&&lc.eolSI&&p>lc.eolSI)){   // 手拍 SO 高于可售:当月进货补足(与今年段同口径;SI 也手拍时不动)
+          covQ=F.ceilStep(so-(inv+si),rStep); si=si+covQ; if(nt.indexOf('进货补足')<0)nt=(nt?nt+';':'')+'手拍SO高于可售:进货补足';
+        }
+        so=Math.min(so,inv+si);   // 库存硬约束(下游/音频恒生效;FSD 单池口径同样成立)
+        inv=inv+si-so;
+        win.push(so); while(win.length>4)win.shift();
+        if(!(lc&&lc.eolSI&&p>lc.eolSI))anchor=so||anchor;
+        if(p<=lastOutP)wk.push({p:p,so:so,si:si,inv:inv,note:nt,cov:covQ});   // 超出 endYear 的周只用于前瞻,不出行
+      });
+      const resU=mkMonthRows(metaX,wk);
+      __budUnitCache.set(ck,{sig:sig,wk:wk,it:it,meta:metaX,ovSig:ovSig,res:resU,rg:__rrpGen});
+      emitRows(resU);
+    });
+  });
+  /* 新品规划:直接用新品引擎的长窗口结果 rowsLong(与新品页/看板同一份参数;此前这里用固定 60/90、增速 1 重跑,跨年会断口) */
+  if(state.newProducts.length&&Dn){
+    const lastPB=F.mkPeriod(endYear,F.weeksInISOYear(endYear));
+    Dn.perNp.forEach(function(pn){
+      const np=pn.np;
+      pn.units.forEach(function(vu){
+        const rowsL=(vu.rowsLong||vu.rows).filter(function(r){ return r.p<=lastPB; });
+        pushMonthRows({line:np.line||'',product:np.name,family:np.family||'',
+          country:vu.country,account:vu.account,src:'新品规划',model:np.name,note:'规划数据(虚拟)'},   // 型号位=产品名(与 npDx 一致)
+          rowsL.map(function(r){ return {p:r.p,so:r.so,si:r.si,inv:r.inv}; }));
+      });
+    });
+  }
+  /* 整表没有任何单元变化 → 直接复用上次拼好的数组;只有少数单元变化且行数不变 → 复制上次数组再替换那几段
+     (2026-09-02 性能:拍数/粘贴时每次重拼数万行,占每格 3ms) */
+  const prevB=__budRowsCache[endYear];
+  if(prevB&&prevB.seq.length===seq.length){
+    const diff=[];
+    for(let i=0;i<seq.length;i++)if(seq[i]!==prevB.seq[i])diff.push(i);
+    if(!diff.length)return prevB.rows;
+    let sameShape=true;
+    for(let k=0;k<diff.length;k++){ if(seq[diff[k]].rows.length!==prevB.seq[diff[k]].rows.length){ sameShape=false; break; } }
+    if(sameShape&&diff.length*8<seq.length){
+      const out=prevB.rows.slice(); out.__cov={};
+      Object.keys(prevB.rows.__cov||{}).forEach(function(k2){ out.__cov[k2]=prevB.rows.__cov[k2]; });
+      const offs=new Array(seq.length); let acc=0;
+      for(let i=0;i<seq.length;i++){ offs[i]=acc; acc+=seq[i].rows.length; }
+      diff.forEach(function(i){ const res=seq[i]; const off=offs[i];
+        for(let j=0;j<res.rows.length;j++){ out[off+j]=res.rows[j];
+          if(res.cov[j]>0)out.__cov[off+j]=res.cov[j]; else delete out.__cov[off+j]; } });
+      budCacheEvict(endYear); __budRowsCache[endYear]={seq:seq,rows:out};
+      return out;
+    }
+  }
+  for(let i=0;i<seq.length;i++){ const res=seq[i]; const off=rows.length;
+    for(let j=0;j<res.rows.length;j++){ rows.push(res.rows[j]); if(res.cov[j]>0)rows.__cov[off+j]=res.cov[j]; } }
+  budCacheEvict(endYear); __budRowsCache[endYear]={seq:seq,rows:rows};
+  return rows;
+}
+const BUDGET_HEADERS=['产品线BU','产品(软件名)','预算名(传播名)','产品系族','国家','渠道','数据源',
+  '年','季度','月','SO(台)','SI要货(台)','月末库存(台)','RRP(本币)','SO金额(本币)','SI金额(本币)','备注','型号'];
+async function exportBudgetBase(){
+  const stx=retailStore||store||audioStore;
+  if(!stx){ alert('尚未载入底表数据。'); return; }
+  const curY=F.periodY(stx.maxPeriod);
+  const endYear=confirm('预算底表覆盖到「明年('+(curY+1)+')年底」？\n确定 = 到 '+(curY+1)+' 年底（预算口径）\n取消 = 只到 '+curY+' 年底')?curY+1:curY;
+  const rows=budgetRowsOv(endYear);   // 含明年手工外推拍数(备注列有标)
+  if(!rows.length){ alert('没有可导出的推演数据。'); return; }
+  let nRrp=0; rows.forEach(function(r){ if(r[13]!=='')nRrp++; });
+  const guide=[
+    ['预算底表使用说明（SUMIFS 对接预算表）'],
+    [''],
+    ['1. 粒度：每行 = 渠道×产品×月。你的预算表按 BU×传播名×国家×季度 汇总，用 SUMIFS 拉取：'],
+    ['   SO Q1(千台) = SUMIFS(底表!K:K, 底表!C:C,$B3, 底表!E:E,$C3, 底表!H:H,2027, 底表!I:I,"Q1") / 1000'],
+    ['   SI Q1(千台) = SUMIFS(底表!L:L, 底表!C:C,$B3, 底表!E:E,$C3, 底表!H:H,2027, 底表!I:I,"Q1") / 1000'],
+    ['   （C 列=预算名(传播名)，与预算表 B 列逐字一致——在设置页「RRP 价格与预算名」维护映射）'],
+    ['2. 季度末库存(千台) = SUMIFS(底表!M:M, 同维度, 底表!J:J,该季末月) / 1000（3/6/9/12 月）——预算表 DOS 冲减公式所需。'],
+    ['3. 年底库存 = 12 月的月末库存。'],
+    ['4. 口径：'+curY+' 年剩余月份 = 软件看板同款推演（含你的手工改写与拍数）；'+(endYear>curY?(endYear+' 年 = 平销引擎外推（平销×漂移×周季节×大盘增速）+ 补货规则续跑（FSD 源,含 10/11/12 月底收官粗约束）；低置信单元延伸段用近4周均,备注列有标注。'):'')],
+    ['5. FSD 源库存为渠道总库存单池口径（库存变化 = SI − SO,ST 为内部转移）；下游/音频为零补货消化口径（分月模拟拍数除外）。'],
+    ['6. SO金额/SI金额 = 量 × RRP(本币),仅作参考——正式收入请沿用预算表 NSIP 公式链(RRP→去税→去渠长→负向投入→汇率)。'],
+    ['7. 本次导出：'+rows.length+' 行 · RRP 已填 '+nRrp+' 行 · 覆盖至 '+endYear+' 年底 · 新品规划行备注为「规划数据(虚拟)」。'],
+    ['8. 建议在预算表中用 数据-刷新 前先整表替换本底表 sheet,保持列位不变。']
+  ];
+  const qv=F.budgetQuarterPivot(rows,endYear);
+  guide.push(['9. 「财经Q表」sheet = 直接按你的经营数据表输入块透视好的结果(BU×传播名×国家 → '+(endYear-1)+'年年底库存/SO Q1-Q4/SI Q1-Q4/年底库存/年底DOS/RRP,千台一位小数,权威口径剔下游明细与FSD源音频行,含新品规划;年底DOS=年底库存÷(12月SO÷12月天数=周数×7))——可整块粘贴或 VLOOKUP;要自己 SUMIFS 就用「底表」的 H 列(年)+I 列(季度 Q1-Q4)。']);
+  if(SHELL&&SHELL.saveXlsx){
+    const res=await saveXlsxHooked({name:'预算底表-'+endYear+'.xlsx',
+      sheets:[{name:'财经Q表',rows:[qv.headers].concat(qv.rows)},{name:'底表',rows:[BUDGET_HEADERS].concat(rows)},{name:'使用说明',rows:guide}]});
+    if(res&&res.ok)alert('预算底表已导出（财经Q表 '+qv.rows.length+' 行 + 底表 '+rows.length+' 行 + 使用说明）：'+res.path);
+    else if(res&&!res.canceled)alert('导出失败: '+(res.error||''));
+  } else {
+    exportTableRaw('预算底表-'+endYear,BUDGET_HEADERS,rows);
+  }
+}
+

@@ -1,0 +1,82 @@
+/* ===== 唯一写入口(2026-09-04 看板收敛 阶段2)=====
+   所有 单元×周 的手拍都经 planWrite 写袋:负责来源前缀、撤销栈、增量重算范围;调用方只管 UI。
+   w={src,key(单元键),bag:'ovSO'|'ovSI',p,val(null=清除)} → {key,scope};随后 planCommit(scope) 增量重算+重绘。 */
+function planWrite(w){
+  const bag=state[w.bag]; if(!bag)return null;
+  const key=ovKey(w.src,w.key);
+  const und=[undoTakeOv(w.bag,key,w.p)];
+  if(w.val==null){ if(bag[key]){ delete bag[key][w.p]; if(!Object.keys(bag[key]).length)delete bag[key]; } }
+  else (bag[key]=bag[key]||{})[w.p]=w.val;
+  pushUndo(und);
+  return {key:key,scope:unitScope(w.src,[w.key])};
+}
+/* 增量重算范围:默认只算这些单元;同产品挂了锁量则退回产品级(锁量在型号内把单元耦合在一起)——与推演编辑 scopeOf 同规则 */
+function unitScope(src,keys){
+  const Dx=dxOfSrc(src); const pm={},um={};
+  keys.forEach(function(k){ um[k]=1;
+    const it=Dx?(Dx.byKey?Dx.byKey.get(k):(Dx.list||[]).find(function(x){ return x.u.key===k; })):null;
+    if(it)pm[mkNorm(it.u.product)]=1; });
+  let locked=false;
+  Object.keys(state.lockQty||{}).forEach(function(mk){ if(locked)return; const L=state.lockQty[mk]; if(!L||!L.on||!(+L.total>0))return;
+    const ix=mk.indexOf('||'); if(pm[mkNorm(ix>=0?mk.slice(0,ix):mk)])locked=true; });
+  return locked?{products:pm,npAll:src==='np'}:{products:pm,units:um,npAll:src==='np'};
+}
+function planCommit(scope){ computeAll({light:true,scope:scope}); render(); }
+/* 手拍键体检(D12):不带前缀的键里,哪些其实是下游/音频单元(推演读不到),哪些 FSD 与下游/音频同名两可 */
+function ovKeyAudit(){
+  const out={stray:[],dual:[]};
+  [['ovSO',state.ovSO],['ovSI',state.ovSI],['ovTail',state.ovTail]].forEach(function(b){
+    Object.keys(b[1]||{}).forEach(function(k){
+      if(k.indexOf('|')>=0)return;   // r| / a| / NP| 已带前缀
+      const inF=!!(store&&store.units.has(k)),inR=!!(retailStore&&retailStore.units.has(k)),inA=!!(audioStore&&audioStore.units.has(k));
+      const n=Object.keys(b[1][k]||{}).length;
+      if(!inF&&(inR||inA))out.stray.push({key:k,bag:b[0],owner:inR?'下游':'音频',src:inR?'retail':'audio',n:n});
+      else if(inF&&(inR||inA))out.dual.push({key:k,bag:b[0],owner:'FSD+'+(inR?'下游':'音频'),n:n});
+    });
+  });
+  return out;
+}
+function retailDetailHtml(it){
+  const u=it.u;
+  const hist=u.periods.slice(-8);
+  const fw=Dr.fw;
+  let h='<div class="panel" style="margin-top:12px"><h3>'+esc(u.account)+' · '+esc(u.product)+' ('+esc(u.model)+')'
+    +(u.audio?' <span class="chip audio">音频·人工报量</span>':'')
+    +' <span class="chip" title="预测所用周系数层">系数层:'+esc(it.kl.label)+'</span>'
+    +'</h3><div class="note" style="margin-bottom:6px">零补货情景：未来 Purchase 默认为 0（仅消化、不补货）。Purchase 与 SO 单元格均可点击编辑，清空即恢复公式值。</div>'
+    +'<div id="retailChart" style="margin-bottom:8px"></div>';
+  h+='<div class="tblwrap"><table class="grid"><thead><tr><th class="met">指标</th>';
+  hist.forEach(function(p){ h+='<th class="wk hist">'+F.weekLabel(p)+'<div class="d">'+F.weekRangeLabel(p)+'</div></th>'; });
+  fw.forEach(function(p,i){ h+='<th class="wk'+(i===0?' futStart':'')+'">'+F.weekLabel(p)+'<div class="d">'+F.weekRangeLabel(p)+'</div></th>'; });
+  h+='</tr></thead><tbody>';
+  h+='<tr><td class="met">Purchase 进货</td>';
+  hist.forEach(function(p){ h+='<td class="hist">'+F.fmt(u.weeks.get(p).si)+'</td>'; });
+  fw.forEach(function(p,i){ const r=it.sim.rows[i]; const ov=r.buySrc==='override';
+    h+='<td class="'+(i===0?'futStart':'')+(ov?' ov':'')+'" contenteditable data-kind="rsi" data-p="'+p+'">'+F.fmt(r.buy)+'</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">SO 零售</td>';
+  hist.forEach(function(p){ const norep=u.audio&&it.cur.lastSOP!=null&&p>it.cur.lastSOP;
+    h+=norep?'<td class="hist norep" title="音频未报量">未报</td>':'<td class="hist">'+F.fmt(u.weeks.get(p).so)+'</td>'; });
+  fw.forEach(function(p,i){ const f=it.fc[i]; const r=it.sim.rows[i];
+    const cls=f.src==='override'?' ov':((f.src==='avg'||f.src==='tail')?' fill':'');
+    const tip=({ref:'参考去年同周',avg:'近4周均值×周系数',tail:'自然收尾:近4周均量平推',override:'手工改写',noso:'无动销'}[f.src]||'')
+      +(r&&r.capped?'（受库存约束,计划 '+F.fmt(r.soPlan)+' → 实际可售 '+F.fmt(r.so)+'）':'');
+    h+='<td class="'+(i===0?'futStart':'')+cls+'" contenteditable data-kind="rso" data-p="'+p+'" title="'+tip+'">'+F.fmt(r?r.so:f.so)+'</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">INV 渠道库存</td>';
+  hist.forEach(function(p){ h+='<td class="hist">'+F.fmt(u.weeks.get(p).inv)+'</td>'; });
+  fw.forEach(function(p,i){ const r=it.sim.rows[i];
+    h+='<td class="'+(i===0?'futStart':'')+'">'+F.fmt(r.inv)+'</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">DOS</td>';
+  hist.forEach(function(p){ h+='<td class="hist muted">'+F.fmt(u.weeks.get(p).dos)+'</td>'; });
+  fw.forEach(function(p,i){ const r=it.sim.rows[i]; const inf=r.inv>0&&r.dos==null;
+    h+='<td'+dosRiskClsOct(r.dos,false,inf)+' style="'+(i===0?'border-left:2px solid var(--accent)':'')+'">'+(inf?'∞':F.fmt(r.dos))+'</td>'; });
+  h+='</tr></tbody></table></div>'
+    +'<div class="legend"><span><i style="background:var(--hist)"></i>历史(底表)</span>'
+    +'<span><i style="background:var(--ov)"></i>手工改写</span>'
+    +'<span><i style="background:var(--fill)"></i>近4周均值×周系数</span>'
+    +'<span>历史DOS=底表DOS1原值;未来DOS=推演（高库存视角: ≥150 黄 ≥200 红）</span></div></div>';
+  return h;
+}
+

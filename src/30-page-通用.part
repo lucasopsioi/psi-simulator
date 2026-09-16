@@ -1,0 +1,9 @@
+/* ===== 通用:可编辑单元格绑定 ===== */
+function bindEditable(root,handler){
+  root.querySelectorAll('td[contenteditable]').forEach(function(td){
+    td.addEventListener('keydown',function(e){ if(e.key==='Enter'){e.preventDefault();td.blur();} });
+    td.addEventListener('blur',function(){
+      if(td.dataset.orig!=null&&td.textContent===td.dataset.orig)return;   // 未改动不提交
+      handler(td); });
+  });
+}

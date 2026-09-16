@@ -1,0 +1,390 @@
+/* ===== FSD ⇄ 下游 对账面板(2026-09-10 看板收敛 阶段4d:从下游清单搬到渠道架构——连线与类型在哪改,对账就在哪看,闭环最短)。
+   逻辑原文搬家,一行未改;门禁按「行多重集守恒」断言搬家前后一行不丢。 */
+function reconPanelHtml(showAudio){
+  let h='';
+  /* FSD ⇄ 下游 对账(2026-09-02 用户口径:FSD=直接渠道加总=总量,下游=其拆分 → Σ下游SO≈FSD SO;FSD总库存≈INV1+Σ下游库存) */
+  const rcWin=state.ui.rcWin||8;
+  const rec=F.reconcileFsdRetail(store,retailStore,{weeks:rcWin,skipAudio:!showAudio,types:chanTypesMap(),tree:chanTreeMap()});   // 类型/连线按 国家×产业 生效(产业层>默认层)
+  const recRows=rec.rows.filter(function(r){ return state.ui.rcOkShow||r.status!=='OK'; });
+  const pct=function(v){ return v==null?'—':((v>0?'+':'')+Math.round(v*100)+'%'); };
+  const sgn=function(v){ return v==null?'—':((v>0?'+':'')+F.fmt(Math.round(v))); };
+  const stChip=function(s){ const cls=s==='OK'?'auto':(s==='注意'?'pend':(s==='异常'?'gapc':'base')); return '<span class="chip '+cls+'">'+s+'</span>'; };
+  const rs=rec.sum;
+  h+='<div class="panel" id="rcRecon"><h3>FSD ⇄ 下游 对账 <span class="note">口径:FSD=直接渠道加总(总量),下游=其拆分 → Σ下游SO 应≈ FSD SO;FSD总库存(Inventory) 应≈ FSD自有库存(Inventory1)+Σ下游库存 · 粒度 国家×产品 · 窗口=两表共同有数的最近 '+rec.window.length+' 周'+(rec.lastP?'(至 '+F.weekLabel(rec.lastP)+',库存取该周)':'')+(showAudio?'':' · 音频不对账(报量制)')+'</span></h3>'
+    +'<div class="bar">'+[4,8,13,26].map(function(n2){ return '<button class="'+(rcWin===n2?'act':'ghost')+' mini" data-rcwin="'+n2+'">'+n2+'周</button>'; }).join('')
+    +'<label class="note"><input type="checkbox" id="rcOkShow"'+(state.ui.rcOkShow?' checked':'')+'> 显示对得上的行</label>'
+    +'<button class="ghost" id="btnExportRecon">导出对账表</button>'
+    +(rs?'<span class="note">OK '+rs.counts.OK+' · 注意 '+rs.counts['注意']+' · <b'+(rs.counts['异常']?' style="color:var(--warn)"':'')+'>异常 '+rs.counts['异常']+'</b> · 缺下游 '+rs.counts['缺下游']+' · 缺FSD '+rs.counts['缺FSD']+' · 直达 '+(rs.counts['直达']||0)
+      +' ｜ 两边都有的 '+rs.nBoth+' 项合计:SO FSD '+F.fmt(rs.fsdSO)+' vs 下游 '+F.fmt(rs.dsSO)+'('+pct(rs.pSO)+') · 库存 FSD '+F.fmt(rs.fsdInv)+' vs INV1+下游 '+F.fmt(rs.inv1+rs.dsInv)+'('+pct(rs.pInv)+')</span>':'<span class="note" style="color:var(--warn)">两表没有共同有数的周,无法对账(检查下游底表的周次是否与 FSD 重叠)</span>')
+    +'</div>';
+  if(recRows.length){
+    h+='<div class="tblwrap" style="max-height:34vh"><table class="sortable"><thead><tr><th class="l">状态</th><th class="l">国家</th><th class="l">产品</th><th title="FSD直接渠道单元数 / 下游渠道单元数">单元 FSD/下游</th>'
+      +'<th title="窗口内带下游型(分销)直接渠道的 SO 合计;直达消费者型(运营商/电商/自营/零售)不与下游对,另标 +直达">FSD SO(带下游)</th><th title="窗口内下游各渠道 SO 合计">Σ下游SO</th><th title="下游−FSD">差</th><th>差%</th>'
+      +'<th title="最近共同周 FSD Inventory(渠道总库存)">FSD总库存</th><th title="FSD Inventory1(直接渠道自有)">FSD自有INV1</th><th title="下游各渠道库存合计">Σ下游库存</th><th>INV1+下游</th><th title="(INV1+下游)−FSD总库存">差</th><th>差%</th></tr></thead><tbody>';
+    recRows.forEach(function(r){
+      h+='<tr><td class="l">'+stChip(r.status)+'</td><td class="l">'+esc(r.country)+'</td><td class="l ell" title="'+esc(r.product)+'">'+esc(r.product)+'</td><td>'+r.nFsd+' / '+r.nDs+'</td>'
+        +'<td>'+F.fmt(r.fsdSO)+(r.directSO?'<span class="muted" title="直达消费者型直接渠道(运营商/电商/自营/零售)的 SO,不与下游对账;类型在「渠道架构」页改">+直达'+F.fmt(r.directSO)+'</span>':'')+'</td><td>'+F.fmt(r.dsSO)+'</td><td>'+sgn(r.dSO)+'</td><td'+(r.pSO!=null&&Math.abs(r.pSO)>0.15?' style="color:var(--warn)"':'')+'>'+pct(r.pSO)+'</td>'
+        +'<td>'+(r.fsdInv!=null?F.fmt(r.fsdInv):'—')+'</td><td>'+(r.inv1!=null?F.fmt(r.inv1):'—')+'</td><td>'+(r.dsInv!=null?F.fmt(r.dsInv):'—')+'</td><td>'+(r.invSum!=null?F.fmt(r.invSum):'—')+'</td><td>'+sgn(r.dInv)+'</td><td'+(r.pInv!=null&&Math.abs(r.pInv)>0.15?' style="color:var(--warn)"':'')+'>'+pct(r.pInv)+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+  } else if(rec.rows.length) h+='<div class="note">全部 '+rec.rows.length+' 项都在 ±5% 内(勾「显示对得上的行」查看)。</div>';
+  if(rec.byDirect&&rec.byDirect.length){
+    const bd=rec.byDirect.filter(function(r){ return state.ui.rcOkShow||(r.status!=='OK'&&r.status!=='直达'); });
+    h+='<h3 style="margin-top:10px">按直接渠道细分 <span class="note">按「渠道架构」页的连线(产业层>默认层)把下游归到上游:每个 国家×产业×分销型直接渠道 的 SO/库存 对 它名下下游的 Σ;直达渠道连了同名行的按同一家核对(库存只算一次),没连的不对账;未连线的下游与连到「国家FSD合计」的单列</span></h3>';
+    if(bd.length){
+      h+='<div class="tblwrap" style="max-height:30vh"><table class="sortable"><thead><tr><th class="l">状态</th><th class="l">国家</th><th class="l">产业</th><th class="l">直接渠道</th><th class="l">类型</th><th>下游数</th><th>FSD SO</th><th>Σ下游SO</th><th>差</th><th>差%</th><th>FSD总库存</th><th>INV1</th><th>Σ下游库存</th><th>INV1+下游</th><th>差</th><th>差%</th></tr></thead><tbody>';
+      bd.forEach(function(r){
+        const sigD=(r.fsdInv!=null&&r.inv1!=null&&r.fsdInv>0)?(r.inv1/r.fsdInv):null;
+        const hintD=(r.type==='dist'&&!r.nDs&&sigD!=null&&sigD>=0.95&&r.fsdInv>=20)?'疑似直达':((r.type&&r.type!=='dist'&&r.type!=='unwired'&&r.type!=='country'&&sigD!=null&&sigD<0.8&&(r.fsdInv-r.inv1)>=20)?'疑似有下游':null);
+        h+='<tr><td class="l">'+stChip(r.status)+'</td><td class="l">'+esc(r.country)+'</td><td class="l">'+esc(r.line||'')+'</td><td class="l ell" title="'+esc(r.account+(r.children.length?' ← '+r.children.join(' / '):''))+'">'+esc(r.account)+'</td><td class="l">'+esc(CHAN_TYPE_LABEL[r.type]||r.type||'')+(r.mirror?'<span class="muted" title="直达渠道连了间接表里的同名行=同一家,按同一家核对,库存只算一次">(同名下游)</span>':'')+(hintD?' <span class="chip '+(hintD==='疑似直达'?'pend':'gapc')+'" title="按 总库存 vs INV1 识别;到「渠道架构」页改类型">'+hintD+'</span>':'')+'</td><td>'+((r.type==='dist'||r.mirror)?r.nDs:'—')+'</td>'
+          +'<td>'+(r.nFsd?F.fmt(r.fsdSO):'—')+'</td><td>'+F.fmt(r.dsSO)+'</td><td>'+(r.nFsd?sgn(r.dSO):'—')+'</td><td'+(r.pSO!=null&&Math.abs(r.pSO)>0.15?' style="color:var(--warn)"':'')+'>'+pct(r.pSO)+'</td>'
+          +'<td>'+(r.fsdInv!=null?F.fmt(r.fsdInv):'—')+'</td><td>'+(r.inv1!=null?F.fmt(r.inv1):'—')+'</td><td>'+(r.dsInv!=null?F.fmt(r.dsInv):'—')+'</td><td>'+(r.invSum!=null?F.fmt(r.invSum):'—')+'</td><td>'+(r.nFsd?sgn(r.dInv):'—')+'</td><td'+(r.pInv!=null&&Math.abs(r.pInv)>0.15?' style="color:var(--warn)"':'')+'>'+pct(r.pInv)+'</td></tr>';
+      });
+      h+='</tbody></table></div>';
+    } else h+='<div class="note">按直接渠道全部在 ±5% 内(勾「显示对得上的行」查看)。</div>';
+  }
+  h+='<div class="note">差异常见来源:下游少导了渠道(缺下游/下游SO偏低)、直达消费者型直接渠道没标类型(FSD SO 含直达)、下游没连线到正确的上游、周次口径不一致、Inventory1 未导。锁量对下游的约束用的就是这套口径:下游Purchase ≤ 上游直接渠道自有库存INV1 + 锁量余量。</div></div>';
+  return h;
+}
+function bindReconPanel(el,showAudio){
+  const rcWin=state.ui.rcWin||8;
+  const rec=F.reconcileFsdRetail(store,retailStore,{weeks:rcWin,skipAudio:!showAudio,types:chanTypesMap(),tree:chanTreeMap()});
+  el.querySelectorAll('button[data-rcwin]').forEach(function(b){ b.onclick=function(){ state.ui.rcWin=+b.dataset.rcwin; render(); }; });
+  const okChk=$('#rcOkShow'); if(okChk)okChk.onchange=function(){ state.ui.rcOkShow=this.checked; render(); };
+  const expRec=$('#btnExportRecon'); if(expRec)expRec.onclick=function(){
+    const headers=['状态','国家','产品','FSD单元','下游单元','窗口周数','FSD SO','Σ下游SO','差(下游−FSD)','差%','FSD总库存','FSD自有INV1','Σ下游库存','INV1+下游','差','差%','库存取数周'];
+    const data=rec.rows.map(function(r){ return [r.status,r.country,r.product,r.nFsd,r.nDs,rec.window.length,r.fsdSO,r.dsSO,r.dSO,r.pSO!=null?Math.round(r.pSO*1000)/10:'',
+      r.fsdInv!=null?r.fsdInv:'',r.inv1!=null?r.inv1:'',r.dsInv!=null?r.dsInv:'',r.invSum!=null?r.invSum:'',r.dInv!=null?r.dInv:'',r.pInv!=null?Math.round(r.pInv*1000)/10:'',rec.lastP?F.weekLabel(rec.lastP):'']; });
+    exportTable('FSD-下游对账',headers,data);
+  };
+}
+function renderChanTree(elOpt){
+  const el=elOpt||$('#view-chantree');
+  const cs=chanCountries();
+  if(!cs.length){ el.innerHTML='<div class="panel">尚未载入数据 —— 先在「数据」页载入 FSD 底表与下游渠道底表。</div>'; return; }
+  if(!state.ui.ctC||cs.indexOf(state.ui.ctC)<0)state.ui.ctC=cs[0];
+  const c=state.ui.ctC;
+  const lines=chanLinesOf(c);
+  if(state.ui.ctL&&lines.indexOf(state.ui.ctL)<0)state.ui.ctL='';
+  const line=state.ui.ctL||'';
+  const a=chanArchOf(c,line);
+  const lay=chanLayout(a);
+  /* 凑数推荐(2026-09-02 用户):上游缺口(SO 与 总库存−INV1,减去已连下游)刚好等于某几家未连线下游 → 橙色虚线推荐,点「采纳」即连 */
+  const wiredMap={}; a.ds.forEach(function(d){ if(d.parent!=null)wiredMap[d.account]=d.parent; });
+  const typeMap={}; a.direct.forEach(function(d){ typeMap[d.account]=d.type; });
+  const tol=state.ui.ctTol||0.15;
+  let sug=[]; try{ sug=F.suggestWiring(store,retailStore,{country:c,line:line,weeks:state.ui.rcWin||8,tol:tol,maxK:3,wired:wiredMap,types:typeMap}); }catch(e){ sug=[]; }
+  const sugOf={}; sug.forEach(function(s){ s.ds.forEach(function(d){ sugOf[d]=s; }); });
+  const nWired=a.ds.filter(function(d){ return d.parent!=null&&d.parent!=='*'; }).length;
+  const nStar=a.ds.filter(function(d){ return d.parent==='*'; }).length;
+  const nUn=a.ds.length-nWired-nStar;
+  const nHint=a.direct.filter(function(d){ return d.hintKind==='direct'; }).length;
+  const nOwn=line?a.ds.filter(function(d){ return d.parentSrc==='line'; }).length:0;
+  const nInh=line?a.ds.filter(function(d){ return d.parentSrc==='default'; }).length:0;
+  let h='<style>#ctSvg{user-select:none;touch-action:none} #ctSvg g.ctHover rect{stroke:var(--accent)!important;stroke-width:3!important} #ctSvg g[data-ct-ds]:hover rect,#ctSvg g[data-ct-dir]:hover rect{stroke-width:2!important}</style>'
+    +'<div class="panel"><h3>渠道架构 · 连线 <span class="note">口径:Acme国家公司 → 直接渠道(=直签渠道,FSD 底表的账户) → 下游渠道(间接零售伙伴底表) → 消费者。直接渠道分两类:<b>带下游</b>(分销,下面挂间接伙伴)与<b>直达消费者</b>(无下游:零售/运营商/电商/自营)。直达渠道若在间接零售伙伴表里也出现同名一行(如 Amazon),把那一行连到它 = <b>同一家</b>(镜像,不是下游伙伴):对账按同一家核对、库存只算一次。没连同名行的直达渠道不与下游对账、锁量也不给它算下游。连线和类型可<b>按产业单独设</b>,没单独设的产业沿用「全部产业」默认。用途:①下游渠道页对账按直接渠道细分 ②锁量对下游的约束取上游直接渠道自有库存 INV1。</span></h3>'
+    +'<div class="bar">国家 '+cs.map(function(x){ return '<button class="'+(x===c?'act':'ghost')+' mini" data-ctc="'+esc(x)+'">'+esc(x)+'</button>'; }).join('')
+    +'<span style="border-left:1px solid var(--line);margin:0 6px"></span>产业 <button class="'+(!line?'act':'ghost')+' mini" data-ctl="" title="默认层:对所有产业生效,除非该产业单独设过">全部产业(默认)</button>'
+    +lines.map(function(x){ const own=(state.chanTreeLine[c]&&state.chanTreeLine[c][x]&&Object.keys(state.chanTreeLine[c][x]).length)||(state.chanTypeLine[c]&&state.chanTypeLine[c][x]&&Object.keys(state.chanTypeLine[c][x]).length); return '<button class="'+(line===x?'act':'ghost')+' mini" data-ctl="'+esc(x)+'" title="'+(own?'该产业有专属连线/类型':'沿用默认')+'">'+esc(x)+(own?' ●':'')+'</button>'; }).join('')+'</div>'
+    +'<div class="bar">'
+    +'<button class="ghost" id="ctAuto" title="下游渠道的原名/简称与某个直接渠道名互相包含且唯一命中时自动连上(不覆盖已有连线;写入当前层)">按名称自动连线</button>'
+    +'<button class="ghost" id="ctDetect" title="按数据识别直达消费者:带下游型、类型是猜的、总库存≈INV1(≥95%)且没连下游 → 设为直达·零售;识别结果先在节点/表格里标「疑似直达」,点此一键采纳(写入当前层)">按数据识别直达</button>'
+    +'<button class="ghost" id="ctAllStar" title="把当前层所有未连线的下游一次连到「国家FSD合计」">未连线→FSD合计</button>'
+    +'<button class="ghost" id="ctClear">'+(line?'清空本产业专属设置(回到默认)':'清空本国默认连线')+'</button>'
+    +'<button class="ghost" id="ctExport">导出连线表(全部)</button>'
+    +'<button class="ghost" id="ctImportBtn">粘贴导入连线</button>'
+    +'<span class="note">直接渠道 '+a.direct.length+'(带下游 '+a.direct.filter(function(d){ return d.type==='dist'; }).length+' · 直达 '+a.direct.filter(function(d){ return d.type!=='dist'; }).length+(nHint?' · <b style="color:var(--warn)">疑似直达 '+nHint+'</b>':'')+') · 下游 '+a.ds.length+' · 连到直接渠道 '+nWired+' · 连到FSD合计 '+nStar+' · <b'+(nUn?' style="color:var(--warn)"':'')+'>未连线 '+nUn+'</b>'+(line?' · 本产业专属 '+nOwn+' / 沿用默认 '+nInh:'')+'</span></div>'
+    +'<div class="note"><b>拖动连线</b>:按住右列的下游渠道拖到左列的直接渠道(或「国家FSD合计」)松手即连,反过来从直接渠道拖到下游也行;拖到空白处松手=取消;节点右上角 × 断开'+(line?'(本产业断开=该产业明确不连;要回到默认用下面表格的「沿用默认」)':'')+';节点上的 带下游/直达 小钮一键切换类型;橙色虚线=凑数推荐(见下方),点节点上的「采纳」即连。下面表格里也能用下拉批量改。连线随方案保存。</div>'
+    +(state.ui.ctImport?'<div class="bar"><textarea id="ctImportTa" rows="4" style="width:60%" placeholder="每行:下游渠道名\t上游(直接渠道名 / * 国家FSD合计 / - 本产业不连) → 写入当前国家+当前产业;带国家列(国家\t下游\t上游)写默认层;四列(国家\t产业\t下游\t上游)写该产业;可直接粘「导出连线表」"></textarea><button class="act" id="ctImportDo">导入</button><button class="ghost" id="ctImportCancel">取消</button></div>':'');
+  /* SVG:Acme → 直接渠道 → 下游 → Consumers,按 chanLayout 分组排布 */
+  const NW=210,NH=46,GAP=10,X0=20,X1=300,X2=640,X3=930,TOP=40;
+  const rowsN=lay.rows;
+  const H=TOP+rowsN*(NH+GAP)+30, W=X3+140;
+  const yAt=function(r){ return TOP+r*(NH+GAP); };
+  const typeColor={dist:'#3f7fd4',retail:'#8a63c9',operator:'#e0a030',online:'#2fa37a',own:'#c0504d'};
+  const ell=function(s,k){ s=String(s||''); return s.length>k?s.slice(0,k-1)+'…':s; };
+  const dirMap={}; a.direct.forEach(function(d){ dirMap[d.account]=d; });
+  let svg='<svg id="ctSvg" width="'+W+'" height="'+H+'" style="display:block;font-family:inherit">'
+    +'<defs><marker id="ctArrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="var(--sub)"/></marker></defs>';
+  /* 分组底色 */
+  lay.blocks.forEach(function(b){ svg+='<rect x="'+(X1-8)+'" y="'+(yAt(b.r0)-5)+'" width="'+(X2+NW+16-(X1-8))+'" height="'+((b.r1-b.r0+1)*(NH+GAP)-GAP+10)+'" rx="10" fill="'+(b.loose?'var(--warn)':'var(--line)')+'" opacity="'+(b.loose?0.07:0.16)+'"/>'; });
+  const hx=X0,hy=TOP+Math.max(0,(rowsN*(NH+GAP)-GAP-NH)/2);
+  svg+='<rect x="'+hx+'" y="'+hy+'" width="'+NW+'" height="'+NH+'" rx="6" fill="#c00000" stroke="#000"/><text x="'+(hx+NW/2)+'" y="'+(hy+NH/2+4)+'" text-anchor="middle" font-size="12" font-weight="bold" fill="#fff">ACME '+esc(c)+(line?' · '+esc(line):'')+'</text>';
+  lay.order.forEach(function(d){ const y=yAt(lay.dirRow[d.account]); const col=typeColor[d.type]||'#3f7fd4';
+    svg+='<path d="M'+(hx+NW)+' '+(hy+NH/2)+' C '+(hx+NW+40)+' '+(hy+NH/2)+', '+(X1-40)+' '+(y+NH/2)+', '+X1+' '+(y+NH/2)+'" fill="none" stroke="var(--sub)" stroke-width="1"/>';
+    svg+='<g data-ct-dir="'+esc(d.account)+'" data-px="'+(X1+NW)+'" data-py="'+(y+NH/2)+'" style="cursor:grab"><rect x="'+X1+'" y="'+y+'" width="'+NW+'" height="'+NH+'" rx="6" fill="var(--card)" stroke="'+col+'" stroke-width="1.2"/>'
+      +'<circle cx="'+(X1+NW)+'" cy="'+(y+NH/2)+'" r="5" fill="'+col+'"/>'
+      +'<text x="'+(X1+8)+'" y="'+(y+18)+'" font-size="12" font-weight="bold" fill="var(--fg)">'+esc(ell(d.account,19))+'</text>'
+      +'<text x="'+(X1+8)+'" y="'+(y+36)+'" font-size="10" fill="var(--sub)">'+esc(CHAN_TYPE_LABEL[d.type]||d.type)+(d.typeSrc==='guess'?'(猜)':(line&&d.typeSrc==='default'?'(默认)':''))+' · SO/周 '+Math.round(d.so4)+' · INV1 '+F.fmt(d.inv1)+(d.type==='dist'?' · 下游 '+d.children.length:' · 直达消费者'+(d.children.length?' · 同名下游 '+d.children.length:''))+(d.hint?' · <tspan fill="var(--warn)">'+(d.hintKind==='direct'?'疑似直达':'疑似有下游')+'</tspan>':'')+'</text>'
+      +'<title>'+esc(d.account+(d.raw.length?' / '+d.raw.join(' / '):'')+(d.hint?'\n'+d.hint:''))+'</title></g>'
+      +'<g data-ct-toggle="'+esc(d.account)+'" style="cursor:pointer"><rect x="'+(X1+NW-44)+'" y="'+(y+3)+'" width="40" height="14" rx="7" fill="'+(d.type==='dist'?'#3f7fd4':'#c0504d')+'" opacity="0.9"/><text x="'+(X1+NW-24)+'" y="'+(y+13)+'" text-anchor="middle" font-size="9" fill="#fff">'+(d.type==='dist'?'带下游':'直达')+'</text><title>点击切换:带下游(分销) ⇄ 直达消费者(无下游)'+(line?'(写入本产业)':'')+'</title></g>';
+    if(d.type!=='dist')svg+='<path d="M'+(X1+NW)+' '+(y+NH/2)+' L '+(X3-10)+' '+(y+NH/2)+'" stroke="'+col+'" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#ctArrow)"/>';   // 直达消费者(与带下游的分销平行)
+  });
+  const ys=yAt(lay.starRow);
+  svg+='<g data-ct-dir="*" data-px="'+(X1+NW)+'" data-py="'+(ys+NH/2)+'" style="cursor:grab"><rect x="'+X1+'" y="'+ys+'" width="'+NW+'" height="'+NH+'" rx="6" fill="var(--card)" stroke="var(--sub)" stroke-dasharray="4 3" stroke-width="1"/>'
+    +'<circle cx="'+(X1+NW)+'" cy="'+(ys+NH/2)+'" r="5" fill="var(--sub)"/>'
+    +'<text x="'+(X1+8)+'" y="'+(ys+18)+'" font-size="12" font-weight="bold" fill="var(--fg)">国家FSD合计</text><text x="'+(X1+8)+'" y="'+(ys+36)+'" font-size="10" fill="var(--sub)">说不清归哪个直接渠道时连这里 · '+nStar+' 家</text></g>';
+  a.ds.forEach(function(d){ const y=yAt(lay.dsRow[d.account]);
+    let px=null,py=null,col='var(--sub)';
+    if(d.parent==='*'){ px=X1+NW; py=ys+NH/2; }
+    else if(d.parent!=null&&dirMap[d.parent]){ px=X1+NW; py=yAt(lay.dirRow[d.parent])+NH/2; col=typeColor[dirMap[d.parent].type]||col; }
+    if(px!=null)svg+='<path d="M'+px+' '+py+' C '+(px+60)+' '+py+', '+(X2-60)+' '+(y+NH/2)+', '+X2+' '+(y+NH/2)+'" fill="none" stroke="'+col+'" stroke-width="1.4" opacity="0.9"'+(line&&d.parentSrc==='default'?' stroke-dasharray="5 3"':'')+'/>';
+    const sg=(d.parent==null&&sugOf[d.account]&&lay.dirRow[sugOf[d.account].parent]!=null)?sugOf[d.account]:null;
+    if(sg){ const sy=yAt(lay.dirRow[sg.parent])+NH/2;
+      svg+='<path d="M'+(X1+NW)+' '+sy+' C '+(X1+NW+60)+' '+sy+', '+(X2-60)+' '+(y+NH/2)+', '+X2+' '+(y+NH/2)+'" fill="none" stroke="#e0a030" stroke-width="1.6" stroke-dasharray="7 4" opacity="0.95"><title>'+(sg.mirror?'同一家推荐(直达渠道在间接表里的同名行):':'凑数推荐:')+esc(sg.parent)+' 缺 SO '+F.fmt(sg.needSO)+(sg.invChecked?' / 库存 '+F.fmt(sg.needInv):'')+';候选 '+esc(sg.ds.join(' + '))+' SO '+F.fmt(sg.gotSO)+' / 库存 '+F.fmt(sg.gotInv)+'</title></path>'; }
+    svg+='<g data-ct-ds="'+esc(d.account)+'" data-px="'+X2+'" data-py="'+(y+NH/2)+'" style="cursor:grab"><rect x="'+X2+'" y="'+y+'" width="'+NW+'" height="'+NH+'" rx="6" fill="var(--card)" stroke="'+(d.parent==null?'var(--warn)':'var(--line)')+'" stroke-width="1.2"'+(d.parent==null?' stroke-dasharray="4 3"':'')+'/>'
+      +'<circle cx="'+X2+'" cy="'+(y+NH/2)+'" r="5" fill="'+(d.parent==null?'var(--warn)':col)+'"/>'
+      +'<text x="'+(X2+8)+'" y="'+(y+18)+'" font-size="12" font-weight="bold" fill="var(--fg)">'+esc(ell(d.account,24))+'</text>'
+      +'<text x="'+(X2+8)+'" y="'+(y+36)+'" font-size="10" fill="var(--sub)">SO/周 '+Math.round(d.so4)+' · 库存 '+F.fmt(d.inv)+(d.parent==null?' · <tspan fill="var(--warn)">未连线</tspan>'+(sg?' · <tspan fill="#e0a030">'+(sg.mirror?'疑似同一家 ':'疑似属于 ')+esc(ell(sg.parent,14))+'</tspan>':''):(d.parentMissing?' · <tspan fill="var(--warn)">上游不在FSD表</tspan>':(line?(d.parentSrc==='line'?' · 本产业专属':' · 沿用默认'):'')))+(d.isMirror?' · <tspan fill="var(--sub)">同一家(直达)</tspan>':'')+'</text>'
+      +'<title>'+esc(d.account+(d.raw.length?' / '+d.raw.join(' / '):''))+'</title></g>';
+    if(d.parent!=null)svg+='<g data-ct-unlink="'+esc(d.account)+'" style="cursor:pointer"><circle cx="'+(X2+NW-2)+'" cy="'+(y+2)+'" r="8" fill="var(--warn)"/><text x="'+(X2+NW-2)+'" y="'+(y+6)+'" text-anchor="middle" font-size="11" fill="#fff">×</text><title>断开连线'+(line?'(本产业明确不连)':'')+'</title></g>';
+    if(sg)svg+='<g data-ct-accept="'+esc(d.account)+'" style="cursor:pointer"><rect x="'+(X2+NW-46)+'" y="'+(y+3)+'" width="42" height="14" rx="7" fill="#e0a030"/><text x="'+(X2+NW-25)+'" y="'+(y+13)+'" text-anchor="middle" font-size="9" fill="#fff">采纳</text><title>采纳凑数推荐:连到 '+esc(sg.parent)+(sg.ds.length>1?'(同组 '+esc(sg.ds.join(' + '))+' 一起连)':'')+'</title></g>';
+    svg+='<path d="M'+(X2+NW)+' '+(y+NH/2)+' L '+(X3-10)+' '+(y+NH/2)+'" stroke="var(--line)" stroke-width="1" marker-end="url(#ctArrow)"/>';
+  });
+  svg+='<rect x="'+X3+'" y="'+TOP+'" width="110" height="'+(rowsN*(NH+GAP)-GAP)+'" rx="6" fill="none" stroke="var(--line)"/><text x="'+(X3+55)+'" y="'+(TOP+(rowsN*(NH+GAP)-GAP)/2+4)+'" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--fg)">Consumers</text>';
+  svg+='<text x="'+X1+'" y="'+(TOP-14)+'" font-size="11" fill="var(--sub)">直接渠道(FSD 底表)· 边框色=类型 · 有下游的分销在前,子节点贴着它</text><text x="'+X2+'" y="'+(TOP-14)+'" font-size="11" fill="var(--sub)">下游渠道(间接零售伙伴底表)</text>';
+  svg+='</svg>';
+  h+='<div style="overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px">'+svg+'</div>';
+  const nFree=a.ds.filter(function(d){ return d.parent==null; }).length;
+  h+='<div class="panel" id="ctSug" style="margin-top:8px"><h3>凑数推荐 <span class="note">口径:带下游的直接渠道,其窗口内 SO 与「总库存−INV1」各减去已连下游的合计 = 缺口;在未连线的下游里找 1~3 家组合,SO 与库存两个缺口都在容差内补齐的,画橙色虚线推荐(一家下游只推荐给误差最小的上游,一个上游一条)。直达渠道则找间接表里 SO 与库存都对得上的同名单行(同一家)。窗口=对账窗口 '+(state.ui.rcWin||8)+' 周;库存缺口 ≤0 时只按 SO 凑且候选不能带明显库存。</span>'
+    +' <label class="note">容差 <select id="ctTol" class="mkIn" style="width:auto">'+[0.05,0.1,0.15,0.25].map(function(v){ return '<option value="'+v+'"'+(Math.abs(tol-v)<1e-9?' selected':'')+'>'+Math.round(v*100)+'%</option>'; }).join('')+'</select></label>'
+    +(sug.length?' <button class="act mini" id="ctSugAll">全部采纳('+sug.length+')</button>':'')+'</h3>';
+  if(sug.length){
+    h+='<div class="tblwrap" style="max-height:26vh"><table><thead><tr><th class="l">上游</th><th>缺口 SO</th><th>缺口库存</th><th class="l">候选下游</th><th>候选 SO</th><th>候选库存</th><th>误差 SO / 库存</th><th></th></tr></thead><tbody>';
+    sug.forEach(function(s,i){ h+='<tr><td class="l">'+esc(s.parent)+'</td><td>'+F.fmt(s.needSO)+'</td><td>'+(s.invChecked?F.fmt(s.needInv):'<span class="muted" title="上游 总库存−INV1−已连下游库存 ≤0,库存无法核对,只按 SO 凑">—</span>')+'</td><td class="l">'+esc(s.ds.join(' + '))+(s.mirror?' <span class="muted" title="直达渠道在间接零售伙伴表里出现的同名行,连上=同一家,不是下游伙伴">(同一家)</span>':'')+'</td><td>'+F.fmt(s.gotSO)+'</td><td>'+F.fmt(s.gotInv)+'</td><td>'+Math.round(s.errSO*100)+'% / '+(s.errInv!=null?Math.round(s.errInv*100)+'%':'—')+'</td><td><button class="mini act" data-ct-sug="'+i+'">采纳</button></td></tr>'; });
+    h+='</tbody></table></div>';
+  } else h+='<div class="note">当前没有能凑上的组合'+(nFree?'(未连线下游 '+nFree+' 家;可放宽容差再看,或先把明显的连上再看剩余缺口)':'(没有未连线的下游)')+'。</div>';
+  h+='</div>';
+  h+='<div class="bar" style="align-items:flex-start;gap:16px;flex-wrap:wrap">';
+  h+='<div style="flex:1;min-width:440px"><h3>直接渠道('+a.direct.length+')</h3><div class="tblwrap" style="max-height:32vh"><table><thead><tr><th class="l">直接渠道</th><th class="l">类型'+(line?'(本产业)':'')+'</th><th class="l" title="按数据识别:直达消费者的渠道总库存(Inventory)≈自有库存(INV1);带下游型却 INV1≈总库存 且没连下游 → 疑似直达;标了直达却总库存≫INV1 → 疑似有下游">识别</th><th>产品数</th><th>SO/周</th><th>总库存</th><th>INV1</th><th>下游数</th></tr></thead><tbody>';
+  lay.order.forEach(function(d){ h+='<tr><td class="l" title="'+esc(d.raw.join(' / '))+'">'+esc(d.account)+'</td><td class="l"><select class="mkIn ctType" data-acct="'+esc(d.account)+'" style="width:auto">'+(line?'<option value=""'+(d.typeSrc!=='line'?' selected':'')+'>(沿用默认:'+esc(CHAN_TYPE_LABEL[chanTypeEff(c,d.account,'')]||'')+')</option>':'')+CHAN_TYPES.map(function(tp){ return '<option value="'+tp[0]+'"'+((line?d.typeSrc==='line':true)&&d.type===tp[0]?' selected':'')+'>'+tp[1]+'</option>'; }).join('')+'</select>'+(d.typeSrc==='guess'?'<span class="muted" title="按名称猜的(猜不出=分销),可改">·猜</span>':'')+'</td>'
+    +'<td class="l">'+(d.hint?'<span class="chip '+(d.hintKind==='direct'?'pend':'gapc')+'" title="'+esc(d.hint)+'">'+(d.hintKind==='direct'?'疑似直达':'疑似有下游')+'</span>':'<span class="muted">—</span>')+'</td>'
+    +'<td>'+Object.keys(d.products).length+'</td><td>'+Math.round(d.so4)+'</td><td>'+F.fmt(d.inv)+'</td><td>'+F.fmt(d.inv1)+'</td><td>'+(d.type==='dist'?d.children.length:(d.children.length?d.children.length+'<span class="muted">(同名)</span>':'<span class="muted">直达消费者</span>'))+'</td></tr>'; });
+  h+='</tbody></table></div></div>';
+  h+='<div style="flex:1;min-width:440px"><h3>下游渠道('+a.ds.length+')</h3><div class="tblwrap" style="max-height:32vh"><table><thead><tr><th class="l">下游渠道</th><th class="l">上游'+(line?'(本产业)':'')+'</th><th>产品数</th><th>SO/周</th><th>库存</th></tr></thead><tbody>';
+  const dsSorted=a.ds.slice().sort(function(x,y){ return lay.dsRow[x.account]-lay.dsRow[y.account]; });
+  dsSorted.forEach(function(d){
+    const ownV=line?((chanTreeLineOf(c,line)||{})[d.account]):undefined;   // 产业层原值('-'=不连)
+    h+='<tr><td class="l" title="'+esc(d.raw.join(' / '))+'">'+esc(d.account)+'</td><td class="l"><select class="mkIn ctParent" data-ds="'+esc(d.account)+'" style="width:auto;max-width:280px">'
+      +(line?'<option value=""'+(ownV==null?' selected':'')+'>(沿用默认:'+esc(chanParentOf(c,d.account,'')==null?'未连线':(chanParentOf(c,d.account,'')==='*'?'国家FSD合计':chanParentOf(c,d.account,'')))+')</option><option value="-"'+(ownV==='-'?' selected':'')+'>本产业不连</option>':'<option value=""'+(d.parent==null?' selected':'')+'>(未连线)</option>')
+      +'<option value="*"'+((line?ownV==='*':d.parent==='*')?' selected':'')+'>国家FSD合计</option>'
+      +a.direct.map(function(x){ return '<option value="'+esc(x.account)+'"'+((line?ownV===x.account:d.parent===x.account)?' selected':'')+'>'+esc(x.account)+'</option>'; }).join('')
+      +(d.parentMissing?'<option value="'+esc(d.parent)+'" selected>'+esc(d.parent)+'(不在FSD表)</option>':'')
+      +'</select></td><td>'+Object.keys(d.products).length+'</td><td>'+Math.round(d.so4)+'</td><td>'+F.fmt(d.inv)+'</td></tr>'; });
+  h+='</tbody></table></div></div></div></div>';
+  el.innerHTML=h;
+  /* 对账面板(阶段4d):连线/类型改完立刻看到对账结果;__reconProbe.noRecon 仅供门禁比对 */
+  if(!(window.__reconProbe&&window.__reconProbe.noRecon)&&store&&retailStore){ el.insertAdjacentHTML('beforeend',reconPanelHtml(!!state.showRetailAudio)); bindReconPanel(el,!!state.showRetailAudio); }
+  el.querySelectorAll('button[data-ctc]').forEach(function(b){ b.onclick=function(){ state.ui.ctC=b.dataset.ctc; state.ui.ctL=''; render(); }; });
+  el.querySelectorAll('button[data-ctl]').forEach(function(b){ b.onclick=function(){ state.ui.ctL=b.dataset.ctl||''; render(); }; });
+  /* 拖动连线(2026-09-02 用户:要拖过去的、直观简洁):按住下游拖到直接渠道/合计节点松手即连;反向亦可;空白处松手取消 */
+  (function(){
+    const svgEl=el.querySelector('#ctSvg'); if(!svgEl)return;
+    let drag=null;
+    const targetAt=function(from,x,y){ const elx=document.elementFromPoint(x,y); if(!elx||!elx.closest)return null;
+      return elx.closest(from==='ds'?'g[data-ct-dir]':'g[data-ct-ds]'); };
+    const setHover=function(g){ if(!drag)return; if(drag.hover&&drag.hover!==g)drag.hover.classList.remove('ctHover'); if(g)g.classList.add('ctHover'); drag.hover=g||null; };
+    const finish=function(commit,x,y){ if(!drag)return; const d=drag; drag=null;
+      const ln=svgEl.querySelector('#ctDragLine'); if(ln)ln.remove();
+      if(d.hover)d.hover.classList.remove('ctHover');
+      svgEl.style.cursor='';
+      const tg=commit?targetAt(d.from,x,y):null; if(!tg)return;
+      const ds=d.from==='ds'?d.key:tg.dataset.ctDs; const par=d.from==='ds'?tg.dataset.ctDir:d.key;
+      if(!ds||!par)return;
+      chanSetParent(c,line,ds,par); recompute(); };
+    svgEl.addEventListener('pointerdown',function(ev){
+      if(ev.button!==0)return;
+      const g=ev.target.closest?ev.target.closest('g[data-ct-ds],g[data-ct-dir]'):null; if(!g)return;
+      if(ev.target.closest('g[data-ct-unlink],g[data-ct-toggle],g[data-ct-accept]'))return;
+      ev.preventDefault();
+      drag={from:g.dataset.ctDs!=null?'ds':'dir',key:g.dataset.ctDs!=null?g.dataset.ctDs:g.dataset.ctDir,px:+g.dataset.px,py:+g.dataset.py,hover:null};
+      try{ svgEl.setPointerCapture(ev.pointerId); }catch(e){}
+      const ln=document.createElementNS('http://www.w3.org/2000/svg','path'); ln.id='ctDragLine';
+      ln.setAttribute('fill','none'); ln.setAttribute('stroke','var(--accent)'); ln.setAttribute('stroke-width','2'); ln.setAttribute('stroke-dasharray','6 4'); ln.style.pointerEvents='none';
+      svgEl.appendChild(ln); svgEl.style.cursor='grabbing';
+    });
+    svgEl.addEventListener('pointermove',function(ev){ if(!drag)return;
+      const r=svgEl.getBoundingClientRect(); const x=ev.clientX-r.left,y=ev.clientY-r.top;
+      const ln=svgEl.querySelector('#ctDragLine');
+      if(ln){ const dx=drag.from==='ds'?-60:60; ln.setAttribute('d','M'+drag.px+' '+drag.py+' C '+(drag.px+dx)+' '+drag.py+', '+(x-dx)+' '+y+', '+x+' '+y); }
+      setHover(targetAt(drag.from,ev.clientX,ev.clientY)); });
+    svgEl.addEventListener('pointerup',function(ev){ finish(true,ev.clientX,ev.clientY); });
+    svgEl.addEventListener('pointercancel',function(){ finish(false); });
+  })();
+  el.querySelectorAll('g[data-ct-toggle]').forEach(function(g){ g.addEventListener('click',function(ev){ ev.stopPropagation(); const acct=g.dataset.ctToggle; chanSetType(c,line,acct,chanTypeEff(c,acct,line)==='dist'?'retail':'dist'); recompute(); }); });
+  el.querySelectorAll('g[data-ct-unlink]').forEach(function(g){ g.addEventListener('click',function(ev){ ev.stopPropagation(); chanSetParent(c,line,g.dataset.ctUnlink,null); recompute(); }); });
+  const acceptSug=function(s){ if(!s)return; s.ds.forEach(function(d){ chanSetParent(c,line,d,s.parent); }); recompute(); };
+  el.querySelectorAll('g[data-ct-accept]').forEach(function(g){ g.addEventListener('click',function(ev){ ev.stopPropagation(); acceptSug(sugOf[g.dataset.ctAccept]); }); });
+  el.querySelectorAll('button[data-ct-sug]').forEach(function(b){ b.onclick=function(){ acceptSug(sug[+b.dataset.ctSug]); }; });
+  const sugAll=$('#ctSugAll'); if(sugAll)sugAll.onclick=function(){ sug.forEach(function(s){ s.ds.forEach(function(d){ chanSetParent(c,line,d,s.parent); }); }); recompute(); };
+  const tolSel=$('#ctTol'); if(tolSel)tolSel.onchange=function(){ state.ui.ctTol=+this.value; render(); };
+  el.querySelectorAll('select.ctParent').forEach(function(s){ s.onchange=function(){ const k=s.dataset.ds,v=s.value;
+    if(line){ if(v==='')chanSetParent(c,line,k,undefined); else if(v==='-')chanSetParent(c,line,k,null); else chanSetParent(c,line,k,v); }
+    else chanSetParent(c,'',k,v||null);
+    recompute(); }; });
+  el.querySelectorAll('select.ctType').forEach(function(s){ s.onchange=function(){ chanSetType(c,line,s.dataset.acct,s.value||null); recompute(); }; });
+  $('#ctAuto').onclick=function(){ const k=chanAutoWire(c,line); alert('自动连线 '+k+' 家(只连名称唯一命中的;已有连线不覆盖)。'); recompute(); };
+  $('#ctDetect').onclick=function(){ const k=chanDetectDirect(c,line); alert(k?('已把 '+k+' 家疑似直达消费者的渠道设为「直达·零售」(总库存≈INV1 且没连下游;手动设过类型的不动)。'):'没有可采纳的识别结果:要么类型都已手动设过,要么总库存与 INV1 不接近。'); recompute(); };
+  $('#ctAllStar').onclick=function(){ a.ds.forEach(function(d){ if(d.parent==null)chanSetParent(c,line,d.account,'*'); }); recompute(); };
+  $('#ctClear').onclick=function(){
+    if(line){ if(!confirm('清空「'+c+' · '+line+'」的专属连线与类型,回到默认?'))return; if(state.chanTreeLine[c])delete state.chanTreeLine[c][line]; if(state.chanTypeLine[c])delete state.chanTypeLine[c][line]; }
+    else { if(!confirm('清空「'+c+'」的默认连线?(各产业的专属设置不动)'))return; delete state.chanTree[c]; }
+    recompute(); };
+  $('#ctExport').onclick=function(){ const data=[];
+    Object.keys(state.chanTree||{}).sort().forEach(function(cc){ const tr=state.chanTree[cc]; Object.keys(tr).sort().forEach(function(ds){ data.push([cc,'',ds,tr[ds],tr[ds]==='*'?'国家FSD合计':'直接渠道']); }); });
+    Object.keys(state.chanTreeLine||{}).sort().forEach(function(cc){ const L=state.chanTreeLine[cc]; Object.keys(L).sort().forEach(function(ln){ const tr=L[ln]; Object.keys(tr).sort().forEach(function(ds){ data.push([cc,ln,ds,tr[ds],tr[ds]==='*'?'国家FSD合计':(tr[ds]==='-'?'本产业不连':'直接渠道')]); }); }); });
+    exportTable('渠道连线表',['国家','产业(空=默认)','下游渠道','上游(直接渠道名/*/-)','说明'],data); };
+  $('#ctImportBtn').onclick=function(){ state.ui.ctImport=!state.ui.ctImport; render(); };
+  const imDo=$('#ctImportDo'); if(imDo)imDo.onclick=function(){
+    const rowsIn=($('#ctImportTa').value||'').split(/\r?\n/); let k2=0,bad=0; const knownBy={};
+    rowsIn.forEach(function(ln0){ const cells=ln0.split('\t').map(function(x){ return x.trim(); }); if(cells.length<2||!cells[0])return;
+      let cc=c,ll=line,ds,par;
+      if(cells.length>=4&&cs.indexOf(cells[0])>=0){ cc=cells[0]; ll=cells[1]; ds=cells[2]; par=cells[3]; }
+      else if(cells.length>=3&&cs.indexOf(cells[0])>=0){ cc=cells[0]; ll=''; ds=cells[1]; par=cells[2]; }
+      else { ds=cells[0]; par=cells[1]; }
+      if(!ds||!par)return;
+      if(!knownBy[cc]){ knownBy[cc]={}; chanArchOf(cc,'').direct.forEach(function(x){ knownBy[cc][x.account]=1; }); }
+      if(par!=='*'&&par!=='-'&&!knownBy[cc][par]){ bad++; return; }
+      if(par==='-'&&!ll){ bad++; return; }
+      chanSetParent(cc,ll,ds,par==='-'?null:par); k2++; });
+    state.ui.ctImport=false; alert('导入 '+k2+' 条'+(bad?'；'+bad+' 条上游名不在该国 FSD 表里(或默认层用了 -),已跳过':'')+'。'); recompute(); };
+  const imC=$('#ctImportCancel'); if(imC)imC.onclick=function(){ state.ui.ctImport=false; render(); };
+}
+function renderRetail(elOpt){
+  const el=elOpt||$('#view-retail');
+  if(!elOpt){ const c=$('#view-channels'); if(c)c.innerHTML=''; }
+  if(!Dr){ el.innerHTML='<div class="panel">尚未载入下游渠道数据 —— 去「数据」页配置下游渠道底表文件夹，或点击「载入内置演示数据」。</div>'; return; }
+  const showAudio=!!state.showRetailAudio;
+  const vis=Dr.list.filter(function(it){ return showAudio||!it.u.audio; });
+  const audioHidden=Dr.list.length-vis.length;
+  let noMove=0,hi=0,totInv=0,exN=0,ignN=0;
+  vis.forEach(function(it){ if(it.cur.curInv!=null)totInv+=it.cur.curInv;
+    if(it.ignored){ ignN++; return; }
+    if(it.exempt){ exN++; return; }
+    if(it.cur.curInv>0&&it.cur.dosCalc==null)noMove++;
+    if(it.cur.dosCalc!=null&&it.cur.dosCalc>=150)hi++; });
+  const countries=[],chs=[],lines=[];
+  vis.forEach(function(it){ const u=it.u;
+    if(u.country&&countries.indexOf(u.country)<0)countries.push(u.country);
+    if(chs.indexOf(u.account)<0)chs.push(u.account);
+    if(u.line&&lines.indexOf(u.line)<0)lines.push(u.line); });
+  countries.sort();chs.sort();lines.sort();
+  let h='<div class="cards">'
+    +'<div class="kpi"><div class="v">'+vis.length+'</div><div class="t">渠道×产品单元</div></div>'
+    +'<div class="kpi'+(noMove?' warn':'')+'"><div class="v">'+noMove+'</div><div class="t">有库存·零动销</div></div>'
+    +'<div class="kpi'+(hi?' warn':'')+'"><div class="v">'+hi+'</div><div class="t">DOS≥150</div></div>'
+    +'<div class="kpi"><div class="v">'+F.fmt(totInv)+'</div><div class="t">下游总库存</div></div>'
+    +'<div class="kpi"><div class="v">'+exN+' / '+ignN+'</div><div class="t">免推演 / 已豁免</div></div>'
+    +'</div>';
+  /* 对账面板已搬到「渠道架构」(2026-09-10 阶段4d);__reconProbe.withRecon 仅供门禁临时装回比对 */
+  if(window.__reconProbe&&window.__reconProbe.withRecon)h+=reconPanelHtml(showAudio);
+  else h+='<div class="note">FSD ⇄ 下游 对账已移到「渠道架构」页（连线与类型在哪改，对账就在哪看）。<button class="ghost mini" id="rcGoRecon">去看对账</button></div>';
+  h+='<div class="filters">'
+    +msHtml('rcC','国家',countries,state.ui.rcC)
+    +msHtml('rcCh','渠道',chs,state.ui.rcCh)
+    +msHtml('rcL','产品线',lines,state.ui.rcL)
+    +'<input type="text" id="rcQ" placeholder="搜索产品/型号/系列" value="'+esc(state.ui.rcQ)+'">'
+    +'<label class="note"><input type="checkbox" id="rcAudio"'+(showAudio?' checked':'')+'> 显示音频（报量制,下游口径不具参考性'+(audioHidden?'·已隐藏'+audioHidden+'项':'')+'）</label>'
+    +'<button class="ghost" id="btnExportRc">导出列表</button>'
+    +riskBarHtml('retail')
+    +'<span class="note">按当前DOS风险降序 · 点行看周推演 · 最左列勾选风险产品后可导出</span></div>';
+  const rows=vis.filter(function(it){ const u=it.u;
+    if(!msMatch(state.ui.rcC,u.country))return false;
+    if(!msMatch(state.ui.rcCh,u.account))return false;
+    if(!msMatch(state.ui.rcL,u.line))return false;
+    if(state.ui.rcQ){ const q=state.ui.rcQ.toLowerCase();
+      if((u.product+' '+u.model+' '+u.series).toLowerCase().indexOf(q)<0)return false; }
+    return true; });
+  const limit=state.ui.rcLimit||500;
+  h+='<div class="tblwrap" style="max-height:46vh"><table class="sortable"><thead><tr>'
+    +riskThHtml('retail')
+    +'<th class="l">渠道</th><th class="l">国家</th><th class="l">产品线</th><th class="l">产品</th><th class="l">型号</th>'
+    +'<th title="最近'+state.cfg.dosWindow+'个有数周的平均周销(音频跳过未报量周)">近4周均SO</th><th>当前INV</th><th title="当前口径:最新库存 ÷ 最近4个有数周日均SO(音频跳过未报量周)">当前DOS</th><th title="底表 DOS1 原值(音频未报量时会虚高)">底表DOS1</th><th class="l">状态</th></tr></thead><tbody>';
+  rows.slice(0,limit).forEach(function(it){ const u=it.u; const i=Dr.list.indexOf(it);
+    const inf=!it.exempt&&!it.ignored&&it.cur.curInv>0&&it.cur.dosCalc==null;
+    const dim=it.exempt||it.ignored;
+    const ignBtn=it.ignored
+      ?' <button class="mini" data-ign="off" data-i="'+i+'" title="恢复风险监控">恢复</button>'
+      :' <button class="mini" data-ign="on" data-i="'+i+'" title="买断、低量或推演异常等无需跟进的库存：标记后移出风险监控（沉底显示，不计入风险统计）">豁免</button>';
+    h+='<tr data-i="'+i+'"'+(state.ui.retailUnit===u.key?' style="outline:2px solid var(--accent)"':(dim?' style="opacity:.5"':''))+'>'
+      +riskCkHtml('retail',u.key)
+      +'<td class="l" title="'+esc(u.rawNames.join(' / '))+'">'+esc(u.account)+'</td>'
+      +'<td class="l">'+esc(u.country)+'</td>'
+      +'<td class="l">'+esc(u.line)+'</td>'
+      +'<td class="l ell" title="'+esc(u.product+(u.series?' · '+u.series:''))+'">'+esc(u.product)+'</td>'
+      +'<td class="l">'+esc(u.model)+'</td>'
+      +'<td>'+(it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'—')+'</td>'
+      +'<td>'+F.fmt(it.cur.curInv)+'</td>'
+      +'<td'+(dim?'':dosRiskClsOct(it.cur.dosCalc,false,inf))+'>'+(inf?'∞':F.fmt(it.cur.dosCalc))+'</td>'
+      +'<td class="muted">'+F.fmt(it.cur.sysDos)+'</td>'
+      +'<td class="l">'+retailStatusChips(it)+ignBtn+watchBtnHtml('retail',u.key)+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  if(rows.length>limit)
+    h+='<div class="bar"><span class="note">已显示 '+Math.min(limit,rows.length)+' / '+rows.length+' 行</span>'
+      +'<button class="ghost" id="btnRcMore">再显示 500 行</button>'
+      +'<button class="ghost" id="btnRcAll">显示全部</button></div>';
+  const sel=Dr.byKey.get(state.ui.retailUnit);
+  if(sel)h+=retailDetailHtml(sel);
+  el.innerHTML=h;
+  if(sel){ const cp=retailChartParts(sel);
+    renderChartInto($('#retailChart'),cp.xs,cp.series,state.chartSmooth); }
+  bindMs(el,'rcC',function(a){ state.ui.rcC=a; state.ui.rcLimit=500; render(); });
+  bindMs(el,'rcCh',function(a){ state.ui.rcCh=a; state.ui.rcLimit=500; render(); });
+  bindMs(el,'rcL',function(a){ state.ui.rcL=a; state.ui.rcLimit=500; render(); });
+  $('#rcQ').oninput=function(){ state.ui.rcQ=this.value; state.ui.rcLimit=500; render(); };
+  $('#rcAudio').onchange=function(){ state.showRetailAudio=this.checked; state.ui.rcLimit=500; render(); };
+  const rcGo=$('#rcGoRecon'); if(rcGo)rcGo.onclick=function(){ state.ui.tab='chantree'; render(); };
+  if(window.__reconProbe&&window.__reconProbe.withRecon)bindReconPanel(el,showAudio);
+  const more=$('#btnRcMore'); if(more)more.onclick=function(){ state.ui.rcLimit=(state.ui.rcLimit||500)+500; render(); };
+  const allBtn=$('#btnRcAll'); if(allBtn)allBtn.onclick=function(){ state.ui.rcLimit=1e9; render(); };
+  $('#btnExportRc').onclick=function(){
+    const headers=['渠道','原始渠道名','国家','产品线','产品','系列','型号','近4周均SO','当前INV','当前DOS(计算)','底表DOS1','状态'];
+    const data=rows.map(function(it){ const u=it.u;
+      const st=it.ignored?'已豁免':(it.exempt?'免推演':((it.cur.curInv>0&&it.cur.dosCalc==null)?'有库存零动销':''));
+      return [u.account,u.rawNames.join(' / '),u.country,u.line,u.product,u.series,u.model,
+        it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'',it.cur.curInv||0,
+        it.cur.dosCalc!=null?it.cur.dosCalc:((it.cur.curInv>0)?'∞':''),
+        it.cur.sysDos!=null?it.cur.sysDos:'',st]; });
+    exportTable('下游渠道DOS',headers,data);
+  };
+  bindRiskSel(el,'retail',rows.map(function(it){ return it.u.key; }),function(keys){
+    const sel2=keys.map(function(k){ return Dr.byKey.get(k); }).filter(Boolean);
+    const headers=['渠道','原始渠道名','国家','产品线','产品','系列','型号','近4周均SO','当前INV','当前DOS(计算)','底表DOS1','状态'];
+    const data=sel2.map(function(it){ const u=it.u;
+      const st=it.ignored?'已豁免':(it.exempt?'免推演':((it.cur.curInv>0&&it.cur.dosCalc==null)?'有库存零动销':''));
+      return [u.account,u.rawNames.join(' / '),u.country,u.line,u.product,u.series,u.model,
+        it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'',it.cur.curInv||0,
+        it.cur.dosCalc!=null?it.cur.dosCalc:((it.cur.curInv>0)?'∞':''),
+        it.cur.sysDos!=null?it.cur.sysDos:'',st]; });
+    exportTable('下游渠道风险勾选清单',headers,data);
+  });
+  el.querySelectorAll('button[data-ign]').forEach(function(b){
+    b.onclick=function(e){ e.stopPropagation();
+      const it2=Dr.list[+b.dataset.i]; if(!it2)return;
+      if(b.dataset.ign==='on')state.ignored[it2.u.key]=1;
+      else delete state.ignored[it2.u.key];
+      recompute(); };
+  });
+  el.querySelectorAll('tbody tr[data-i]').forEach(function(tr){
+    tr.style.cursor='pointer';
+    tr.onclick=function(){ const it2=Dr.list[+tr.dataset.i]; if(!it2)return;
+      state.ui.retailUnit=it2.u.key; render(); };
+  });
+  bindWatchBtns(el);
+  makeSortable(el);
+  bindUnitWeekTaps(el,'retail',function(){ return state.ui.retailUnit; });
+}
+/* 单元周表单格拍数(下游/音频共用;2026-09-04 看板收敛 阶段1):
+   键必须带源前缀——此前下游页写的是裸键 state.ovSO[u.key],而 recomputeRetail 读 ovKey('retail',u.key),拍了不生效(或串写到同名 FSD 单元);
+   音频页周表标了可编辑却从未绑定事件,输入即丢。历史遗留的裸键见设置页「手拍键体检」。 */
+function bindUnitWeekTaps(el,srcName,keyOf){
+  bindEditable(el,function(td){
+    const kind=td.dataset.kind,p=+td.dataset.p,uk=keyOf();
+    if(!kind||!uk||!(p>0))return;
+    const v=F.parseCellNum(td.textContent);
+    if(v!=null&&v<0){ if(td.dataset.orig!=null)td.textContent=td.dataset.orig; xgFlash('请输入非负数字'); return; }
+    const r=planWrite({src:srcName,key:uk,bag:kind==='rso'?'ovSO':'ovSI',p:p,val:v});
+    planCommit(r.scope);   // 阶段2:单格拍数只重算该单元(同产品有锁量退回产品级),门禁 unitTap 断言 增量==全量
+  });
+}

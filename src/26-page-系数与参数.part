@@ -1,0 +1,250 @@
+/* ===== 系数与参数（四层:产品线/国家×产品线/渠道×产品线/产品线×产品） ===== */
+function coefLayerRows(){
+  const out=[]; const seen={};
+  const push=function(key,group,label,kdef){ if(seen[key])return; seen[key]=1;
+    out.push({key:key,group:group,label:label,kdef:kdef||{}}); };
+  const collect=function(L){ if(!L)return;
+    Object.keys(L.line||{}).sort().forEach(function(k){ push('L|'+k,'产品线',k,L.line[k]); });
+    Object.keys(L.countryLine||{}).sort().forEach(function(k){ push('C|'+k,'国家×产品线',k.replace('|',' · '),L.countryLine[k]); });
+    Object.keys(L.acctProduct||{}).sort().forEach(function(k){ push('CP|'+k,'渠道×产品',k.replace('|',' · '),L.acctProduct[k]); });
+    Object.keys(L.acctLine||{}).sort().forEach(function(k){ push('A|'+k,'渠道×产品线',k.replace('|',' · '),L.acctLine[k]); });
+    Object.keys(L.lineProduct||{}).sort().forEach(function(k){ push('P|'+k,'产品线×产品',k.replace('|',' · '),L.lineProduct[k]); });
+  };
+  collect(D&&D.layers); collect(Dr&&Dr.layers);
+  Object.keys(state.kedit).forEach(function(k){ if(seen[k])return;
+    const isCP=k.indexOf('CP|')===0;
+    const g=isCP?'渠道×产品':({L:'产品线',C:'国家×产品线',A:'渠道×产品线',P:'产品线×产品'}[k[0]]||'其他');
+    push(k,g,k.slice(isCP?3:2).replace(/\|/g,' · '),{}); });
+  return out;
+}
+function renderCoef(elOpt){
+  const el=elOpt||$('#view-coef');
+  if(!elOpt){ const c=$('#view-rules'); if(c)c.innerHTML=''; }
+  if(!D&&!Dr){ emptyHint(el); return; }
+  const snap=snapshotOpenState(el);
+  const fw=(D&&D.fw&&D.fw.length)?D.fw:(Dr?Dr.fw:[]);
+  const rows=coefLayerRows();
+  const q=(state.ui.coefQ||'').toLowerCase();
+  const groups=['渠道×产品','产品线','国家×产品线','渠道×产品线','产品线×产品'];
+  let h='<div class="panel"><h3>每周 SO 系数（默认=去年周销占比指数,均值≈1;分五层,预测取最细可用层:渠道×产品 &gt; 渠道×产品线 &gt; 国家×产品线 &gt; 产品线×产品 &gt; 产品线;渠道×产品层需≥16有数周,3周平滑并与渠道×产品线各半收缩）</h3>'
+    +'<div class="bar"><input type="text" id="coefQ" placeholder="搜索层(渠道/国家/产品线/产品)" value="'+esc(state.ui.coefQ||'')+'">'
+    +'<span class="note">清空单元格=恢复默认。参考去年模式下系数是「相对默认曲线的偏移」:不动=原样参考去年;调高大促周,用该层的所有预测同步放大。每个产品用的是哪层,看推演明细里的「系数层」标签。</span></div>';
+  groups.forEach(function(gname,gi){
+    const grows=rows.filter(function(r){ return r.group===gname&&(!q||r.label.toLowerCase().indexOf(q)>=0); });
+    if(!grows.length)return;
+    h+='<details data-sec="k-'+gi+'"'+(gi===0?' open':'')+' style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:600;padding:4px 0">'+gname+'（'+grows.length+' 行）</summary>'
+      +'<div class="tblwrap" style="max-height:36vh"><table class="grid"><thead><tr><th class="met">'+gname+'</th>';
+    fw.forEach(function(p,i){ h+='<th class="wk'+(i===0?' futStart':'')+'">'+F.weekLabel(p)+'<div class="d">'+F.weekRangeLabel(p)+'</div></th>'; });
+    h+='</tr></thead><tbody>';
+    grows.slice(0,300).forEach(function(r){
+      h+='<tr><td class="met ell" style="max-width:240px" title="'+esc(r.label)+'">'+esc(r.label)+'</td>';
+      fw.forEach(function(p,i){
+        const w=F.periodW(p);
+        const kd=r.kdef[w]!=null?r.kdef[w]:1;
+        const ke=(state.kedit[r.key]||{})[w];
+        const v=ke==null?kd:ke;
+        h+='<td class="'+(i===0?'futStart ':'')+(ke!=null?'ov':'')+'" contenteditable data-key="'+esc(r.key)+'" data-w="'+w+'" title="默认 '+kd+'">'+v+'</td>';
+      });
+      h+='</tr>';
+    });
+    h+='</tbody></table></div>'+(grows.length>300?'<div class="note">仅显示前300行,请用搜索。</div>':'')+'</details>';
+  });
+  h+='</div>';
+  const lines=[];
+  (D?D.list:[]).concat(Dr?Dr.list:[]).forEach(function(it){ if(it.u.line&&lines.indexOf(it.u.line)<0)lines.push(it.u.line); });
+  lines.sort();
+  (function(){
+    const L=window.__calcLog||{runs:[]}; const s=L.runs[0];
+    h+='<div class="panel"><h3>本轮计算过程 <span class="muted">(参数/口径变更全链路重算;推演编辑拍数只重算被拍产品的单元,其余复用——门禁逐单元比对与全量一致)</span></h3>';
+    if(!s){ h+='<div class="note">尚未计算。</div></div>'; return; }
+    const mb=window.__mbLast;
+    h+='<div class="note">'
+      +'单元:FSD '+s.units.fsd+' · 下游 '+s.units.retail+' · 音频 '+s.units.audio
+      +' ｜ 周系数层:渠道×产品 '+s.layers.cp+' / 渠道×产品线 '+s.layers.a+' / 国家×产品线 '+s.layers.c+' / 产品线×产品 '+s.layers.p+' / 产品线 '+s.layers.l
+      +' ｜ 补货策略(下游+音频):水位型 '+s.pol.inv+' · DOS型 '+s.pol.dos+' · 渠道×产业聚合 '+s.pol.acctLine+' · 线默认 '+s.pol.none
+      +' ｜ 月末画像:自身 '+(s.yep.unit||0)+' · 渠道×产业 '+(s.yep.acctLine||0)+' · 产业去年 '+(s.yep.line||0)+' · 无 '+(s.yep.none||0)
+      +' ｜ 正常经营水位已识别 '+s.nl+' 单元 · 进货能力上限 '+s.siCap+' 单元 · 拍数承接中 '+s.carry+' 单元 · 一次性铺货待审视 '+s.oneshot
+      +'<br>耗时: FSD '+s.ms.fsd+'ms · 下游 '+s.ms.retail+'ms · 音频 '+s.ms.audio+'ms'+(s.light?' · (拍数轻量重算,跳过目标/新品/未映射)':(' · 目标 '+s.ms.targets+'ms · 新品 '+s.ms.newprod+'ms · 未映射 '+s.ms.unmapped+'ms'))
+      +' · 合计 '+s.total+'ms'+(L.tapMs!=null?(' ｜ 最近一次拍数→重算→重绘 '+L.tapMs+'ms'):'')
+      +((s.inc&&s.inc.scoped)?(' ｜ 增量重算:只算被拍产品 → 重算 '+s.inc.computed+' 单元 · 复用 '+s.inc.reused+' 单元'):'')
+      +(mb?('<br>模型回测台最近结果: 平销引擎 WMAPE '+(mb.wmA*100).toFixed(1)+'% vs 参考去年 '+(mb.wmB*100).toFixed(1)+'%('+mb.n+' 单元,'+mb.ms+'ms)'):'<br>模型回测台(下方)尚未运行——点「运行回测」用去年数据做 holdout 检验,结果会显示在这里。')
+      +'</div></div>';
+  })();
+  h+='<div class="panel"><h3>补货参数（回退链:渠道×型号自身策略(判型:水位/DOS) > 同渠道×同产业聚合(DOS中位,同渠道各产业策略不同不拉齐) > 本面板产品线默认——三源同用触发/补到目标;<b>下游/音频全年各月按回测的历史月末画像模拟(回测表「月末画像」列),不吃下方年末收官梯度,FSD 直签才走梯度;三源单周进货≤该渠道历史单周最大×1.2</b>;一次性铺货渠道停自动补待审视;判型与采用值见「补货规律回测」模拟策略列）</h3>'
+    +'<table style="min-width:0"><thead><tr><th class="l">产品线</th><th>触发线 DOS&lt;</th><th>补到目标 DOS</th><th>下游目标 DOS</th></tr></thead><tbody>';
+  lines.forEach(function(line){ const p=lineParamsOf(line);
+    h+='<tr><td class="l">'+esc(line)+(F.isAudioLine(line)?' <span class="chip audio">音频</span>':'')+'</td>'
+      +'<td><input type="number" data-line="'+esc(line)+'" data-f="trigger" value="'+p.trigger+'"></td>'
+      +'<td><input type="number" data-line="'+esc(line)+'" data-f="target" value="'+p.target+'"></td>'
+      +'<td><input type="number" data-line="'+esc(line)+'" data-f="downTarget" value="'+p.downTarget+'"></td></tr>'; });
+  h+='</tbody></table></div>';
+  /* ---- 补货规律回测:历史 SI 节奏显性化(触发/补到水位 + 一次性铺货警示) ---- */
+  h+='<div class="panel"><h3>补货规律回测（全量 渠道×型号 历史 SI 节奏）'
+    +' <button class="ghost" id="btnRunBT" style="margin-left:8px">运行回测</button>'
+    +' <button class="ghost" id="btnExpBT" style="display:none">导出 Excel</button></h3>'
+    +'<div class="note">回测口径：显著进货 = 单周 SI ≥ 2×近4周均销；「触发DOS/触发库存」= 历史补货发生时刻的水位中位数（该渠道实际补货习惯）；'
+    +'「补到DOS」= 补货后水位中位数。<b>一次性铺货</b> = 上市铺完（≤2 次显著 SI）后 ≥'+(state.cfg.tailWeeks||12)+' 周再无补货但仍在动销——'
+    +'非流水生意模式，需警惕（不是正常 2C 补货节奏）。学习到的策略（≥3 次事件,先判型再取中位）已自动用于 FSD 的 SI 推演与下游/音频的 Purchase 推演(含明年延伸段)。</div>'
+    +'<div id="btHost"><span class="note">点击「运行回测」开始计算（全量数据本机秒级完成）。</span></div></div>';
+  /* ---- 模型回测台:平销引擎 vs 现行模型,多核并行 Holdout ---- */
+  h+='<div class="panel"><h3>模型回测台（平销引擎 vs 现行·参考去年）'
+    +' <button class="ghost" id="btnRunMB" style="margin-left:8px">运行回测</button></h3>'
+    +'<div class="note">Holdout 滚动回测：每个有效历史 ≥26 周的单元取至多 3 个截断点（近13周 / 近26周 / 去年大促段 W40），'
+    +'只用截断前的历史分别驱动两个模型预测其后 13 周，与实际逐周对比。WMAPE = Σ|预测−实际| ÷ Σ实际（按销量加权，越低越准）；偏差为正 = 系统性高估。'
+    +'计算按机器核数并行（Web Worker），结果含分产品线细分与误差最大单元清单。'
+    +'<b>切换纪律：平销引擎需优于现行模型 10% 以上才建议切为默认。</b></div>'
+    +'<div id="mbHost"><span class="note">点击「运行回测」开始（多核并行，全量数据预计数秒）。</span></div></div>';
+  /* ---- 平销体检:平销引擎对全量单元的识别结果显性化 ---- */
+  (function(){
+    const all=[];
+    [[D,'FSD'],[Dr,'下游'],[Da,'音频专表']].forEach(function(pair){
+      if(!pair[0])return;
+      pair[0].list.forEach(function(it){ if(it.bl)all.push({src:pair[1],it:it}); });
+    });
+    if(!all.length)return;
+    let nH=0,nM=0,nL=0;
+    all.forEach(function(x){ const c=x.it.bl.conf;
+      if(c==='high')nH++; else if(c==='mid')nM++; else nL++; });
+    all.sort(function(a,b){ return (b.it.bl.base||0)-(a.it.bl.base||0); });
+    const CONF_LAB={high:'高',mid:'中',low:'低',none:'无'};
+    h+='<div class="panel"><h3>平销体检（平销引擎识别结果 · 高置信 '+nH+' / 中 '+nM+' / 低或无 '+nL+'）'
+      +' <button class="ghost" id="btnExpBL" style="margin-left:8px">导出 Excel</button></h3>'
+      +'<div class="note">平销周销 b̂ = 剔除 首销期('+state.cfg.blHead+'周)/尾部衰退段/大促周(国家周历∪周系数&gt;'+state.cfg.blKappa+')/缺货周(低库存且低销双条件) 后的中位数；'
+      +'漂移 = Theil-Sen 稳健斜率(周环比,限幅 −3%~+1%)。低置信单元建议维持原推演方式。'
+      +'「按平销推演」在待确认板/推演明细页逐产品启用；下游/音频可在设置页全局切换预测基准。</div>'
+      +'<div class="tblwrap" style="max-height:44vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">源</th><th class="l">国家</th><th class="l">渠道</th><th class="l">产品</th><th class="l">型号</th>'
+      +'<th title="平销周销中位数">平销b̂</th><th title="周环比漂移">漂移%/周</th><th>置信</th><th title="平销样本周数/有效周数">样本</th>'
+      +'<th title="剔除明细:首销/促销/缺货/衰退">剔除(首/促/缺/衰)</th><th title="对照:近4周均SO">近4周均</th></tr></thead><tbody>';
+    all.slice(0,800).forEach(function(x){ const u=x.it.u,b=x.it.bl;
+      h+='<tr><td class="l">'+x.src+'</td><td class="l">'+esc(u.country)+'</td>'
+        +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+'</td>'
+        +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+        +'<td class="l">'+esc(u.model)+'</td>'
+        +'<td><b>'+(b.base!=null?b.base:'—')+'</b></td>'
+        +'<td>'+(b.delta?((b.delta>0?'+':'')+(b.delta*100).toFixed(1)):'0')+'</td>'
+        +'<td>'+(CONF_LAB[b.conf]||'—')+'</td>'
+        +'<td>'+b.n+'/'+b.nAll+'</td>'
+        +'<td class="num">'+b.excl.launch+'/'+b.excl.promo+'/'+b.excl.oos+'/'+b.excl.tail+'</td>'
+        +'<td>'+(x.it.cur.avgWeeklySO!=null?Math.round(x.it.cur.avgWeeklySO):'—')+'</td></tr>'; });
+    h+='</tbody></table></div>';
+    if(all.length>800)h+='<div class="note">仅显示前 800 行,完整结果请导出。</div>';
+    h+='</div>';
+    window.__blRows=all;
+  })();
+  el.innerHTML=h;
+  const expBL=$('#btnExpBL');
+  if(expBL)expBL.onclick=function(){
+    const headers=['源','国家','渠道','产品','型号','平销b̂','漂移%/周','置信','样本周','有效周','剔除首销','剔除促销','剔除缺货','剔除衰退','近4周均SO'];
+    const CONF_LAB={high:'高',mid:'中',low:'低',none:'无'};
+    const data=(window.__blRows||[]).map(function(x){ const u=x.it.u,b=x.it.bl;
+      return [x.src,u.country,u.account,u.product,u.model,
+        b.base!=null?b.base:'',b.delta?+(b.delta*100).toFixed(2):0,CONF_LAB[b.conf]||'',
+        b.n,b.nAll,b.excl.launch,b.excl.promo,b.excl.oos,b.excl.tail,
+        x.it.cur.avgWeeklySO!=null?Math.round(x.it.cur.avgWeeklySO):'']; });
+    exportTable('平销体检',headers,data);
+  };
+  restoreOpenState(el,snap);
+  const runMB=$('#btnRunMB');
+  if(runMB)runMB.onclick=function(){ runModelBacktest($('#mbHost')); };
+  const runBT=$('#btnRunBT');
+  if(runBT)runBT.onclick=function(){
+    const t0=performance.now();
+    const out=[];
+    [[store,'FSD',function(){return D;}],[retailStore,'下游',function(){return Dr;}],[audioStore,'音频专表',function(){return Da;}]].forEach(function(pair){
+      if(!pair[0])return;
+      const Dx=pair[2]();
+      pair[0].units.forEach(function(u){
+        const rs=F.replenishStats(u,state.cfg);
+        if(rs.mode==='none'&&!rs.n)return;
+        const it=Dx&&Dx.byKey?Dx.byKey.get(u.key):null;
+        const base=(it&&it.bl&&it.bl.base!=null)?it.bl.base:null;
+        const isF=pair[1]==='FSD'&&!isIndirectUnit(u);   // FSD 间接渠道走下游同款学习链,按下游口径显示
+        const l2=isF?learnOfCached(u):null;
+        out.push({src:pair[1],u:u,rs:rs,ramp:F.rampOf(u,base,state.cfg),
+          pol:isF?(l2?{type:'dos',trigger:l2.trigger,target:l2.target,n:l2.n}:null):policyOfCached(u),
+          os:isF?'':(state.buyMode[u.key]||(rs.mode==='oneshot'?'pend':'')),
+          yep:isF?null:yearEndProfileChain(pair[0],u),nl:F.normalLevelOf(u,it&&it.bl)});
+      });
+    });
+    out.sort(function(a,b){
+      const oa=a.rs.mode==='oneshot'?0:1, ob=b.rs.mode==='oneshot'?0:1;
+      if(oa!==ob)return oa-ob;
+      return b.rs.n-a.rs.n; });
+    window.__btRows=out;
+    const pair1IsInd=function(x){ return x.src==='FSD'&&isIndirectUnit(x.u); };
+    const nOne=out.filter(function(x){ return x.rs.mode==='oneshot'; }).length;
+    let bh='<div class="note" style="margin:6px 0">回测完成：'+out.length+' 个有补货记录的 渠道×型号 · '
+      +'<b style="color:var(--warn)">一次性铺货 '+nOne+' 个</b> · 耗时 '+Math.round(performance.now()-t0)+'ms</div>'
+      +'<div class="tblwrap" style="max-height:44vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">来源</th><th class="l">国家</th><th class="l">渠道</th><th class="l">类型</th><th class="l">产品</th><th class="l">型号</th>'
+      +'<th title="显著进货次数">SI事件</th><th title="补货发生时 DOS 中位数">触发DOS</th>'
+      +'<th title="补货发生时库存中位数">触发库存</th><th title="补货后 DOS 中位数">补到DOS</th>'
+      +'<th class="l" title="模拟采用的补货策略:先学该渠道历史判型——水位型=历史每到某绝对库存台数就进货(触发看库存),DOS型=低于DOS门槛就补;学不到显示线默认">模拟策略</th>'
+      +'<th class="l" title="正常经营水位:平销周(剔首销/大促/缺货/清尾)的库存中位=平销库存,÷平销日均=平销DOS;自动进货后库存不超 平销库存×1.5 / 平销DOS×1.5×前瞻需求;月末画像只许在平销DOS 0.6~1.5 倍内浮动">平销水位 库存/DOS</th>'
+      +'<th class="l" title="回测出的历史月末画像:1-12 月各月末 DOS(各历史年中位),按平销水位夹紧后作月末补到位目标——高于画像不进货,低于画像按剩余周均摊补上,单周进货≤历史最大×1.2;来源=单元自身/同渠道×同产业/该产业去年实际;FSD 直签走设置页收官梯度">月末画像 1→12月末DOS</th>'
+      +'<th title="首次显著 SI 到 SO 稳定达到平销 80% 的周数(渠道起量基线,新品爬坡用)">起量周数</th>'
+      +'<th>最近SI</th><th class="l">模式</th></tr></thead><tbody>';
+    out.slice(0,800).forEach(function(x){ const u=x.u,rs=x.rs;
+      bh+='<tr><td class="l">'+x.src+'</td><td class="l">'+esc(u.country)+'</td>'
+        +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+'</td>'
+        +'<td class="l">'+chanTypeLabel(chanTypeOf(u.account))+'</td>'
+        +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+        +'<td class="l">'+esc(u.model)+'</td>'
+        +'<td>'+rs.n+'</td><td>'+(rs.trigger!=null?rs.trigger:'—')+'</td>'
+        +'<td>'+(rs.trigInv!=null?F.fmt(rs.trigInv):'—')+'</td>'
+        +'<td>'+(rs.target!=null?rs.target:'—')+'</td>'
+        +'<td class="l">'+(x.os==='pend'?'<span class="chip pend" title="一次性铺货渠道,未拍板:按一次性口径不自动补货——请到「待确认」页审视拍板">⚠ 一次性·待审视</span>'
+          :x.os==='manual'?'一次性(已拍板不补)'
+          :(x.pol?((pair1IsInd(x)?'<span class="muted" title="FSD表内标记为下游渠道(间接),与下游表单元同一口径">下游(间接)·</span>':'')+(x.pol.src==='acctLine'?'<span title="单元自身样本不足,采用同渠道×同产业(跨型号合并事件)的学习值">渠道×产业·</span>':'')
+            +(x.pol.type==='inv'
+            ?('水位型 '+F.fmt(x.pol.triggerInv)+'→'+F.fmt(x.pol.targetInv)+'台')
+            :('DOS型 '+x.pol.trigger+'→'+x.pol.target+'天'))):'线默认'))+'</td>'
+        +'<td class="l">'+(x.nl?(F.fmt(x.nl.inv)+'台 / '+x.nl.dos+'天'):'—')+'</td>'
+        +'<td class="l" style="font-size:11px;white-space:nowrap">'+(x.yep?(F.MONTHS.map(function(m){ return (x.yep.m[m]&&x.yep.m[m].dos!=null)?x.yep.m[m].dos:'·'; }).join('/')
+          +' <span class="muted">'+({unit:'自身',acctLine:'渠道×产业',line:'产业去年'}[x.yep.src]||'')+'</span>'):(x.src==='FSD'?'<span class="muted">收官梯度</span>':'—'))+'</td>'
+        +'<td>'+(x.ramp!=null?x.ramp+'周':'—')+'</td>'
+        +'<td>'+(rs.lastSI?F.weekLabel(rs.lastSI):'—')+'</td>'
+        +'<td class="l">'+(rs.mode==='oneshot'
+          ?'<span class="chip pend" title="上市铺货后长期无补货但仍在动销:非流水生意模式,需警惕">⚠ 一次性铺货</span>'
+          :'<span class="chip auto">流水补货</span>')+'</td></tr>'; });
+    bh+='</tbody></table></div>';
+    if(out.length>800)bh+='<div class="note">仅显示前 800 行,完整结果请导出。</div>';
+    const host=$('#btHost'); if(host)host.innerHTML=bh;
+    makeSortable(host);
+    const eb=$('#btnExpBT');
+    if(eb){ eb.style.display='';
+      eb.onclick=function(){
+        const headers=['来源','国家','渠道','类型','产品','型号','SI事件数','触发DOS中位','触发库存中位','补到DOS中位','起量周数','最近SI','模式'];
+        const data=(window.__btRows||[]).map(function(x){ const u=x.u,rs=x.rs;
+          return [x.src,u.country,u.account,chanTypeLabel(chanTypeOf(u.account)),u.product,u.model,
+            rs.n,rs.trigger!=null?rs.trigger:'',rs.trigInv!=null?rs.trigInv:'',rs.target!=null?rs.target:'',
+            x.ramp!=null?x.ramp:'',
+            rs.lastSI?F.weekLabel(rs.lastSI):'',rs.mode==='oneshot'?'一次性铺货':'流水补货']; });
+        exportTable('补货规律回测',headers,data);
+      };
+    }
+  };
+  $('#coefQ').oninput=function(){ state.ui.coefQ=this.value; render(); };
+  el.querySelectorAll('td[contenteditable]').forEach(function(td){
+    td.addEventListener('keydown',function(e){ if(e.key==='Enter'){e.preventDefault();td.blur();} });
+    td.addEventListener('blur',function(){
+      if(td.dataset.orig!=null&&td.textContent===td.dataset.orig)return;   // 未改动不提交
+      const key=td.dataset.key,w=+td.dataset.w;
+      const v=F.parseCellNum(td.textContent);
+      const row=rows.filter(function(r){return r.key===key;})[0];
+      const kd=row&&row.kdef[w]!=null?row.kdef[w]:1;
+      if(v==null||v===kd){ if(state.kedit[key]){ delete state.kedit[key][w];
+        if(!Object.keys(state.kedit[key]).length)delete state.kedit[key]; } }
+      else (state.kedit[key]=state.kedit[key]||{})[w]=v;
+      recompute();
+    });
+  });
+  el.querySelectorAll('input[data-f]').forEach(function(inp){
+    inp.onchange=function(){
+      const line=inp.dataset.line,f=inp.dataset.f,v=F.parseCellNum(inp.value);
+      if(v==null)return;
+      (state.lineParams[line]=state.lineParams[line]||{})[f]=v; recompute(); };
+  });
+}
+

@@ -1,0 +1,269 @@
+/* ===== 新品规划:软件内添加未上市产品,按锚品×档位×上市时点×渠道起量基线生成 SI/SO ===== */
+function renderNewProd(){
+  const el=$('#view-newprod');
+  const prods=[];
+  [store,retailStore,audioStore].forEach(function(stx){
+    if(stx)stx.units.forEach(function(u){ if(u.product&&prods.indexOf(u.product)<0)prods.push(u.product); });
+  });
+  prods.sort();
+  const fams={};
+  Object.keys(F.PRODUCT_MAP).forEach(function(p2){ const e=F.PRODUCT_MAP[p2]; fams[e.family]=e.line; });
+  const lines=[]; Object.keys(fams).forEach(function(f2){ if(lines.indexOf(fams[f2])<0)lines.push(fams[f2]); });
+  lines.sort();
+  const f=state.ui.npForm||(state.ui.npForm={});
+  /* 产品→产品线 映射,供锚品/承接下拉按产品线过滤 */
+  const prodLine={};
+  [store,retailStore,audioStore].forEach(function(stx){ if(stx)stx.units.forEach(function(u){ if(u.product&&!prodLine[u.product])prodLine[u.product]=u.line; }); });
+  /* 默认产品线=第一个有在售产品的产品线(锚品下拉才有货);上市周默认=三源最新周的下一周 */
+  const linesWithProds=lines.filter(function(l){ return prods.some(function(p2){ return prodLine[p2]===l; }); });
+  const lineSel=f.line||linesWithProds[0]||lines[0]||'';
+  const famsOfLine=Object.keys(fams).filter(function(fm){ return fams[fm]===lineSel; }).sort();
+  const famList=famsOfLine.length?famsOfLine:Object.keys(fams).sort();
+  const prodsOfLine=prods.filter(function(p2){ return prodLine[p2]===lineSel; });
+  const anchorList=prodsOfLine.length?prodsOfLine:prods;
+  /* 覆盖范围到国家(2026-09-01 用户拍板):多选在哪几个国家上,默认勾锚品在售的国家;国家内自动铺渠道 */
+  const anchorSel=f.anchor||anchorList[0]||'';
+  const allCountries=[]; const anchorCountries={};
+  [store,retailStore,audioStore].forEach(function(stx){ if(!stx)return; stx.units.forEach(function(u){
+    if(u.country&&allCountries.indexOf(u.country)<0)allCountries.push(u.country);
+    if(u.product===anchorSel)anchorCountries[u.country]=1; }); });
+  allCountries.sort();
+  const selCountries=f.countries||Object.keys(anchorCountries);
+  const maxP=Math.max.apply(null,[store,retailStore,audioStore].filter(Boolean).map(function(s2){ return s2.maxPeriod||0; }));
+  const nextW=F.addWeeksP(maxP,1);
+  const launchDef=(F.periodY(nextW)%100)+'W'+F.periodW(nextW);
+  const launchDateDef=F.mondayOf(F.periodY(nextW),F.periodW(nextW)).toISOString().slice(0,10);
+  const launchWeekLabel=function(ds){ const pp=F.periodOfDateStr(ds); return pp?((F.periodY(pp)%100)+'W'+F.periodW(pp)):'?'; };
+  const editing=!!f.editId;
+  const wkLab=function(p){ return p?((F.periodY(p)%100)+'W'+F.periodW(p)):'?'; };
+  let h='<div class="panel"><h3>'+(editing?'编辑新品':'添加新品')+'</h3>'
+    +'<div class="note">新品是<b>规划数据</b>(不在底表里的未上市产品):添加后会在<b>推演编辑的「新品」源看板</b>里出现——按你选的覆盖范围,每个国家×渠道都有这个新品的 SI/SO/库存/DOS 四行,可以直接拍数;也进预算底表与推演汇总(勾选叠加)。'
+    +'<br><b>锚定参考品</b>=拿哪个产品的平销当基准——仍在售取当前平销,已退市的老品取它<b>在售期的历史平销</b>(逐渠道×缩放,该渠道没有锚品则取锚品全渠道中位);'
+    +'<b>上市周</b>=首批铺货到渠道的周(默认下周,格式 26W36);<b>生命周期</b>=在售周数,到期停 SI;'
+    +'<b>承接老品</b>=可选,老品已设末次SI周时,它各渠道平销的 70% 转给新品。上市周落在大促周时首销脉冲 1.8 倍、首批铺货 SI ×1.3。</div>'
+    +'<div class="bar" style="flex-wrap:wrap;gap:10px">'
+    +'<label>产品名 <input type="text" id="npName" style="min-width:180px" placeholder="如 Astra X7" value="'+esc(f.name||'')+'"></label>'
+    +'<label>产品线 <select id="npLine">'+lines.map(function(l){ return '<option'+(lineSel===l?' selected':'')+'>'+esc(l)+'</option>'; }).join('')+'</select></label>'
+    +'<label>系族(档位) <select id="npFam">'+famList.map(function(fm){ return '<option'+((f.family||famList[0])===fm?' selected':'')+'>'+esc(fm)+'</option>'; }).join('')+'</select></label>'
+    +'<label title="拿哪个在售产品的平销当基准">锚定参考品 <select id="npAnchor" style="min-width:200px">'+anchorList.map(function(p2){ return '<option'+((f.anchor||anchorList[0])===p2?' selected':'')+'>'+esc(p2)+'</option>'; }).join('')+'</select></label>'
+    +'<span title="在哪几个国家上市(默认=锚品在售的国家);国家内自动铺渠道:优先锚品在售渠道,其次该产业的渠道,再次该国全部渠道" style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">上市国家 '
+      +allCountries.map(function(c){ return '<label style="margin:0 2px"><input type="checkbox" class="npC" value="'+esc(c)+'"'+(selCountries.indexOf(c)>=0?' checked':'')+'> '+esc(c)+'</label>'; }).join('')
+      +' <button class="mini" id="npCAll">全选</button><button class="mini" id="npCNone">清空</button></span>'
+    +'<label title="相对锚品平销的倍数">缩放× <input type="text" id="npScale" style="width:56px" value="'+(f.scale!=null?f.scale:1)+'"></label>'
+    +'<label title="首批铺货到渠道的日期(自动换算成周);默认下周一">上市日期 <input type="date" id="npLaunchD" value="'+esc(f.launchDate||launchDateDef)+'"> <span class="muted" id="npLaunchW">= '+launchWeekLabel(f.launchDate||launchDateDef)+'</span></label>'
+    +'<label title="在售周数,到期停SI;留空按产品线默认:手机52/平板穿戴78/音频PC 104">生命周期(周) <input type="text" id="npLife" style="width:64px" placeholder="'+(FAM_LIFE_DEF[lineSel]||78)+'" value="'+(f.life!=null?f.life:'')+'"></label>'
+    +'<label title="可选:老品设了末次SI周后,其各渠道平销的70%转给新品">承接老品 <select id="npSucc" style="min-width:170px"><option value="">(无)</option>'+anchorList.map(function(p2){ return '<option'+(f.succ===p2?' selected':'')+'>'+esc(p2)+'</option>'; }).join('')+'</select></label>'
+    +'<button class="act" id="npAdd">'+(editing?'保存修改':'添加新品')+'</button>'
+    +(editing?'<button class="ghost" id="npCancel">取消编辑</button>':'')
+    +'<button class="ghost" id="npGoPv" title="到推演编辑的「新品」源看板拍数">去推演编辑看新品</button>'
+    +'</div></div>';
+  if(!state.newProducts.length){
+    h+='<div class="panel note">尚无新品规划。选一个同档位历史锚品、填上市周即可生成分渠道 SI/SO 模拟与产品整体叠加曲线。</div>';
+    el.innerHTML=h; bindNewProdForm(el,prods); return;
+  }
+  (Dn&&Dn.perNp?Dn.perNp:[]).forEach(function(pn,pi){
+    const np=pn.np;
+    const ai=pn.anchorInfo||null; const fwL=(Dn&&Dn.fwLong)||Dn.fw;
+    h+='<div class="panel"><h3>'+esc(np.name)+' <span class="chip anchor">新品规划</span>'
+      +(pn.live
+        ?(pn.liveDev!=null
+          ?(Math.abs(pn.liveDev)>0.3
+            ?' <span class="chip pend" title="上市后前4周:实际 vs 规划偏差超过 30%,请重新校准锚定品或缩放系数">复盘:偏差 '+(pn.liveDev>0?'+':'')+Math.round(pn.liveDev*100)+'%·请重校准</span>'
+            :' <span class="chip auto" title="上市后前4周:实际与规划基本吻合">复盘:偏差 '+(pn.liveDev>0?'+':'')+Math.round(pn.liveDev*100)+'%·吻合</span>')
+          :' <span class="chip pend" title="底表已出现同名产品且上市满4周:请用实际数据校准,或删除本规划改用真实推演">已上市·请复盘校准</span>')
+        :'')
+      +' <button class="mini" data-npreplay="'+pi+'" style="margin-left:8px" title="用锚品当年上市后的真实曲线检验模型形状(锚品重放)">锚品重放校验</button>'
+      +' <button class="mini" data-npexp="'+pi+'">导出 Excel</button>'
+      +' <button class="mini" data-npedit="'+pi+'">编辑</button>'
+      +' <button class="mini" data-npdel="'+pi+'">删除</button></h3>'
+      +'<div class="note">'+esc(np.line||'')+' · '+esc(np.family||'')+' · 锚品 '+esc(np.anchor)
+      +'（全渠道平销中位 '+(pn.medBase!=null?pn.medBase:'—')+'/周'
+      +(ai&&ai.firstP?' · '+(ai.active?'仍在售':'已退市')+' · 历史在售 '+wkLab(ai.firstP)+'–'+wkLab(ai.lastP)+' 共 '+ai.lifeWeeks+' 周':' · 无历史销量')
+      +'）× '+(np.scale||1)
+      +' · 上市 '+(np.launch?(F.periodY(np.launch)%100+'W'+F.periodW(np.launch)):'未设')
+      +' · 生命周期 '+(np.lifeWeeks||'—')+' 周'
+      +(np.succ?' · 承接 '+esc(np.succ):'')
+      +' · 上市国家 '+(np.countries&&np.countries.length?esc(np.countries.join('/')):'锚品在售国家')
+      +' · 覆盖渠道 '+pn.units.length+'/'+pn.nCh
+      +' · 推演窗口 '+wkLab(fwL[0])+'–'+wkLab(fwL[fwL.length-1])+'</div>'
+      +(!pn.units.length?'<div class="note" style="color:var(--warn)">没有铺出任何渠道:锚品「'+esc(np.anchor)+'」在所选国家没有历史销量,基准取不到——换一个卖过的锚品,或改上市国家。</div>':'')
+      +((np.launch&&Dn.fwEnd&&np.launch>Dn.fwEnd)?'<div class="note">上市周在今年推演段之后:推演编辑「新品」看板的今年列为 0,量在 '+F.periodY(np.launch)+' 年列(月粒度,预算延伸口径);本页图表与表格按完整窗口显示。</div>':'');
+    if(pn.overCap.length){
+      h+='<div class="gap" style="background:var(--warn-soft);border-left:4px solid var(--warn);border-radius:0 8px 8px 0;padding:8px 14px;margin:8px 0">'
+        +'<b style="color:var(--warn)">系族总盘超容提醒：</b>'
+        +pn.overCap.map(function(x){ return x.m+'月 合计 '+F.fmt(x.total)+' > 容量 '+F.fmt(x.cap); }).join('；')
+        +'（容量 = 去年该系族同月 ×(1+大盘增速)×1.2——新品会蚕食同档位在售品，请校准缩放系数）</div>';
+    }
+    h+='<div id="npChart-'+pi+'" style="margin:8px 0"></div>';
+    h+='<div class="tblwrap" style="max-height:30vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">国家</th><th class="l">渠道</th><th class="l">源</th>'
+      +'<th title="锚品该渠道平销×缩放(+承接量)">平销/周</th>'
+      +'<th class="l" title="基准平销从哪来:锚品当前平销 / 锚品历史平销(在售期) / 锚品全渠道中位">基准来源</th>'
+      +'<th class="l" title="该渠道首次铺货周,可点击改写(发货时间不同;格式 26W40,清空恢复统一上市周)">首SI周(可改)</th>'
+      +'<th title="起量周数与来源">起量</th>'
+      +'<th title="首批铺货 SI(目标DOS×日均,大促上市×1.3)">首批SI</th>'
+      +'<th title="上市周是否处于该国/该渠道大促">大促上市</th>'
+      +'<th title="推演窗口内合计(到 '+wkLab(fwL[fwL.length-1])+')">期内SO</th><th title="推演窗口末周库存">期末库存</th></tr></thead><tbody>';
+    pn.units.forEach(function(vu){
+      const rowsL=vu.rowsLong||vu.rows;
+      let soT=0; rowsL.forEach(function(r){ soT+=r.so; });
+      const endInv=rowsL.length?rowsL[rowsL.length-1].inv:0;
+      const ovCh=!!(np.chFirst&&np.chFirst[vu.ck]);
+      h+='<tr><td class="l">'+esc(vu.country)+'</td>'
+        +'<td class="l ell" title="'+esc(vu.account)+'">'+esc(vu.account)+'</td>'
+        +'<td class="l">'+esc(vu.src)+'</td>'
+        +'<td>'+vu.base+(vu.succAdd?'<span class="muted" title="含承接老品让出量">(+'+vu.succAdd+'承接)</span>':'')+'</td>'
+        +'<td class="l">'+esc(vu.baseSrc||'')+'</td>'
+        +'<td class="l ov" contenteditable data-npch="'+esc(vu.ck)+'" data-npi="'+pi+'">'
+          +(vu.firstP?(F.periodY(vu.firstP)%100+'W'+F.periodW(vu.firstP)):'')+(ovCh?' <span class="muted">·手设</span>':'')+'</td>'
+        +'<td>'+vu.rampW+'周<span class="muted">·'+vu.rampSrc+'</span></td>'
+        +'<td>'+F.fmt(vu.firstSI)+'</td>'
+        +'<td>'+(vu.promoAtLaunch?'<span class="chip anchor">是·α1.8</span>':'否')+'</td>'
+        +'<td>'+F.fmt(soT)+'</td><td>'+F.fmt(endInv)+'</td></tr>';
+    });
+    h+='</tbody></table></div>'
+      +'<div class="note">图为<b>产品整体（全渠道叠加）</b>的 SI/SO/库存曲线；推演汇总页勾选「叠加新品规划」可并入树形钻取。</div></div>';
+  });
+  el.innerHTML=h;
+  bindNewProdForm(el,prods);
+  (Dn&&Dn.perNp?Dn.perNp:[]).forEach(function(pn,pi){
+    const host=$('#npChart-'+pi);
+    if(!host||!Dn.fw.length)return;
+    const xs=Dn.fwLong||Dn.fw;
+    const so=[],si=[],inv=[];
+    xs.forEach(function(p){ const e=pn.agg[p]||{so:0,si:0,inv:0};
+      so.push(e.so); si.push(e.si); inv.push(e.inv); });
+    renderChartInto(host,xs,[
+      {name:'SO 规划(全渠道)',color:'var(--accent)',dash:'5 4',vals:so},
+      {name:'SI 铺货(全渠道)',color:'#3f7fd4',dash:'5 4',vals:si},
+      {name:'库存(全渠道)',color:'#8a63c9',dash:'5 4',vals:inv,right:true}
+    ],state.chartSmooth);
+  });
+  /* 逐渠道首SI周改写:回车确认,清空恢复统一上市周 */
+  el.querySelectorAll('td[data-npch]').forEach(function(td){
+    td.addEventListener('focus',function(){ td.dataset.orig=td.textContent; });
+    td.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){ e.preventDefault(); td.blur(); }
+      else if(e.key==='Escape'){ td.textContent=td.dataset.orig||''; td.blur(); } });
+    td.addEventListener('blur',function(){
+      if(td.textContent===td.dataset.orig)return;
+      const np=state.newProducts[+td.dataset.npi]; if(!np)return;
+      const v=parseWeekText(td.textContent.replace(/·手设/,''));
+      if(v===undefined){ alert('周格式无效，请用 26W40。'); render(); return; }
+      if(!np.chFirst)np.chFirst={};
+      if(v==null)delete np.chFirst[td.dataset.npch];
+      else np.chFirst[td.dataset.npch]=v;
+      recompute();
+    });
+  });
+  el.querySelectorAll('button[data-npexp]').forEach(function(b){
+    b.onclick=function(){
+      const pn=Dn&&Dn.perNp[+b.dataset.npexp]; if(!pn)return;
+      const headers=['国家','渠道','数据源','平销每周','基准来源','含承接量','首SI周','起量周数','起量来源','首批SI','大促上市','期内SO(完整窗口)','期末库存'];
+      const data=pn.units.map(function(vu){
+        const rowsL=vu.rowsLong||vu.rows;
+        let soT=0; rowsL.forEach(function(r){ soT+=r.so; });
+        return [vu.country,vu.account,vu.src,vu.base,vu.baseSrc||'',vu.succAdd||0,
+          vu.firstP?(F.periodY(vu.firstP)%100+'W'+F.periodW(vu.firstP)):'',
+          vu.rampW,vu.rampSrc,vu.firstSI,vu.promoAtLaunch?'是':'否',soT,
+          rowsL.length?rowsL[rowsL.length-1].inv:0];
+      });
+      exportTable('新品规划-'+pn.np.name,headers,data);
+    };
+  });
+  el.querySelectorAll('button[data-npdel]').forEach(function(b){
+    b.onclick=function(){
+      const i=+b.dataset.npdel;
+      if(!confirm('删除新品规划「'+(state.newProducts[i]?state.newProducts[i].name:'')+'」？'))return;
+      state.newProducts.splice(i,1); recompute();
+    };
+  });
+  el.querySelectorAll('button[data-npreplay]').forEach(function(b){
+    b.onclick=function(){
+      const pn=Dn&&Dn.perNp[+b.dataset.npreplay]; if(!pn)return;
+      /* 锚品重放:各渠道锚品首12有效周实际 vs 模型形状(base=锚品自身平销,ramp=学习值) */
+      let sumAbs=0,sumAct=0,nCh=0;
+      [[Dr],[Da],[D]].forEach(function(pair){
+        const Dx=pair[0]; if(!Dx)return;
+        Dx.list.forEach(function(it){
+          if(it.u.product!==pn.np.anchor)return;
+          const u=it.u;
+          const okSo=function(so){ return u.audio?(so!=null&&so>0):(so!=null); };
+          const validP=u.periods.filter(function(p){ return okSo(u.weeks.get(p).so); });
+          if(validP.length<16)return;
+          const hh=F.anchorHistOf(u,{});
+          const base=(hh&&hh.base>0)?((hh.active&&it.bl&&it.bl.base>0)?it.bl.base:hh.base):null;   // 退市老品也能重放
+          if(!base)return;
+          const rampW=F.rampOf(u,base,state.cfg)||2;
+          nCh++;
+          for(let i=0;i<12&&i<validP.length;i++){
+            const act=u.weeks.get(validP[i]).so;
+            let pred;
+            if(i<rampW)pred=base*((i+1)/rampW)*(i<4?1.4:1);
+            else pred=base;
+            sumAbs+=Math.abs(pred-act); sumAct+=act;
+          }
+        });
+      });
+      if(!sumAct){ alert('锚品有效历史不足，无法重放。'); return; }
+      alert('锚品重放校验（'+nCh+' 个渠道 × 上市后 12 周）：\n模型形状误差 WMAPE = '+(sumAbs/sumAct*100).toFixed(1)+'%'
+        +'\n低于 40% 说明「爬坡×首销脉冲→平销」的形状与锚品当年走势基本吻合，新品估算可用；偏高请调整缩放系数或改选锚品。');
+    };
+  });
+}
+function bindNewProdForm(el,prods){
+  const f=state.ui.npForm||(state.ui.npForm={});
+  const map={npName:'name',npLine:'line',npFam:'family',npAnchor:'anchor',npScale:'scale',npLaunchD:'launchDate',npLife:'life',npSucc:'succ'};
+  Object.keys(map).forEach(function(id){
+    const inp=$('#'+id); if(!inp)return;
+    inp.onchange=function(){
+      f[map[id]]=this.value;
+      if(id==='npLine'){ f.family=null; f.anchor=null; f.succ=null; f.countries=null; render(); }   // 换产品线:系族/锚品/承接/国家随之刷新
+      if(id==='npAnchor'){ f.countries=null; render(); }   // 换锚品:默认上市国家跟着锚品
+      if(id==='npLaunchD'){ const lw=$('#npLaunchW'); const pp=F.periodOfDateStr(this.value); if(lw)lw.textContent='= '+(pp?((F.periodY(pp)%100)+'W'+F.periodW(pp)):'?'); }
+    };
+  });
+  const readCountries=function(){ return Array.from(el.querySelectorAll('input.npC:checked')).map(function(x){ return x.value; }); };
+  el.querySelectorAll('input.npC').forEach(function(cb){ cb.onchange=function(){ f.countries=readCountries(); }; });
+  const cAll=$('#npCAll'); if(cAll)cAll.onclick=function(){ el.querySelectorAll('input.npC').forEach(function(cb){ cb.checked=true; }); f.countries=readCountries(); };
+  const cNone=$('#npCNone'); if(cNone)cNone.onclick=function(){ el.querySelectorAll('input.npC').forEach(function(cb){ cb.checked=false; }); f.countries=[]; };
+  const add=$('#npAdd');
+  if(add)add.onclick=function(){
+    const name=($('#npName').value||'').trim();
+    const line=$('#npLine').value;
+    const family=$('#npFam').value;
+    const anchor=($('#npAnchor').value||'').trim();
+    const countries=readCountries();
+    const scale=F.parseCellNum($('#npScale').value);
+    const dStr=($('#npLaunchD').value||'').trim();
+    const lifeV=F.parseCellNum($('#npLife').value);
+    const succ=($('#npSucc').value||'').trim();
+    if(!name){ alert('请填写产品名。'); return; }
+    if(prods.indexOf(anchor)<0){ alert('请在下拉里选一个锚定参考品(底表里已有的产品)。'); return; }
+    if(!countries.length){ alert('请至少勾选一个上市国家。'); return; }
+    const maxP=Math.max.apply(null,[store,retailStore,audioStore].filter(Boolean).map(function(s2){ return s2.maxPeriod||0; }));
+    let launch=dStr?F.periodOfDateStr(dStr):null;
+    if(!launch)launch=F.addWeeksP(maxP,1);   // 没选日期=下周
+    const life=(lifeV!=null&&lifeV>0)?Math.round(lifeV):(FAM_LIFE_DEF[line]||78);
+    const rec={name:name,line:line,family:family,anchor:anchor,countries:countries,launchDate:dStr||null,
+      scale:(scale!=null&&scale>0)?scale:1,launch:launch,lifeWeeks:life,succ:succ||null};
+    if(f.editId){
+      const np=state.newProducts.filter(function(x){ return x.id===f.editId; })[0];
+      if(np)Object.assign(np,rec); else { rec.id='np'+Date.now(); state.newProducts.push(rec); }
+    } else { rec.id='np'+Date.now(); state.newProducts.push(rec); }
+    state.ui.npForm={};
+    recompute();
+  };
+  const cancel=$('#npCancel'); if(cancel)cancel.onclick=function(){ state.ui.npForm={}; render(); };
+  const go=$('#npGoPv'); if(go)go.onclick=function(){ state.ui.pvSrc='np'; state.ui.tab='pv'; render(); };
+  el.querySelectorAll('button[data-npedit]').forEach(function(b){
+    b.onclick=function(e){ e.stopPropagation();
+      const np=state.newProducts[+b.dataset.npedit]; if(!np)return;
+      state.ui.npForm={editId:np.id,name:np.name,line:np.line,family:np.family,anchor:np.anchor,countries:np.countries||null,
+        scale:np.scale,launchDate:np.launchDate||(np.launch?F.mondayOf(F.periodY(np.launch),F.periodW(np.launch)).toISOString().slice(0,10):''),
+        life:np.lifeWeeks,succ:np.succ||''};
+      render(); window.scrollTo(0,0);
+    };
+  });
+}
+

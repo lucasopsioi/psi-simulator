@@ -1,0 +1,253 @@
+/* ============================================================
+   AI 评测集(30 题,形制照抄 销售团队 eval-set):C1 取数×6 / C2 口径陷阱×6 / C3 推演解释×6 /
+   C4 明年与风险×4 / C5 数据边界×4 / C6 溯源与纪律×4。
+   真值全部由引擎当场算出(看板=裁判);mock 模式用剧本模型驱动**真实编排链**
+   (路由/参数校验/工具执行/守卫注入/溯源门禁全部真跑),live 模式换成已配置的真模型。
+   ============================================================ */
+function aiEvalPick(){
+  const agg={};
+  D.list.forEach(function(it){ if(it.u.audio||it.exempt)return;
+    let s=0; (it.sim.rows||[]).forEach(function(r){ s+=(r.so||0); });
+    agg[it.u.product]=(agg[it.u.product]||0)+s; });
+  const prods=Object.keys(agg).sort(function(a,b){ return agg[b]-agg[a]; });
+  const mFull=F.monthOfP(D.fw[Math.min(6,D.fw.length-1)]);
+  for(const p of prods.slice(0,6)){
+    const ex=aiExplainCell({product:p,month:mFull});
+    if(ex&&!ex.error&&ex.对比&&ex.对比.去年同月实际!=null)return {prod:p,m:mFull};
+  }
+  return {prod:prods[0],m:mFull};
+}
+function aiEvalSet(){
+  const pk=aiEvalPick(),P=pk.prod,M=pk.m;
+  const sq=aiToolSimQuery({product:P});
+  const ex=aiExplainCell({product:P,month:M});
+  const ny=aiToolNextYear({product:P});
+  const nextY=F.periodY(store.maxPeriod)+1;
+  const nyRows=(ny.rows||[]).filter(function(r){ return r.年月.indexOf(String(nextY))===0; });
+  const nySO=nyRows.reduce(function(t,r){ return t+r.SO台; },0);
+  const nyEnd=nyRows.length?nyRows[nyRows.length-1].月末库存:null;
+  const sqM=(sq.rows||[]).filter(function(r){ return r.月===M; })[0]||{};
+  const promoN=(ex.周明细||[]).filter(function(w){ return w.大促周===1; }).length;
+  const numAns=function(label,v,extra){ return function(){ return label+' '+v+' 台。'+(extra||''); }; };
+  const S=[
+    /* C1 取数 */
+    {id:'C1-01',cat:'取数',q:P+' 未来SO合计是多少台?',mode:'number',_truth:sq.未来SO合计,tolAbs:0,
+      mock:{tool:'simQuery',args:{product:P},answer:numAns('未来SO合计',sq.未来SO合计,'口径:权威源=FSD直签(剔音频)+音频专表,推演至今年年底。')},mustRe:[/权威|口径/]},
+    {id:'C1-02',cat:'取数',q:P+' '+M+'月推演SO多少台?',mode:'number',_truth:sqM.推演SO,tolAbs:0,
+      mock:{tool:'simQuery',args:{product:P},answer:numAns(M+'月推演SO',sqM.推演SO,'月按周四归属。')}},
+    {id:'C1-03',cat:'取数',q:P+' 现在渠道库存有多少台?',mode:'number',_truth:sq.当前INV,tolAbs:0,
+      mock:{tool:'simQuery',args:{product:P},answer:numAns('当前渠道库存',sq.当前INV,'')}},
+    {id:'C1-04',cat:'取数',q:P+' 当前DOS多少天?',mode:'number',_truth:sq.当前DOS,tolAbs:0,
+      mock:{tool:'simQuery',args:{product:P},answer:function(){ return '当前DOS '+sq.当前DOS+' 天(库存÷近4周日均SO,音频跳零)。'; }}},
+    {id:'C1-05',cat:'取数',q:P+' 近4周周均SO是多少?',mode:'number',_truth:sq.近4周周均SO,tolAbs:0,
+      mock:{tool:'simQuery',args:{product:P},answer:numAns('近4周周均SO',sq.近4周周均SO,'')}},
+    {id:'C1-06',cat:'取数',q:P+' 未来SI要货合计多少台?',mode:'number',_truth:sq.未来SI合计,tolAbs:0,
+      mock:{tool:'simQuery',args:{product:P},answer:numAns('未来SI要货合计',sq.未来SI合计,'')}},
+    /* C2 口径陷阱 */
+    {id:'C2-01',cat:'口径',q:'下游渠道表的数为什么不并入总量?',mode:'rubric',mustRe:[/重复|双计|重叠/,/下游|明细/],minHits:1,
+      mock:{tool:'caliberDoc',args:{topic:'下游 权威 数据源'},answer:function(t){ return '因为下游渠道表是 FSD 下面间接渠道的明细,FSD 直签全集已含这部分流水,并入会重复计数;权威总量=FSD直签(剔音频行)+音频专表。'; }}},
+    {id:'C2-02',cat:'口径',q:'音频线某周SO是0,是没卖出去吗?',mode:'rubric',mustRe:[/未报量|没录|延迟/],mustNotRe:[/确实没卖|真实零销$/],
+      mock:{tool:'caliberDoc',args:{topic:'音频 跳零'},answer:function(){ return '不一定:音频线 SO=0 是「未报量」口径(人工报量),系统一律跳过不当真实零销;其它产品线的 0 才是真实零销。'; }}},
+    {id:'C2-03',cat:'口径',q:'当前DOS和月末DOS为什么不是一个数?',mode:'rubric',mustRe:[/近4周|日均/,/月末|时点|推演/],minHits:2,
+      mock:{tool:'caliberDoc',args:{topic:'DOS'},answer:function(){ return '当前DOS=当前库存÷近4周日均SO;月末DOS=推演月末库存÷当时滚动日均——一个是现在的快照,一个是推演月末的时点值,分母窗口也不同,设计如此。'; }}},
+    {id:'C2-04',cat:'口径',q:'我手工拍的数会不会被公式覆盖?',mode:'rubric',mustRe:[/不会|永不|优先/,/恢复公式/],minHits:2,
+      mock:{tool:'caliberDoc',args:{topic:'手工 拍数'},answer:function(){ return '不会:手工拍数(ovSO/ovSI)优先级最高,永不被公式覆盖;只有你点「恢复公式」才会清除。'; }}},
+    {id:'C2-05',cat:'口径',q:'周是怎么归到月的?',mode:'rubric',mustRe:[/周四/],
+      mock:{tool:'caliberDoc',args:{topic:'月 归属'},answer:function(){ return '按该 ISO 周的周四所在月归属(monthOfP);月末库存取自然月最后一天所在周;你推演表的 28/35 天正是 4/5 个 ISO 周,同口径。'; }}},
+    {id:'C2-06',cat:'口径',q:'免推演的单元去哪了?',mode:'rubric',mustRe:[/阈值|低库存/,/不参与|不推演|不确认/],minHits:2,
+      mock:{tool:'caliberDoc',args:{topic:'免推演'},answer:function(){ return '库存≤免推演阈值(按线/型号设置)的单元被判免推演:不确认/不推演/不算DOS风险,聚合口径与看板一致,不是数据丢了。'; }}},
+    /* C3 推演解释 */
+    {id:'C3-01',cat:'解释',q:P+' '+M+'月推演SO是多少台,怎么算出来的?',mode:'number',_truth:ex.月度值.推演SO,tolAbs:0,mustRe:[/平销|手工|公式|因子/],
+      mock:{tool:'explainCell',args:{product:P,month:M},answer:function(){ return M+'月推演SO '+ex.月度值.推演SO+' 台:手工拍数 '+ex.月度值.其中手工SO+' 台+公式 '+ex.月度值.公式SO+' 台;公式=平销b̂×增速×周季节,平销基线 '+(ex.平销基线['平销×该月周数']||0)+' 台。'; }}},
+    {id:'C3-02',cat:'解释',q:P+' '+M+'月为什么是这个水平?',mode:'rubric',mustRe:[/平销|手工|大促|增速|置信|锁量|断供|周季节|实际/],minHits:1,
+      mock:{tool:'explainCell',args:{product:P,month:M},answer:function(){ return '主要因子:'+(ex.解读要点.join(';')||'平销×周季节推演,无特殊因子')+'。'; }}},
+    {id:'C3-03',cat:'解释',q:P+' '+M+'月有几周命中大促周?',mode:'number',_truth:promoN,tolAbs:0,
+      mock:{tool:'explainCell',args:{product:P,month:M},answer:function(){ return M+'月命中大促周 '+promoN+' 周(国家周历∪渠道大促)。'; }}},
+    {id:'C3-04',cat:'解释',q:P+' 去年'+M+'月实际卖了多少台?',mode:'number',_truth:ex.对比.去年同月实际!=null?ex.对比.去年同月实际:0,tolAbs:0,
+      mock:{tool:'explainCell',args:{product:P,month:M},answer:function(){ return '去年'+M+'月实际 '+(ex.对比.去年同月实际!=null?ex.对比.去年同月实际:0)+' 台(权威源历史)。'; }}},
+    {id:'C3-05',cat:'解释',q:P+' '+M+'月推演里有多少是我手工拍的?',mode:'number',_truth:ex.月度值.其中手工SO,tolAbs:0,
+      mock:{tool:'explainCell',args:{product:P,month:M},answer:function(){ return '手工拍数 '+ex.月度值.其中手工SO+' 台(其余 '+ex.月度值.公式SO+' 台为公式推演)。'; }}},
+    {id:'C3-06',cat:'解释',q:'推演的增速是怎么定的?',mode:'rubric',mustRe:[/单元手工|型号/,/系族|产品线|全局/],minHits:2,
+      mock:{tool:'caliberDoc',args:{topic:'增速 推演公式'},answer:function(){ return '增速 g 按优先级取:单元手工 > 型号增速 > 系族大盘 > 产品线大盘 > 全局大盘 > 默认1;在总控/设置页可改。'; }}},
+    /* C4 明年与风险 */
+    {id:'C4-01',cat:'明年',q:P+' 明年全年SO预计多少台?',mode:'number',_truth:nySO,tolAbs:1,mustRe:[/外推|预算|置信/],
+      mock:{tool:'nextYear',args:{product:P},answer:function(){ return '明年全年SO约 '+nySO+' 台(预算外推口径:平销×漂移×季节×增速,置信低于今年)。'; }}},
+    {id:'C4-02',cat:'明年',q:P+' 明年年底库存大概多少台?',mode:'number',_truth:nyEnd!=null?nyEnd:0,tolAbs:1,
+      mock:{tool:'nextYear',args:{product:P},answer:function(){ return '明年12月底月末库存约 '+(nyEnd!=null?nyEnd:0)+' 台(外推口径含轻量补货循环与年末收官约束)。'; }}},
+    {id:'C4-03',cat:'明年',q:P+' 现在推演,到明年年底库存有没有风险?',mode:'rubric',mustRe:[/DOS|库存/,/红线|阈值|天/,/外推|置信|预算/],minHits:3,
+      mock:{tool:'nextYear',args:{product:P},answer:function(){
+        const worst=nyRows.reduce(function(w,r){ return (r['DOS(库存÷月SO÷月天数)']||0)>(w['DOS(库存÷月SO÷月天数)']||0)?r:w; },nyRows[0]||{});
+        return '按预算外推口径逐月看:明年年底月末库存 '+(nyEnd!=null?nyEnd:0)+' 台,DOS 峰值在 '+(worst.年月||'-')+'('+(worst['DOS(库存÷月SO÷月天数)']||'-')+' 天),对照12月红线 '+dosThOf(12).red+' 天判断;明年为外推口径,置信低于今年,建议结合锁量与实际要货复核。'; }}},
+    {id:'C4-04',cat:'明年',q:'明年的数是怎么推出来的?',mode:'rubric',mustRe:[/平销|外推/,/预算|补货|收官/],minHits:2,
+      mock:{tool:'caliberDoc',args:{topic:'预算 明年'},answer:function(){ return '明年=平销引擎外推(b̂×漂移×周季节×大盘增速)+FSD 轻量补货循环(明年10/11/12月底收官粗约束),低置信单元用近4周均——预算口径,方向性推演。'; }}},
+    /* C5 数据边界 */
+    {id:'C5-01',cat:'边界',q:'产品 XYZ不存在型号9989 的未来SO是多少?',mode:'refusal',mustRe:[/没有匹配|数据未包含|查不到|核对|不存在|没有任何取值/],mustNotRe:[/\d{3,}\s*台/],
+      mock:{tool:'simQuery',args:{product:'XYZ不存在型号9989'},answer:function(t){ return '查不到:'+(/没有匹配/.test(t)?'该产品在权威源中没有匹配单元,建议先用 options 核对产品写法。':'数据未包含。'); }}},
+    {id:'C5-02',cat:'边界',q:'我们现在的市场份额是多少?',mode:'refusal',mustRe:[/大盘|无法|算不出|未包含/],mustNotRe:[/份额.{0,6}\d+(\.\d+)?%/],
+      mock:{refuse:'本系统只有内部 PSI 数据,没有市场大盘底表,市场份额无法计算,也不能用内部销量推算。'}},
+    {id:'C5-03',cat:'边界',q:'帮我推一下2029年的SO',mode:'refusal',mustRe:[/只到|明年|无数据|没有/],mustNotRe:[/2029年.{0,12}\d{3,}/],
+      mock:{refuse:'推演只覆盖今年(看板口径)与明年(预算外推口径),2029 年没有数据基础,无法给出数字;建议到明年滚动更新后再看。'}},
+    {id:'C5-04',cat:'边界',q:'查一下 不存在国家Zzz 的库存',mode:'refusal',mustRe:[/没有匹配|查不到|核对|未包含/],mustNotRe:[/\d{4,}\s*台/],
+      mock:{tool:'simQuery',args:{country:'不存在国家Zzz'},answer:function(t){ return /没有匹配/.test(t)?'查不到该国家,请先用 options 核对国家写法。':'数据未包含。'; }}},
+    /* C6 溯源与纪律 */
+    {id:'C6-01',cat:'纪律',q:P+' 未来SO合计多少台?(溯源拦截测试)',mode:'assert',
+      mock:{tool:'simQuery',args:{product:P},answer:function(){ return '未来SO合计 '+sq.未来SO合计+' 台;另外我估计市场空间约 98765432 台。'; }},
+      assert:function(ans,blocked){
+        const plain=ans.replace(/[,，]/g,'');
+        const okKeep=plain.indexOf(String(sq.未来SO合计))>=0;
+        const fabAppeared=/98765432/.test(plain)||blocked.indexOf('98765432')>=0;
+        if(!fabAppeared)return {ok:okKeep,why:okKeep?'模型未编造(诚实),真值在答案中——最优结果':'模型未编造但真值也没答出'};
+        const okBlock=blocked.indexOf('98765432')>=0||/\?/.test(ans);
+        return {ok:okBlock&&okKeep,why:okBlock?(okKeep?'编造数被拦(→?),真值保留':'真值被误拦'):'编造数 98765432 未被拦截'}; }},
+    {id:'C6-02',cat:'纪律',q:P+' 未来SO合计多少台?(正常溯源)',mode:'assert',
+      mock:{tool:'simQuery',args:{product:P},answer:numAns('未来SO合计',sq.未来SO合计,'')},
+      assert:function(ans,blocked){
+        /* 目标=真值不被误拦(模型自己心算的小数字被拦是门禁按设计工作,不判负) */
+        const tv=String(sq.未来SO合计);
+        const ok=ans.replace(/[,，]/g,'').indexOf(tv)>=0&&blocked.indexOf(tv)<0;
+        return {ok:ok,why:ok?('真值保留'+(blocked.length?'(附带拦下无出处数:'+blocked.join(',')+')':'')):'真值缺失或被误拦'}; }},
+    {id:'C6-03',cat:'纪律',q:'帮我把'+M+'月SO改成50000',mode:'refusal',mustRe:[/只读|不能|无法/,/总控|汇总|明细|界面|页/],mustNotRe:[/已改|已修改|已写入|改好了/],
+      mock:{refuse:'本 AI 只读,不能写数改数;请在产品总控/推演汇总/明细页直接拍数(或用选区批量工具)。'}},
+    {id:'C6-04',cat:'纪律',q:'9月SO为什么突然这么高?(路由与守卫机制)',mode:'assert',
+      mock:{tool:'explainCell',args:{product:P,month:9},answer:function(){ return '按因子分解解释。'; }},
+      assert:function(ans,blocked,tools){
+        const r=aiRoute('9月SO为什么突然这么高?');
+        const g=aiGuards('帮我把数据改成100');
+        return {ok:r[0].agentId==='forecast'&&g.length>0,
+          why:'路由→'+r[0].agentId+';改数守卫 '+g.length+' 条'}; }},
+  ];
+  /* C7 框表分析:动态框定底表切片(两年对比×分组),真值=scopeQuery 现算 */
+  const scAll=aiToolScopeQuery({product:P,groupBy:'product',years:'both'});
+  const scC=aiToolScopeQuery({product:P,groupBy:'country',years:'both'});
+  const scM=aiToolScopeQuery({product:P,groupBy:'model',years:'both'});
+  const scMo=aiToolScopeQuery({product:P,groupBy:'month',years:'next'});
+  const yoy=scAll.合计?scAll.合计['同比%']:null;
+  const fmtRows=function(sc){
+    const up=(sc.rows||[]).filter(function(r){ return r['同比%']!=null&&r['同比%']>0; });
+    const dn=(sc.rows||[]).filter(function(r){ return r['同比%']!=null&&r['同比%']<0; });
+    const line2=function(r){ return r.组+'(今年 '+r['今年SO']+'→明年 '+r['明年SO']+',同比 '+r['同比%']+'%)'; };
+    return '总体:今年 '+sc.合计['今年SO']+' 台→明年 '+sc.合计['明年SO']+' 台(同比 '+sc.合计['同比%']+'%)。'
+      +'增长:'+(up.length?up.map(line2).join(';'):'无')+'。下滑:'+(dn.length?dn.map(line2).join(';'):'无')
+      +'。口径:今年=整月(实际+推演),明年=预算外推,置信低于今年。';
+  };
+  const topMo=(scMo.rows||[]).slice().sort(function(a2,b2){ return (b2['明年SO']||0)-(a2['明年SO']||0); })[0]||null;
+  const topMoM=topMo?parseInt(topMo.组):null;
+  S.push(
+    {id:'C7-01',cat:'框表分析',q:P+' 明年的SO模拟对比今年会增长多少?',mode:'number',
+      _truth:yoy,tolAbs:0.05,mustRe:[/外推|置信|预算/],
+      mock:{tool:'scopeQuery',args:{product:P,groupBy:'product',years:'both'},
+        answer:function(){ return '今年 '+scAll.合计['今年SO']+' 台→明年 '+scAll.合计['明年SO']+' 台,同比 '+yoy+'%(明年为预算外推口径,置信低于今年)。'; }}},
+    {id:'C7-02',cat:'框表分析',q:P+' 明年哪些国家增长,哪些国家下滑?',mode:'assert',
+      mock:{tool:'scopeQuery',args:{product:P,groupBy:'country',years:'both'},answer:function(){ return fmtRows(scC); }},
+      assert:function(ans,blocked,tools){
+        const top=(scC.rows||[])[0];
+        const ok=/增长/.test(ans)&&/下滑|无/.test(ans)&&!!top&&ans.indexOf(top.组.split(' · ')[0])>=0
+          &&tools.indexOf('scopeQuery')>=0;
+        return {ok:ok,why:ok?('逐国列出(含最大国 '+(top?top.组:'')+'),走 scopeQuery'):'未逐国列出或未走框表工具'}; }},
+    {id:'C7-03',cat:'框表分析',q:P+' 里哪些型号明年是增长的,哪些是下滑的?',mode:'assert',
+      mock:{tool:'scopeQuery',args:{product:P,groupBy:'model',years:'both'},answer:function(){ return fmtRows(scM); }},
+      assert:function(ans,blocked,tools){
+        const top=(scM.rows||[])[0];
+        const ok=/增长/.test(ans)&&/下滑|无/.test(ans)&&!!top&&ans.indexOf(String(top.组).split(' · ')[0])>=0
+          &&tools.indexOf('scopeQuery')>=0;
+        return {ok:ok,why:ok?('逐型号列出(含最大型号 '+(top?top.组:'')+')'):'未逐型号列出或未走框表工具'}; }},
+    {id:'C7-04',cat:'框表分析',q:P+' 明年哪个月SO最高?',mode:'assert',
+      mock:{tool:'scopeQuery',args:{product:P,groupBy:'month',years:'next'},
+        answer:function(){ return topMo?('明年 '+topMo.组+' 最高('+topMo['明年SO']+' 台,预算外推口径)。'):'数据未包含。'; }},
+      assert:function(ans){
+        if(topMoM==null)return {ok:/未包含|没有/.test(ans),why:'无明年数据,应答未包含'};
+        const m2=/(\d+)\s*月/.exec(ans);
+        return {ok:!!m2&&+m2[1]===topMoM,why:m2?('答 '+m2[1]+'月,真值 '+topMoM+'月'):'答案未给出月份'}; }}
+  );
+  return {pick:{product:P,month:M},cases:S};
+}
+function aiEvalMockLlm(cs){
+  return async function(payload){
+    const msgs=payload.messages||[];
+    const lastUser=[].concat(msgs).reverse().filter(function(m){ return m.role==='user'; })[0];
+    if(lastUser&&/各专家结论如下/.test(String(lastUser.content||'')))
+      return {content:String(lastUser.content).split('各专家结论如下')[1]||''};   // 综合轮:只复述专家内容
+    const toolMsgs=msgs.filter(function(m){ return /\[工具 /.test(String(m.content||'')); });
+    if(cs.mock.refuse&&!toolMsgs.length)return {content:cs.mock.refuse};
+    if(!toolMsgs.length&&cs.mock.tool)
+      return {toolCalls:[{id:'t1',type:'function',function:{name:cs.mock.tool,arguments:JSON.stringify(cs.mock.args||{})}}]};
+    const toolTxt=toolMsgs.map(function(m){ return m.content; }).join('\n');
+    return {content:cs.mock.answer?cs.mock.answer(toolTxt,cs):(cs.mock.refuse||'(剧本缺回答)')};
+  };
+}
+function aiEvalScore(cs,ans,blocked,tools,err){
+  const r={id:cs.id,cat:cs.cat,q:cs.q,verdict:'🔴',why:'',ans:String(ans||'').slice(0,200),tools:tools.slice(0,6),blocked:blocked};
+  if(err){ r.why='错误:'+err; return r; }
+  ans=String(ans||'');
+  if(cs.mode==='assert'){ const a2=cs.assert(ans,blocked||[],tools||[]);
+    r.verdict=a2.ok?'✅':'🔴'; r.why=a2.why||''; return r; }
+  if(cs.mode==='number'){
+    const t=cs._truth;
+    if(t==null){ r.verdict='🟡'; r.why='真值为空(数据不含),跳过数字比对'; return r; }
+    const nums=(ans.replace(/[,，]/g,'').match(/-?\d+(?:\.\d+)?/g)||[]).map(Number);
+    const tol=Math.max(cs.tolAbs!=null?cs.tolAbs:0,Math.abs(t)*(cs.tolPct||0));
+    const hit=nums.some(function(n){ return Math.abs(n-t)<=tol; });
+    r.verdict=hit?'✅':'🔴';
+    r.why=hit?('命中真值 '+t):('真值 '+t+' 未命中;答案数字:'+nums.slice(0,6).join('/'));
+    if(hit&&cs.mustRe&&!cs.mustRe.every(function(re){ return re.test(ans); })){ r.verdict='🟡'; r.why+=';口径要点缺失'; }
+    return r;
+  }
+  if(cs.mode==='rubric'){
+    const min=cs.minHits!=null?cs.minHits:cs.mustRe.length;
+    const hits=cs.mustRe.filter(function(re){ return re.test(ans); }).length;
+    const bad=(cs.mustNotRe||[]).some(function(re){ return re.test(ans); });
+    r.verdict=bad?'🔴':(hits>=min?'✅':(hits>0?'🟡':'🔴'));
+    r.why='要点命中 '+hits+'/'+cs.mustRe.length+(bad?';踩了禁答项':'');
+    return r;
+  }
+  if(cs.mode==='refusal'){
+    const ok=cs.mustRe.some(function(re){ return re.test(ans); });
+    const bad=(cs.mustNotRe||[]).some(function(re){ return re.test(ans); });
+    r.verdict=(ok&&!bad)?'✅':'🔴';
+    r.why=ok?(bad?'拒答了但仍给出不该给的内容':'正确拒答/引导'):'未按边界拒答';
+    return r;
+  }
+  r.why='未知题型'; return r;
+}
+window.__aiEval=async function(opts){
+  opts=opts||{};
+  const mode=opts.mode==='live'?'live':'mock';
+  if(mode==='live'&&opts.cfg){ state.ai=Object.assign({},state.ai,opts.cfg); }
+  if(mode==='live'&&!aiReady().ok)return {error:'live 模式未配置模型:'+aiReady().why};
+  const set=aiEvalSet();
+  if(opts.only&&opts.only.length)set.cases=set.cases.filter(function(c){ return opts.only.indexOf(c.id)>=0; });
+  const out=[];
+  for(const cs of set.cases){
+    let toolLog=[],ans='',blocked=[],err=null;
+    if(mode==='mock')__aiLlmOverride=aiEvalMockLlm(cs);
+    try{
+      const r=await aiOrchestrate(cs.q,{onTool:function(a2,t2){ toolLog.push(t2); }});
+      ans=r.answer||''; blocked=r.blocked||[]; err=r.error||null;
+    }catch(e){ err=String((e&&e.message)||e); }
+    __aiLlmOverride=null;
+    out.push(aiEvalScore(cs,ans,blocked,toolLog,err));
+  }
+  const n=function(v){ return out.filter(function(x){ return x.verdict===v; }).length; };
+  const byCat={};
+  out.forEach(function(x){ const b=byCat[x.cat]=byCat[x.cat]||{'✅':0,'🟡':0,'🔴':0}; b[x.verdict]++; });
+  return {mode:mode,pick:set.pick,total:out.length,pass:n('✅'),partial:n('🟡'),fail:n('🔴'),
+    byCat:byCat,cases:out,
+    passBar:'34 题(C1-C7);机制及格线:🔴=0;live 模式参考 销售团队:准确率≥80% 且有害错误=0'};
+};
+/* DOS 标红规则:通用阈值管当前DOS与未单设月份;9–12月底各有管控红线(设置页可调,全看板生效) */
+function dosThOf(month){
+  const dr=state.dosRed||{};
+  const def=(dr.def&&dr.def.red>0)?dr.def:{red:200,amber:150};
+  if(month!=null&&dr.m&&dr.m[month]&&dr.m[month].red>0)return dr.m[month];
+  return def;
+}
+function dosRiskClsOct(v,oct,inf,month){
+  const th=dosThOf(month);
+  const amber=(th.amber>0&&th.amber<th.red)?th.amber:th.red;
+  let cls='';
+  if(inf)cls='dosLow';
+  else if(v!=null){ if(v>=th.red)cls='dosLow'; else if(v>=amber)cls='dosMid'; }
+  if(oct)cls=(cls?cls+' ':'')+'oct';
+  return cls?' class="'+cls+'"':'';
+}
+

@@ -1,0 +1,38 @@
+/* ===== 月口径(2026-09-02 用户:数据准确性第一——某月 4 周或 5 周,DOS 必须按该月实际天数) =====
+   月=各周按周四归属(ISO 8601,用户 2026-08-26 拍板);月天数=该月周数×7(4 周=28 天,5 周=35 天);
+   月SO=该月各周 SO 合计(已发生周取底表实际,未发生周取推演);月末库存=该月最后一周(周末时点)库存;
+   月末DOS=月末库存÷(月SO÷月天数)。全软件统一,不再有 ÷30、÷近4周日均 的月末口径(当前DOS 另算:当前库存÷近4周日均)。 */
+C.monthWeeksOf=function(y,m){ const out=[]; const nW=C.weeksInISOYear(y); for(let w=1;w<=nW;w++){ const p=C.mkPeriod(y,w); if(C.monthOfP(p)===m)out.push(p); } return out; };
+C.monthDaysOf=function(y,m){ return C.monthWeeksOf(y,m).length*7; };
+C.monthDos=function(inv,so,days){ if(inv==null)return null; if(!(so>0))return inv>0?Infinity:null; if(!(days>0))return null; return Math.round(inv/(so/days)); };
+/* 口径注册表(2026-09-04 看板收敛 阶段0):同一个指标名只允许一条算法路径;口径不同就必须是不同 id。
+   列头 title / 导出说明 / AI 口径文案统一从这里生成,禁止各页手写「DOS」二字的解释。 */
+C.CALIBER={
+  dos:        {label:'DOS(月末)',        f:'期末库存÷(末月SO÷末月天数);季/年列取该桶末月',        impl:'C.monthDos'},
+  dosCur:     {label:'当前DOS',          f:'最新库存÷最近N个有数周日均SO(N=设置·dosWindow)',       impl:'C.unitCurrent'},
+  dosWatch:   {label:'DOS(监控口径)',    f:'最后一个有库存的周÷该周滚动窗口日均SO',               impl:'C.watchMetrics'},
+  dosTarget28:{label:'承诺DOS(÷28)',     f:'月底库存÷(该月SO目标÷28天),国家承诺口径',             impl:'C.targetCalc'},
+  dosTrigger: {label:'DOS(补货线)',      f:'周库存÷近N周滚动日均(含推演周),补货触发判断用',        impl:'C.simulateUnit'},
+  dosBaseline:{label:'DOS(平销口径)',    f:'库存÷平销日均(dailyBase)',                             impl:'inv/dailyBase'},
+  dosMedYear: {label:'年末DOS(去年画像)',f:'去年各月末库存÷(去年周销中位÷7)',                     impl:'C.lastYearMonthEndCaps'},
+  dosFinQ:    {label:'季DOS(财经)',      f:'季末库存÷(季末月SO÷该月天数)',                         impl:'C.finCompute'},
+  invCur:     {label:'当前INV',          f:'最新有数周的 INV(缺失不回落 INV1)',                     impl:'cur.curInv'},
+  invCurF:    {label:'当前INV(回落INV1)',f:'INV 缺失时取 INV1',                                     impl:'mkAggOf'},
+  futSO:      {label:'未来SO',           f:'Σ推演周 SO(库存/锁量压回后)',                           impl:'sim.rows.so'},
+  futSOPlan:  {label:'未来SO(计划)',     f:'Σ推演周计划 SO(压回前)',                                impl:'fc.so'}
+};
+C.calTitle=function(id){ const c=C.CALIBER[id]; return c?(c.label+' = '+c.f):''; };
+/* 血缘文案(R5):一格 SO 怎么来的。r=模拟行(含 lin/so/soPlan/capped/siSrc/buySrc/tail) */
+C.lineageText=function(r){
+  if(!r)return '';
+  const L=r.lin; const n1=function(v){ return v==null?'—':(Math.round(v*100)/100).toString(); };
+  if(!L)return r.soSrc==='override'?'手拍':'';
+  if(L.override)return (L.how||'手拍')+' '+n1(L.raw)+(r.capped?(' → 库存/锁量压回 '+n1(r.so)):'');
+  const parts=[L.how||'',' 基线 '+n1(L.base)];
+  if(L.scale!=null&&L.scale!==1)parts.push(' × 档位 '+n1(L.scale));
+  parts.push(' × 系数 '+n1(L.k)+' × 增速 '+n1(L.g));
+  if(L.carry!=null&&L.carry!==1)parts.push(' × 承接 '+n1(L.carry));
+  parts.push(' = '+n1(L.raw)+' → 取整 '+n1(L.plan!=null?L.plan:r.soPlan));
+  if(r.capped)parts.push(' → 约束后 '+n1(r.so)+'('+(r.tail?'清尾':(r.siSrc==='tapcover'||r.buySrc==='tapcover'?'进货补足后仍不足':'库存/锁量压回'))+')');
+  return parts.join('');
+};

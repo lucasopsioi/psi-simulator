@@ -1,0 +1,1655 @@
+/* ===== 统一时间立方(2026-09-04 看板收敛 阶段2)=====
+   推演编辑的 分桶/单元序列/聚合/桶DOS 原文提升为引擎函数——所有看板、导出、AI 统一从这里取数;
+   页面里旧名 pv2Buckets/pv2ItemVals/pv2Agg/pv2BucketDos 只是别名。纯函数、可单测(test.js)。 */
+C.unitKey3=function(country,account,model){ return country+'\u0001'+account+'\u0001'+String(model==null?'':model); };
+/* 时间桶:mode=hist(·A)/sim(今年推演,可拍)/ext(外推·E,只读);月按周四归属;histN=历史桶只保留最近 N 个 */
+function tbBuckets(Dx,stx,gran,yrs,histN,expand){
+  const curY=C.periodY(stx.maxPeriod);
+  const fwSet={}; Dx.fw.forEach(function(p2){ fwSet[p2]=1; });
+  const wByY={};
+  stx.units.forEach(function(u){ u.periods.forEach(function(p2){
+    const y=C.periodY(p2);
+    (wByY[y]=wByY[y]||{})[p2]=1; }); });
+  Dx.fw.forEach(function(p2){ (wByY[curY]=wByY[curY]||{})[p2]=1; });
+  const bks=[];
+  if(gran==='week'){
+    /* 周粒度历史可跨年(近 N 周),未来=当前推演段 */
+    const allP={};
+    Object.keys(wByY).forEach(function(y){ Object.keys(wByY[y]).forEach(function(p2){ allP[p2]=1; }); });
+    const ws=Object.keys(allP).map(Number).sort(function(x,y){return x-y;});
+    const hist=ws.filter(function(p2){ return !fwSet[p2]; }).slice(-(histN!=null?histN:8));
+    hist.concat(Dx.fw).forEach(function(p2){
+      bks.push({key:'W'+p2,label:C.weekLabel(p2),y:C.periodY(p2),weeks:[p2],days:7,m:C.monthOfP(p2),lastWeeks:[p2],lastDays:7,
+        mode:fwSet[p2]?'sim':'hist'});
+    });
+    bks.forEach(function(b2){ b2.fut=(b2.weeks||[]).filter(function(p2){ return fwSet[p2]; }); b2.hasFut=b2.fut.length>0; });   // 周粒度也要可拍(2026-09-02 用户:未来格编辑不了——此前周分支提前返回,没算 hasFut)
+    return {bks:bks,fwSet:fwSet,curY:curY,weekOnlyCur:true};
+  }
+  yrs.forEach(function(y){
+    const ws=Object.keys(wByY[y]||{}).map(Number).sort(function(x,y2){return x-y2;});
+    const mk2=function(mFrom,mTo,key,label){
+      if(y<=curY){
+        const sub=ws.filter(function(p2){ const m=C.monthOfP(p2); return m>=mFrom&&m<=mTo; });
+        if(!sub.length)return;
+        const anyFut=sub.some(function(p2){ return fwSet[p2]; });
+        /* 桶 DOS 口径(2026-09-02 用户:月视图 12 月底 DOS 50 天,切季视图 Q4 变 106 天是错的):季/年列的 DOS = 该桶最后一个月的月末DOS
+           (末月库存÷(末月SO÷末月天数)),与月视图同值;此前季/年用整桶 SO 均摊,12 月拍高后 Q4 的 DOS 被季均拉大 */
+        let mL=mFrom; sub.forEach(function(p2){ const m=C.monthOfP(p2); if(m>mL)mL=m; });
+        const lastW=sub.filter(function(p2){ return C.monthOfP(p2)===mL; });
+        bks.push({key:key,label:label,y:y,weeks:sub,days:sub.length*7,m:mTo,lastWeeks:lastW,lastDays:lastW.length*7,mL:mL,
+          mode:(y===curY&&anyFut)?'sim':'hist',canExp:gran==='month'});
+      } else {
+        const months=[]; for(let m=mFrom;m<=mTo;m++)months.push(y+'-'+m);
+        bks.push({key:key,label:label,y:y,weeks:[],months:months,days:months.reduce(function(s,ym){ return s+C.monthDaysOf(y,+ym.split('-')[1]); },0),m:mTo,
+          lastWeeks:[],lastDays:C.monthDaysOf(y,mTo),mL:mTo,mode:'ext'});   // 外推月天数=该月周数×7(2026-09-02 统一);季/年 DOS 按末月
+      }
+    };
+    if(gran==='month'){
+      for(let m=1;m<=12;m++){
+        const key='M'+y+'-'+m;
+        if(y<=curY&&expand&&expand[key]){
+          /* 月展开为周:该月各周独立桶(可拍粒度=周),th 上「−」收起;外推年无周结构不展开 */
+          const ws2=ws.filter(function(p2){ return C.monthOfP(p2)===m; });
+          if(!ws2.length)continue;
+          ws2.forEach(function(p2,wi){
+            bks.push({key:'W'+p2,label:C.weekLabel(p2),y:y,weeks:[p2],days:7,m:m,lastWeeks:[p2],lastDays:7,
+              mode:fwSet[p2]?'sim':'hist',mSub:key,mSubFirst:wi===0});
+          });
+        } else mk2(m,m,key,m+'月');
+      }
+    }
+    else if(gran==='quarter'){ for(let q=1;q<=4;q++)mk2(q*3-2,q*3,'Q'+y+'-'+q,'Q'+q); }
+    else mk2(1,12,'Y'+y,y+'年');
+  });
+  /* 历史桶范围裁剪:按时间序只留最近 histN 个(0=全隐藏) */
+  if(histN!=null){
+    const histIdx=[];
+    bks.forEach(function(b2,i2){ if(b2.mode==='hist'&&!b2.mSub)histIdx.push(i2); });
+    if(histIdx.length>histN){
+      const drop={};
+      histIdx.slice(0,histIdx.length-histN).forEach(function(i2){ drop[i2]=1; });
+      for(let i2=bks.length-1;i2>=0;i2--)if(drop[i2])bks.splice(i2,1);
+    }
+  }
+  bks.forEach(function(b2){
+    b2.fut=(b2.weeks||[]).filter(function(p2){ return fwSet[p2]; });
+    b2.hasFut=b2.fut.length>0;
+  });
+  return {bks:bks,fwSet:fwSet,curY:curY};
+}
+function tbUnitSeries(it,bctx,src,extByKey){
+  const bks=bctx.bks,n=bks.length;
+  const so=new Array(n).fill(0),si=new Array(n).fill(0),inv=new Array(n).fill(null),invP=new Array(n).fill(0);
+  const soL=new Array(n).fill(0);   // 桶末月 SO(季/年列 DOS 分母;月/周桶=整桶)
+  const bIdx={},lIdx={};
+  bks.forEach(function(b2,i2){ (b2.weeks||[]).forEach(function(p2){ bIdx[p2]=i2; }); (b2.lastWeeks||b2.weeks||[]).forEach(function(p2){ lIdx[p2]=i2; }); });
+  const u=it.u;
+  u.periods.forEach(function(p2){
+    const i2=bIdx[p2]; if(i2==null||bctx.fwSet[p2])return;
+    const w=u.weeks.get(p2);
+    so[i2]+=(w.so||0); si[i2]+=(w.si||0); if(lIdx[p2]===i2)soL[i2]+=(w.so||0);
+    const iv=w.inv!=null?w.inv:w.inv1;
+    if(iv!=null&&p2>=invP[i2]){ inv[i2]=iv; invP[i2]=p2; }
+  });
+  ((it.sim&&it.sim.rows)||[]).forEach(function(r){
+    const i2=bIdx[r.p]; if(i2==null)return;
+    so[i2]+=(r.so||0); si[i2]+=((src==='fsd')?(r.si||0):(r.buy||0)); if(lIdx[r.p]===i2)soL[i2]+=(r.so||0);
+    if(r.inv!=null&&r.p>=invP[i2]){ inv[i2]=r.inv; invP[i2]=r.p; }
+  });
+  /* 桶内没有该单元数据(免推演/停售/上市前)时,期末库存按「最近一次已知库存」结转(库存不会自己消失;2026-09-02 审计:此前月桶留空、年桶却结转,月/年不一致) */
+  (function(){
+    const pts=[];
+    u.periods.forEach(function(p2){ if(bctx.fwSet[p2])return; const w=u.weeks.get(p2); const iv=w.inv!=null?w.inv:w.inv1; if(iv!=null)pts.push([p2,iv]); });
+    ((it.sim&&it.sim.rows)||[]).forEach(function(r){ if(r.inv!=null)pts.push([r.p,r.inv]); });
+    if(!pts.length)return;
+    pts.sort(function(a,b){ return a[0]-b[0]; });
+    bks.forEach(function(b2,i2){ if(inv[i2]!=null||b2.mode==='ext'||!(b2.weeks&&b2.weeks.length))return;
+      const endP=b2.weeks[b2.weeks.length-1]; let best=null;
+      for(let k=0;k<pts.length;k++){ if(pts[k][0]<=endP)best=pts[k][1]; else break; }
+      if(best!=null){ inv[i2]=best; invP[i2]=endP; } });
+  })();
+  const soOv=new Array(n).fill(false),siOv=new Array(n).fill(false),soCarry=new Array(n).fill(false),soCap=new Array(n).fill(false);
+  ((it.sim&&it.sim.rows)||[]).forEach(function(r){ const i2=bIdx[r.p]; if(i2==null)return;
+    if(r.carry!=null)soCarry[i2]=true;
+    if(r.capped&&r.soSrc==='override')soCap[i2]=true;   // 手拍 SO 被库存/锁量压回(2026-09-02 审计 R1:此前格上完全没有信号)
+  });
+  if(extByKey){
+    const e=extByKey.get(C.unitKey3(u.country,u.account,u.model));
+    if(e)bks.forEach(function(b2,i2){
+      if(b2.mode!=='ext')return;
+      b2.months.forEach(function(ym,mi){
+        const o=e[ym]; if(!o)return;
+        so[i2]+=o.so; si[i2]+=o.si;
+        if(o.soOv)soOv[i2]=true;
+        if(o.siOv)siOv[i2]=true;
+        if(mi===b2.months.length-1){ inv[i2]=(inv[i2]||0)+o.inv; soL[i2]+=o.so; }
+      });
+    });
+  }
+  return {so:so,si:si,inv:inv,soOv:soOv,siOv:siOv,soCarry:soCarry,soCap:soCap,soL:soL};
+}
+function tbAgg(items,valMap,n){
+  const so=new Array(n).fill(0),si=new Array(n).fill(0),inv=new Array(n).fill(null),soL=new Array(n).fill(0);
+  const soOv=new Array(n).fill(false),siOv=new Array(n).fill(false),soCarry=new Array(n).fill(false),soCap=new Array(n).fill(false);
+  items.forEach(function(it){
+    const v=valMap.get(it.u.key); if(!v)return;
+    for(let i2=0;i2<n;i2++){
+      so[i2]+=v.so[i2]; si[i2]+=v.si[i2]; soL[i2]+=(v.soL?v.soL[i2]:v.so[i2]);
+      if(v.inv[i2]!=null)inv[i2]=(inv[i2]||0)+v.inv[i2];
+      if(v.soOv&&v.soOv[i2])soOv[i2]=true;
+      if(v.siOv&&v.siOv[i2])siOv[i2]=true;
+      if(v.soCarry&&v.soCarry[i2])soCarry[i2]=true;
+      if(v.soCap&&v.soCap[i2])soCap[i2]=true;
+    }
+  });
+  return {so:so,si:si,inv:inv,soOv:soOv,siOv:siOv,soCarry:soCarry,soCap:soCap,soL:soL};
+}
+/* 桶 DOS(统一口径):期末库存÷(末月SO÷末月天数);季/年列=该桶最后一个月的月末DOS(与月视图同值);周桶=÷(周SO÷7) */
+function tbBucketDos(a,i2,b2){
+  const soB=(a.soL?a.soL[i2]:a.so[i2]),iv=a.inv[i2];
+  const days=(b2.lastDays||b2.days);
+  return {soB:soB,iv:iv,dv:(iv!=null&&soB>0&&days>0)?Math.round(iv/(soB/days)):null};
+}
+C.timeBuckets=tbBuckets; C.unitSeries=tbUnitSeries; C.aggSeries=tbAgg; C.bucketDos=tbBucketDos;
+C.siOf=function(r,src){ return src==='fsd'?(r.si||0):(r.buy||0); };
+/* 维度取值:看板按 dims 任意层序分组时统一从这里取 */
+C.DIM_OF={
+  line:function(it){ return it.u.line||''; },
+  product:function(it){ return it.u.product||''; },
+  model:function(it){ return it.u.model||it.u.product||''; },
+  country:function(it){ return it.u.country||''; },
+  account:function(it){ return it.u.account||''; },
+  rep:function(it){ return C.repOf(it.u.country)||''; },
+  family:function(it){ const f=C.familyOf(it.u.product); return f?f.family:''; }
+};
+/* 当前态聚合:Σ当前库存 / Σ日均 → 当前DOS。invFallback:'inv1' = INV 缺失回落 INV1(产品总控现状;D3 前各消费方按现状传参) */
+C.curAgg=function(items,o){
+  o=o||{}; let inv=0,daily=0,n=0,hasInv=false;
+  items.forEach(function(it){ const c=it.cur||{}; n++;
+    const iv=(c.curInv!=null)?c.curInv:(o.invFallback==='inv1'?c.curInv1:null);
+    if(iv!=null){ inv+=iv; hasInv=true; }
+    daily+=(c.dailySO||0); });
+  return {n:n,inv:hasInv?inv:null,daily:daily,dosCur:(hasInv&&daily>0)?Math.round(inv/daily):null};
+};
+/* 查询(阶段2):env={Dx,stx,items,extByKey,expand,valMap?} 由页面准备(数据对象/过滤后的单元/外推映射);
+   q={src,gran,yrs,histN,dims,mode:'tree'|'flat',cur}。输出 {buckets,fwSet,curY,rows,valMap};rows[0] 永远是合计行(path=[]),
+   tree 模式逐级前缀各一行,flat 模式只出全维度叶子。dos 只在行级算(Σ库存÷(Σ末月SO÷天数)),绝不逐单元算完再平均——与推演编辑逐格相同。 */
+C.qRun=function(env,q){
+  const bctx=C.timeBuckets(env.Dx,env.stx,q.gran||'month',q.yrs,q.histN,env.expand||null);
+  const n=bctx.bks.length,src=q.src||'fsd';
+  const valMap=env.valMap||new Map();
+  env.items.forEach(function(it){ if(!valMap.has(it.u.key))valMap.set(it.u.key,C.unitSeries(it,bctx,src,env.extByKey||null)); });
+  const mkRow=function(path,items){
+    const v=C.aggSeries(items,valMap,n);
+    const dos=bctx.bks.map(function(b2,i2){ return C.bucketDos(v,i2,b2); });
+    return {path:path,depth:path.length,items:items,v:v,dos:dos,cur:C.curAgg(items,q.cur||{})};
+  };
+  const rows=[mkRow([],env.items)];
+  const dims=q.dims||[];
+  if(dims.length){
+    const byPath=new Map();
+    env.items.forEach(function(it){
+      const p=[];
+      for(let d=0;d<dims.length;d++){
+        const fn=C.DIM_OF[dims[d]]; p.push(fn?fn(it):'');
+        if(q.mode==='flat'&&d<dims.length-1)continue;
+        const k=p.join('\u0001');
+        let g=byPath.get(k); if(!g){ g={path:p.slice(),items:[]}; byPath.set(k,g); }
+        g.items.push(it);
+      }
+    });
+    byPath.forEach(function(g){ rows.push(mkRow(g.path,g.items)); });
+  }
+  return {buckets:bctx.bks,fwSet:bctx.fwSet,curY:bctx.curY,rows:rows,valMap:valMap};
+};
+
+C.unitMonthSO=function(u,simRows,y,m){ const simMap={}; (simRows||[]).forEach(function(r){ simMap[r.p]=r; });
+  let so=0; C.monthWeeksOf(y,m).forEach(function(p){ const r=simMap[p]; if(r){ so+=(r.so||0); return; } const w=(u&&u.weeks)?u.weeks.get(p):null; if(w&&w.so!=null)so+=w.so; }); return so; };
+C.dosText=function(dv){ return dv==null?'—':(dv===Infinity?'∞':C.fmt(dv)); };
+/* ---------- 锁量按时间顺序分配(2026-09-02 用户:拍高某月 SI/SO,后面月份要自动调减;之前拍过的不动;不要等比例把所有月份都改一遍) ----------
+   entries=[{g:组(国家等),p:时间序(周/年月),si:规则量,fixed:手拍(原样保留、优先占预算)}];o.total=总预算;o.by={组键:预算};o.groupsOf(e)→该条目受哪些组预算约束;o.step 步长
+   先把 fixed 全部扣掉(超了记 manOver),再按 p 升序(同 p 按输入顺序)给自动量:min(规则量, 各预算余量) 按步长向下取整,余量用尽后为 0。
+   返回 {alloc[],used(含fixed),before(规则量合计),fixed,manOver,cutAt(首次被砍的 p),left} */
+C.lockSeqAlloc=function(entries,o){
+  o=o||{}; const step=o.step||1;
+  const left={total:o.total!=null?o.total:Infinity}; const by=o.by||{}; Object.keys(by).forEach(function(k){ left[k]=by[k]; });
+  const groupsOf=o.groupsOf||function(){ return []; };
+  let fixedSum=0,before=0;
+  entries.forEach(function(e){ before+=(e.si||0); if(e.fixed)fixedSum+=(e.si||0); });
+  /* 手拍(fixed)按时间顺序占预算(2026-09-02 第二轮审计 R2/R6 修正):此前不论时间先后一次性预扣,
+     于是「拍 12 月 SI=余量」会把 9–11 月的自动 SI 全部清 0(断供点提前到拍数之前),后年(cy+2)的手拍还会挤掉明年的自动量,
+     导致同一个 2027 月份在 budgetRowsOv(2027) 与 (2028) 两个出口是两个数。现按用户口径「拍高某月,后面月份自动调减,之前调过的不动」:
+     逐条按 p 升序处理,手拍到它自己的时间点才扣预算,超支记 manOver(工具条红字提示)。 */
+  const order=entries.map(function(e,i){ return i; }).sort(function(a,b){ return (entries[a].p-entries[b].p)||(a-b); });
+  const alloc=new Array(entries.length); let used=0,cutAt=null,manOver=false;
+  order.forEach(function(i){ const e=entries[i];
+    const gs=groupsOf(e);
+    if(e.fixed){ const v=e.si||0; alloc[i]=v; used+=v; left.total-=v; gs.forEach(function(k){ if(left[k]!=null)left[k]-=v; });
+      if(left.total<-1e-9)manOver=true; return; }
+    let cap=Math.max(0,left.total); gs.forEach(function(k){ if(left[k]!=null)cap=Math.min(cap,Math.max(0,left[k])); });
+    let take=C.floorStep(Math.min(e.si||0,cap),step);
+    if(take<C.floorStep(e.si||0,step)&&cutAt==null)cutAt=e.p;   // 规则量本身不是步长倍数时的取整不算"被砍"(2026-09-02 审计)
+    alloc[i]=take; used+=take; left.total-=take; gs.forEach(function(k){ if(left[k]!=null)left[k]-=take; });
+  });
+  return {alloc:alloc,used:used,before:before,fixed:fixedSum,manOver:manOver,cutAt:cutAt,left:left.total};
+};
+/* 预算月行重链:同一单元延伸月按年月序 库存=期初+SI−SO(SO≤期初+SI);inv0=期初(调用方按改前值算好) */
+C.rechainMonthRows=function(rows,idxs,inv0){
+  const list=idxs.slice().sort(function(a,b){ return (rows[a][7]-rows[b][7])||(rows[a][9]-rows[b][9]); });
+  let inv=inv0;
+  list.forEach(function(i){ const r=rows[i]; if(inv==null)inv=(+r[12]||0)-(+r[11]||0)+(+r[10]||0);
+    const si=+r[11]||0; let so=+r[10]||0; if(so>inv+si)so=Math.max(0,Math.round(inv+si)); inv=inv+si-so;
+    r[10]=so; r[12]=Math.round(inv); if(r[13]!==''&&r[13]!=null){ r[14]=Math.round(so*r[13]); r[15]=Math.round(si*r[13]); } });
+};
+/* 今年月末画像(2026-09-02 用户:去年月均库存 X、今年推演成 1.2X而 SO 没涨——明年的库存水位要跟今年走,不平白无故压货):
+   今年每个月末的 库存/该月SO/天数→DOS(已过月取底表实际,未过月取今年推演);延伸段按它定各月水位,缺月才退回多年历史画像 */
+C.thisYearProfileOf=function(u,simRows,maxPeriod){
+  const y=C.periodY(maxPeriod); const out={m:{},n:0,y:y}; const simMap={}; (simRows||[]).forEach(function(r){ simMap[r.p]=r; });
+  C.MONTHS.forEach(function(m){ const pe=C.monthEndPeriodOf(y,m); let inv=null;
+    if(pe<=maxPeriod)inv=C.latestFieldAt(u,'inv',pe); else if(simMap[pe])inv=simMap[pe].inv;
+    if(inv==null)return;
+    const so=C.unitMonthSO(u,simRows,y,m); const dv=C.monthDos(inv,so,C.monthDaysOf(y,m));
+    out.m[m]={inv:Math.round(inv),dos:(dv!=null&&isFinite(dv))?dv:null,so:so}; out.n++; });
+  return out.n?out:null;
+};
+C.latestFieldAt=function(u,fld,p){
+  let v=null,vp=-1;
+  u.periods.forEach(function(q){ if(q>p||q<vp)return; const w=u.weeks.get(q); if(w&&w[fld]!=null){ v=w[fld]; vp=q; } });
+  return v;
+};
+C.reconcileFsdRetail=function(store,retailStore,opts){
+  opts=opts||{};
+  const N=opts.weeks||8;
+  const skipAudio=opts.skipAudio!==false;   // 音频下游是报量制,默认不对账
+  const types=opts.types||null;   // 国家||直接渠道 → dist/retail/operator/online/own(渠道架构页):只有带下游型(分销)的 SO 与下游对,直达消费者型不对
+  const tree=opts.tree||null;     // 国家 → {下游渠道:上游直接渠道名|'*'}(渠道架构页连线):给了就多出按直接渠道细分的对账行
+  const out={rows:[],byDirect:[],window:[],lastP:null,sum:null};
+  if(!store||!retailStore||!store.units||!retailStore.units)return out;
+  const pf={},pr={};
+  store.units.forEach(function(u){ if(skipAudio&&u.audio)return; u.periods.forEach(function(p){ if(u.weeks.get(p).so!=null)pf[p]=1; }); });
+  retailStore.units.forEach(function(u){ if(skipAudio&&u.audio)return; u.periods.forEach(function(p){ if(u.weeks.get(p).so!=null)pr[p]=1; }); });
+  const common=Object.keys(pf).filter(function(p){ return pr[p]; }).map(Number).sort(function(a,b){return a-b;});
+  if(!common.length)return out;
+  const win=common.slice(-N); const wset={}; win.forEach(function(p){ wset[p]=1; });
+  const lastP=win[win.length-1];
+  out.window=win; out.lastP=lastP;
+  const typeOf=function(u){ if(!types)return 'dist'; const c=u.country||''; return types[c+'||'+(u.line||'')+'||'+u.account]||types[c+'||'+u.account]||'dist'; };   // 产业键优先,兼容旧的国家键
+  const g={},gd={};
+  const get=function(u){ const k=(u.country||'')+'||'+(u.product||''); let e=g[k];
+    if(!e)e=g[k]={country:u.country||'',product:u.product||'',line:u.line||'',nFsd:0,nDs:0,fsdSO:0,directSO:0,dsSO:0,fsdInv:null,inv1:null,dsInv:null};
+    return e; };
+  const getD=function(country,line,account){ const k=country+'||'+line+'||'+account; let e=gd[k];
+    if(!e)e=gd[k]={country:country,line:line,account:account,type:null,mirror:false,nFsd:0,fsdSO:0,fsdInv:null,inv1:null,dsSO:0,dsInv:null,children:[]};
+    return e; };
+  const treeOf=function(c,line){ return tree[c+'||'+(line||'')]||tree[c]||{}; };   // 产业键优先,兼容旧的国家键
+  /* 同一家(2026-09-02 用户:Amazon 这类直达渠道有时在间接零售伙伴表里也出现):下游行连到直达型直接渠道 = 同一家的镜像,不是下游伙伴 →
+     它的 SO 计入 FSD 侧与下游对;库存按同一家核对(FSD Inventory vs 镜像行库存),INV1 不再加一次 */
+  const typeAt=function(c,line,acct){ if(!types)return 'dist'; return types[c+'||'+(line||'')+'||'+acct]||types[c+'||'+acct]||'dist'; };
+  const mirrors={};
+  if(tree)Object.keys(tree).forEach(function(k){ const ix=k.indexOf('||'); const c=ix<0?k:k.slice(0,ix), ln=ix<0?'':k.slice(ix+2); const tr=tree[k]||{};
+    Object.keys(tr).forEach(function(d){ const par=tr[d]; if(par&&par!=='*'&&typeAt(c,ln,par)!=='dist')mirrors[c+'||'+ln+'||'+par]=1; }); });
+  const isMirrorOf=function(c,line,acct){ return !!(mirrors[c+'||'+(line||'')+'||'+acct]||mirrors[c+'||||'+acct]); };
+  const soWin=function(u){ let s=0; u.periods.forEach(function(p){ if(!wset[p])return; const w=u.weeks.get(p); if(w.so!=null)s+=w.so; }); return s; };
+  store.units.forEach(function(u){ if(skipAudio&&u.audio)return;
+    const e=get(u); e.nFsd++;
+    const tp=typeOf(u); const so=soWin(u);
+    const mir=tp!=='dist'&&tree&&isMirrorOf(u.country||'',u.line||'',u.account);
+    if(tp==='dist'||mir)e.fsdSO+=so; else e.directSO+=so;
+    const inv=C.latestFieldAt(u,'inv',lastP), inv1=C.latestFieldAt(u,'inv1',lastP);
+    if(inv!=null)e.fsdInv=(e.fsdInv||0)+inv;
+    if(inv1!=null&&!mir)e.inv1=(e.inv1||0)+inv1;   // 同一家:库存由镜像行代表,INV1 不再加
+    if(tree){ const d=getD(u.country||'',u.line||'',u.account); d.nFsd++; d.type=tp; d.mirror=!!mir; d.fsdSO+=so;
+      if(inv!=null)d.fsdInv=(d.fsdInv||0)+inv; if(inv1!=null)d.inv1=(d.inv1||0)+inv1; }
+  });
+  retailStore.units.forEach(function(u){ if(skipAudio&&u.audio)return;
+    const e=get(u); e.nDs++;
+    const so=soWin(u); e.dsSO+=so;
+    const inv=C.latestFieldAt(u,'inv',lastP);
+    if(inv!=null)e.dsInv=(e.dsInv||0)+inv;
+    if(tree){ const c=u.country||''; const tr=treeOf(c,u.line); const par=tr[u.account]!=null?tr[u.account]:null;
+      const acct=par==null?'(未连线)':(par==='*'?'(国家FSD合计)':par);
+      const d=getD(c,u.line||'',acct); if(par==null)d.type='unwired'; else if(par==='*')d.type='country';
+      if(d.children.indexOf(u.account)<0)d.children.push(u.account);
+      d.dsSO+=so; if(inv!=null)d.dsInv=(d.dsInv||0)+inv; }
+  });
+  const counts={OK:0,'注意':0,'异常':0,'缺下游':0,'缺FSD':0,'直达':0};
+  const sum={fsdSO:0,dsSO:0,fsdInv:0,inv1:0,dsInv:0,nBoth:0};
+  const rank={'异常':0,'注意':1,'缺下游':2,'缺FSD':3,'直达':4,OK:5};
+  Object.keys(g).forEach(function(k){
+    const e=g[k];
+    e.fsdSOAll=e.fsdSO+e.directSO;
+    e.dSO=e.dsSO-e.fsdSO;
+    e.pSO=(e.nFsd&&e.nDs)?+((e.dSO)/Math.max(1,Math.abs(e.fsdSO))).toFixed(3):null;
+    const both=(e.inv1!=null||e.dsInv!=null)?((e.inv1||0)+(e.dsInv||0)):null;
+    e.invSum=both;
+    e.dInv=(e.fsdInv!=null&&both!=null)?both-e.fsdInv:null;
+    e.pInv=(e.nFsd&&e.nDs&&e.fsdInv!=null&&both!=null)?+((e.dInv)/Math.max(1,Math.abs(e.fsdInv))).toFixed(3):null;
+    if(e.nFsd&&!e.nDs)e.status=(e.fsdSO===0&&e.directSO>0)?'直达':'缺下游';
+    else if(!e.nFsd&&e.nDs)e.status='缺FSD';
+    else { const worst=Math.max(Math.abs(e.pSO||0),Math.abs(e.pInv||0)); e.status=worst<=0.05?'OK':(worst<=0.15?'注意':'异常');
+      sum.fsdSO+=e.fsdSO; sum.dsSO+=e.dsSO; sum.fsdInv+=(e.fsdInv||0); sum.inv1+=(e.inv1||0); sum.dsInv+=(e.dsInv||0); sum.nBoth++; }
+    counts[e.status]++;
+    out.rows.push(e);
+  });
+  out.rows.sort(function(a,b){ return (rank[a.status]-rank[b.status])||(Math.abs(b.dSO)-Math.abs(a.dSO))||(a.country<b.country?-1:1); });
+  sum.counts=counts;
+  sum.pSO=sum.nBoth?+((sum.dsSO-sum.fsdSO)/Math.max(1,Math.abs(sum.fsdSO))).toFixed(3):null;
+  sum.pInv=sum.nBoth?+(((sum.inv1+sum.dsInv)-sum.fsdInv)/Math.max(1,Math.abs(sum.fsdInv))).toFixed(3):null;
+  out.sum=sum;
+  /* 按直接渠道细分(需连线):带下游型直接渠道 vs 它名下下游的 Σ;直达消费者型不判;未连线/国家合计单列 */
+  if(tree){
+    const rankD={'异常':0,'注意':1,'未连线':2,'无下游':3,'国家合计':4,'直达':5,OK:6};
+    Object.keys(gd).forEach(function(k){
+      const d=gd[k];
+      d.nDs=d.children.length;
+      d.dSO=d.dsSO-d.fsdSO;
+      const both=d.mirror?(d.dsInv!=null?d.dsInv:null):((d.inv1!=null||d.dsInv!=null)?((d.inv1||0)+(d.dsInv||0)):null);   // 同一家:库存按同一家核对,不加 INV1
+      d.invSum=both; d.dInv=(d.fsdInv!=null&&both!=null)?both-d.fsdInv:null;
+      d.pSO=null; d.pInv=null;
+      if(d.type==='unwired')d.status='未连线';
+      else if(d.type==='country')d.status='国家合计';
+      else if(d.type!=='dist'&&!d.mirror)d.status='直达';
+      else if(!d.nDs)d.status='无下游';
+      else { d.pSO=+((d.dSO)/Math.max(1,Math.abs(d.fsdSO))).toFixed(3);
+        d.pInv=(d.fsdInv!=null&&both!=null)?+((d.dInv)/Math.max(1,Math.abs(d.fsdInv))).toFixed(3):null;
+        const worst=Math.max(Math.abs(d.pSO||0),Math.abs(d.pInv||0)); d.status=worst<=0.05?'OK':(worst<=0.15?'注意':'异常'); }
+      out.byDirect.push(d);
+    });
+    out.byDirect.sort(function(a,b){ return (rankD[a.status]-rankD[b.status])||(Math.abs(b.dSO)-Math.abs(a.dSO))||(a.country<b.country?-1:(a.country>b.country?1:(a.line<b.line?-1:(a.line>b.line?1:(a.account<b.account?-1:1))))); });
+  }
+  return out;
+};
+
+/* ---------- 补货规律显性回测:每 渠道×产品 的历史 SI 节奏 ----------
+   事件=显著 SI(≥2×近4周均销);记录触发前 DOS/触发前库存/补后 DOS。
+   模式判定:none=从无显著SI / oneshot=上市铺货后≥oneShotWeeks 周再无SI且期间仍有动销(非流水生意,需警惕)
+   / flow=流水补货。中位数与 learnReplenish 同口径。 */
+C.replenishStats=function(u,cfg){
+  const win=(cfg&&cfg.dosWindow)||4;
+  const oneShotWeeks=(cfg&&cfg.tailWeeks)||12;
+  const q=[]; let prevDos=null,prevInv=null;
+  const events=[];
+  u.periods.forEach(function(p){
+    const wk=u.weeks.get(p);
+    const so=wk.so;
+    const soValid=u.audio?(so!=null&&so>0):(so!=null);
+    if(soValid){ q.push(so); while(q.length>win)q.shift(); }
+    let s=0; q.forEach(function(v){s+=v;});
+    const daily=q.length?s/q.length/7:0;
+    const dos=(wk.inv!=null&&daily>0)?wk.inv/daily:null;
+    const avgW=q.length?s/q.length:0;
+    if(wk.si!=null&&wk.si>0&&avgW>0&&wk.si>=avgW*2){
+      events.push({p:p,si:wk.si,prevDos:prevDos!=null?Math.round(prevDos):null,
+        prevInv:prevInv,afterDos:dos!=null?Math.round(dos):null,
+        afterInv:wk.inv!=null?Math.round(wk.inv):null});
+    }
+    if(dos!=null)prevDos=dos;
+    if(wk.inv!=null)prevInv=wk.inv;
+  });
+  const med=function(a){ if(!a.length)return null;
+    const b=a.slice().sort(function(x,y){return x-y;}); return Math.round(b[Math.floor(b.length/2)]); };
+  const pick=function(f){ const a=[]; events.forEach(function(e){ if(f(e)!=null)a.push(f(e)); }); return a; };
+  const lastSI=events.length?events[events.length-1].p:null;
+  /* 一次性铺货:最后一次显著 SI 之后 ≥oneShotWeeks 个周期,且其后仍有有效动销记录 */
+  let mode='none';
+  if(events.length){
+    mode='flow';
+    if(lastSI!=null){
+      const after=u.periods.filter(function(p){ return p>lastSI; });
+      let soAfter=0;
+      after.forEach(function(p){ const so=u.weeks.get(p).so;
+        if(u.audio?(so!=null&&so>0):(so!=null&&so>0))soAfter++; });
+      if(after.length>=oneShotWeeks&&soAfter>0&&events.length<=2)mode='oneshot';
+    }
+  }
+  return {n:events.length,events:events,
+    trigger:med(pick(function(e){return e.prevDos;})),
+    target:med(pick(function(e){return e.afterDos;})),
+    trigInv:med(pick(function(e){return e.prevInv;})),
+    lastSI:lastSI,mode:mode};
+};
+
+/* ---------- 渠道补货策略判型(2026-09-01 用户拍板:每个渠道的补货节奏规律不同,必须先学历史再模拟,禁止全渠道一刀切) ----------
+   事件=显著SI(≥2×近4周均销,与 replenishStats 同口径),样本≥3 才学;
+   判型看哪个信号更集中(稳健离散度=四分位距÷中位):
+   - 水位型 inv:历史每次都在某个绝对库存台数附近进货(如"库存到500台就SI一批")→触发=进货前库存中位,补到=进货后库存中位
+   - 门槛型 dos:历史每次都在某个 DOS 附近进货(如"DOS低于90天就要补,否则SO下滑")→沿用 learnReplenish 中位(触发/目标DOS)
+   水位判定从严(库存离散度≤0.6×DOS离散度 且 ≤0.5):证据不足回落 DOS 型,学不到返回 null(上层再回落产品线默认)。 */
+C.replenishPolicyOf=function(u,cfg,rs0){
+  const rs=rs0||C.replenishStats(u,cfg);
+  const evs=(rs.events||[]).filter(function(e){ return e.prevDos!=null&&e.prevInv!=null; });
+  if(evs.length<3)return null;
+  const med=function(a){ const b=a.slice().sort(function(x,y){return x-y;}); return b[Math.floor(b.length/2)]; };
+  const rq=function(a){ const b=a.slice().sort(function(x,y){return x-y;});
+    const m=b[Math.floor(b.length/2)]; if(m<=0)return 99;
+    const q1=b[Math.floor(b.length*0.25)],q3=b[Math.floor(b.length*0.75)];
+    return (q3-q1)/m; };
+  const dosArr=evs.map(function(e){return e.prevDos;}),invArr=evs.map(function(e){return e.prevInv;});
+  const cvD=rq(dosArr),cvI=rq(invArr);
+  if(cvI<cvD*0.6&&cvI<=0.5){
+    const tin=Math.round(med(invArr));
+    const aft=evs.map(function(e){return e.afterInv;}).filter(function(x){return x!=null;});
+    const tgt=aft.length?Math.round(med(aft)):null;
+    if(tgt!=null&&tgt>tin&&tin>=0){
+      const aftD=evs.map(function(e){return e.afterDos;}).filter(function(x){return x!=null;});
+      return {type:'inv',triggerInv:tin,targetInv:tgt,n:evs.length,src:'unit',
+        targetDos:aftD.length?Math.round(med(aftD)):null,
+        cvI:+cvI.toFixed(2),cvD:+cvD.toFixed(2)};
+    }
+  }
+  const lr=C.learnReplenish(u,cfg);
+  return lr?{type:'dos',trigger:lr.trigger,target:lr.target,n:lr.n,src:'unit',
+    cvI:+cvI.toFixed(2),cvD:+cvD.toFixed(2)}:null;
+};
+
+/* ---------- 推演合理性哨兵：相邻月数量级校验 ----------
+   把推演按连续4周分块,首块对比最近4个有数周实际,后续块环比;
+   块比 > 3×系数比(或 < 1/(3×系数比)) 判异常。返回警示列表(不改数,只提醒)。 */
+C.sanityCheck=function(o){
+  const fc=o.forecast||[];
+  if(!fc.length||fc.some(function(f){return f.so==null;}))return [];
+  const kOf=function(w){ const kd=o.kdef&&o.kdef[w]!=null?o.kdef[w]:1; const ke=o.kedit&&o.kedit[w]; return ke==null?kd:ke; };
+  const blocks=[];
+  for(let i=0;i<fc.length;i+=4){
+    const part=fc.slice(i,i+4);
+    let so=0,k=0;
+    part.forEach(function(f){ so+=f.so; k+=kOf(C.periodW(f.p)); });
+    blocks.push({from:part[0].p,to:part[part.length-1].p,so:so,k:k/part.length,n:part.length});
+  }
+  const warns=[];
+  let baseSo=0,baseK=0,baseN=0;
+  (o.cur.windowWeeks||[]).forEach(function(p){ baseSo+=o.unit.weeks.get(p).so; baseK+=kOf(C.periodW(p)); baseN++; });
+  let prev={so:baseSo*( baseN?4/baseN:1),k:baseN?baseK/baseN:1,label:'近4周实际',n:4};
+  const LIM=3;
+  blocks.forEach(function(b){
+    if(prev.so>0&&b.n>=2){
+      const ratio=(b.so/b.n)/((prev.so/prev.n)||1);
+      const kRatio=Math.max(0.2,(b.k||1)/(prev.k||1));
+      const lim=LIM*Math.max(1,kRatio);
+      if(ratio>lim)warns.push({from:b.from,to:b.to,type:'high',ratio:+ratio.toFixed(1),lim:+lim.toFixed(1),
+        blockSo:b.so,prevSo:Math.round(prev.so),prevLabel:prev.label});
+      else if(ratio<1/lim&&prev.so>=20)warns.push({from:b.from,to:b.to,type:'low',ratio:+ratio.toFixed(2),lim:+(1/lim).toFixed(2),
+        blockSo:b.so,prevSo:Math.round(prev.so),prevLabel:prev.label});
+    }
+    prev={so:b.so,k:b.k,label:C.weekLabel(b.from)+'-'+C.weekLabel(b.to)+'块',n:b.n};
+  });
+  return warns;
+};
+
+/* ---------- 免推演阈值：SKU 覆盖 > 产品线默认 > 全局默认;null=无阈值 ---------- */
+C.exemptThreshold=function(exempt,line,model){
+  if(!exempt)return null;
+  const num=function(v){ return (v==null||v==='')?null:(isFinite(+v)?+v:null); };
+  let v=exempt.model?num(exempt.model[model]):null; if(v!=null)return v;
+  v=exempt.line?num(exempt.line[line]):null; if(v!=null)return v;
+  return num(exempt.global);
+};
+
+/* ---------- 产品四级映射（用户 2026-08-26 附件原样内置:产品→产品系族/产品线） ---------- */
+C.PRODUCT_MAP=(function(){
+  const rows=[
+    ['PC','AceBook','Fable','AceBook 14.2吋 2024 Intel'],
+    ['PC','AceBook','Cascade','AceBook 14吋 2022 Q2 Intel'],
+    ['PC','AceBook D','Tundra','AceBook D 15 15.6吋 2021 AMD'],
+    ['PC','AceBook D','Bramble','AceBook D 14 14吋 2023 Q2 Intel'],
+    ['PC','AceBook D','Bramble','AceBook D 14 14吋 2024 Q1 Intel'],
+    ['PC','AceBook D','Arbor','AceBook D 14 14吋 2023 intel'],
+    ['PC','AceBook D','Moraine','ACME AceBook D 16 16吋 2024 12th Gen Core'],
+    ['PC','AceBook D','Nectar','ACME AceBook D 16 16吋 2024 13th Gen Core'],
+    ['PC','AceBook X','Grove','AceBook X Pro 14.2吋 2024 Q2 Intel'],
+    ['PC','智慧办公选件','Wren','AceView GT 34寸 2023'],
+    ['平板','Slate Tab','Orbit','ACME Slate 11.5吋 2023'],
+    ['平板','Slate Tab','OrbitR','ACME Slate 11.5英寸 2024'],
+    ['平板','Slate Tab','Redwood','ACME Slate Mini 8.8吋 2025'],
+    ['平板','Slate Tab','Halden','ACME Slate 11.5 S 2026'],
+    ['平板','Slate Tab','Kelvin','Slate 11.5"S'],
+    ['平板','Slate Tab','Everest','ACME Slate 11.5 2025'],
+    ['平板','Slate Air','Nebula','ACME Slate 12 X 12-inch'],
+    ['平板','Slate Air','Vernet','ACME Slate 12 X 12-inch 2025'],
+    ['平板','Slate Pro','Quanta','Slate Pro Max'],
+    ['平板','Slate Pro','Rigel','ACME Slate Pro 12.2英寸 2024'],
+    ['平板','Slate Pro','Altair','ACME Slate Pro 12.2英寸 2025'],
+    ['平板','Slate Pro','Inlet','ACME Slate Pro 13.2英寸 2023'],
+    ['平板','Slate Pro','Tarvos','ACME Slate Pro 13.2英寸 2025'],
+    ['平板','Slate SE','Vantor6','ACME Slate SE 11" Kids Edition'],
+    ['平板','Slate SE','Vantor6','ACME Slate SE 11-inch'],
+    ['平板','Slate SE','Vantor6R','ACME Slate SE 11-inch'],
+    ['手机','Astra系列','Heath','Astra XT | APEX DESIGN'],
+    ['手机','Astra系列','Oakley','Astra 80 Pro'],
+    ['手机','Astra系列','凛冬','Astra X6'],
+    ['手机','Astra系列','曙光','Astra X7'],
+    ['手机','nimbus Y系列','Zenith','ACME nimbus 13i'],
+    ['手机','nimbus Y系列','Zenith','nimbus 12i'],
+    ['手机','nimbus Y系列','Larch','nimbus 15 Max'],
+    ['手机','nimbus Y系列','Jade','nimbus Y61'],
+    ['手机','nimbus Y系列','Zephyr','nimbus Y72S'],
+    ['手机','nimbus Y系列','Lumen','nimbus Y73'],
+    ['手机','nimbus Y系列','Lumen','nimbus Y74'],
+    ['手机','nimbus Y系列','Verdant','nimbus 11i'],
+    ['手机','nimbus Y系列','Knoll','nimbus Y91'],
+    ['手机','nimbus精品系列','Quartz','ACME nimbus 13'],
+    ['手机','nimbus精品系列','Vortex','nimbus 10 SE'],
+    ['手机','nimbus精品系列','Vortex','nimbus 12 SE'],
+    ['手机','nimbus精品系列','Vela','nimbus 11'],
+    ['手机','nimbus精品系列','Vela','nimbus 12s'],
+    ['手机','nimbus精品系列','Quill','nimbus 11 Pro'],
+    ['手机','nimbus精品系列','Iris','ACME nimbus 13 Pro'],
+    ['手机','nimbus精品系列','Iris','ACME nimbus 14 Pro'],
+    ['手机','nimbus精品系列','Upland','ACME nimbus 14'],
+    ['手机','P系列','Prairie','Vega 70'],
+    ['手机','P系列','Fjord','Vega 80'],
+    ['手机','P系列','Estuary','Vega 70 Pro'],
+    ['手机','P系列','EstuaryP','Vega 70 Ultra'],
+    ['手机','P系列','Lagoon','Vega 80 Pro'],
+    ['手机','P系列','LagoonU','Vega 80 Ultra'],
+    ['手机','P系列','海岚','Vega 90s Pro'],
+    ['手机','P系列','远山','Vega 90s Pro Max'],
+    ['音频与智能配件','TWS基础系列','Coral','SonicBuds 7i'],
+    ['音频与智能配件','TWS基础系列','Kori','SonicBuds SE 4 ANC'],
+    ['音频与智能配件','TWS基础系列','Tidal','SonicBuds 5i'],
+    ['音频与智能配件','TWS基础系列','Manta','SonicBuds 6i'],
+    ['音频与智能配件','TWS基础系列','低成本TWS耳机','SonicBuds SE 2'],
+    ['音频与智能配件','TWS基础系列','低成本TWS耳机','SonicBuds SE 3'],
+    ['音频与智能配件','TWS精品系列','Ridge','SonicBuds 6'],
+    ['音频与智能配件','TWS精品系列','Beacon','SonicBuds 5'],
+    ['音频与智能配件','TWS旗舰系列','Harbor','SonicBuds Pro 3'],
+    ['音频与智能配件','TWS旗舰系列','Harbor','SonicBuds Pro 4'],
+    ['音频与智能配件','TWS旗舰系列','长笛','SonicBuds Pro 5 臻声耳机'],
+    ['音频与智能配件','颈戴耳机','Echo','SonicLace Lite'],
+    ['音频与智能配件','颈戴耳机','Willow','SonicLace Pro 2'],
+    ['音频与智能配件','开放式耳机','耳挂式耳机Taiga','SonicArc'],
+    ['音频与智能配件','开放式耳机','耳夹耳机II','SonicClip 2 典藏版 耳夹耳机'],
+    ['音频与智能配件','开放式耳机','耳夹耳机II','SonicClip 2 耳夹耳机'],
+    ['音频与智能配件','开放式耳机','音频耳夹云雀产品项目','SonicClip'],
+    ['智能穿戴与运动健康','FLEX系列','Kestrel','WATCH FLEX 5'],
+    ['智能穿戴与运动健康','FLEX系列','Kestrel','WATCH FLEX 5 Pro'],
+    ['智能穿戴与运动健康','FLEX系列','Flint','WATCH FLEX 4'],
+    ['智能穿戴与运动健康','FLEX系列','Flint','WATCH FLEX 4 Pro'],
+    ['智能穿戴与运动健康','FLEX系列','Onyx','WATCH FLEX 3'],
+    ['智能穿戴与运动健康','FLEX系列','Basalt','WATCH FLEX'],
+    ['智能穿戴与运动健康','儿童系列','Cobalt','WATCH JUNIOR 4 Pro'],
+    ['智能穿戴与运动健康','儿童系列','Ember','星芒手表 X1'],
+    ['智能穿戴与运动健康','儿童系列','EmberP','星芒手表 X1 Pro'],
+    ['智能穿戴与运动健康','二合一穿戴系列','Halcyon','WATCH Pods'],
+    ['智能穿戴与运动健康','轻智能手表系列','Aris智能表','Golf Edition WATCH GX 6 Pro'],
+    ['智能穿戴与运动健康','轻智能手表系列','Aris智能表','WATCH GX 6'],
+    ['智能穿戴与运动健康','轻智能手表系列','Aris智能表','WATCH GX 6 Pro'],
+    ['智能穿戴与运动健康','轻智能手表系列','Aris智能表','WATCH GX 7 Pro'],
+    ['智能穿戴与运动健康','轻智能手表系列','Marble','WATCH GX 4'],
+    ['智能穿戴与运动健康','轻智能手表系列','Xenon','WATCH GX Runner 2'],
+    ['智能穿戴与运动健康','轻智能手表系列','Xenon','WATCH GX Runner 2 竞速版'],
+    ['智能穿戴与运动健康','轻智能手表系列','Pumice','WATCH GX 5'],
+    ['智能穿戴与运动健康','轻智能手表系列','Pumice','WATCH GX 5 Pro'],
+    ['智能穿戴与运动健康','轻智能手表系列','Kelo智能表','WATCH GX 6'],
+    ['智能穿戴与运动健康','轻智能手表系列','Yonder','WATCH GX 4'],
+    ['智能穿戴与运动健康','轻智能手表系列','Meridian','WATCH GX 5'],
+    ['智能穿戴与运动健康','轻智能手表系列','Meridian','WATCH GX 5 Pro'],
+    ['智能穿戴与运动健康','轻智能手表系列','Umber智能手表','WATCH Apex'],
+    ['智能穿戴与运动健康','轻智能手表系列','航海家','WATCH | APEX DESIGN'],
+    ['智能穿戴与运动健康','轻智能手表系列','航海家','WATCH Apex'],
+    ['智能穿戴与运动健康','运动健康智能硬件','Saffron','Scale 3'],
+    ['智能穿戴与运动健康','运动健康智能硬件','Indigo','WATCH H2'],
+    ['智能穿戴与运动健康','智能手表系列','Yarrow','WATCH 4'],
+    ['智能穿戴与运动健康','智能手表系列','Nimbus智能手表','WATCH | APEX DESIGN 紫金'],
+    ['智能穿戴与运动健康','智能手表系列','Aspen智能手表','WATCH Apex 2'],
+    ['智能穿戴与运动健康','智能手表系列','Glacier','WATCH 4 Pro 星际'],
+    ['智能穿戴与运动健康','智能手表系列','Hollow系列','WATCH 5'],
+    ['智能穿戴与运动健康','智能手表系列','Core系列','WATCH 5'],
+    ['智能穿戴与运动健康','智能手表系列','望舒','WATCH APEX DESIGN 星辉'],
+    ['智能穿戴与运动健康','智能手环系列','Dune','手环 11'],
+    ['智能穿戴与运动健康','智能手环系列','Dune','手环 11 Pro'],
+    ['智能穿戴与运动健康','智能手环系列','Delta','Band 9'],
+    ['智能穿戴与运动健康','智能手环系列','Cinder','Band 10']
+  ];
+  const m={};
+  rows.forEach(function(r){ if(!m[r[3]])m[r[3]]={line:r[0],family:r[1],series:r[2]}; });
+  return m;
+})();
+C.familyOf=function(product){
+  const e=C.PRODUCT_MAP[String(product||'').trim()];
+  return e?{line:e.line,family:e.family,series:e.series}:null;
+};
+/* ---------- 国家办↔国家（用户 2026-08-26 原样内置） ---------- */
+C.REP_OFFICE={
+  '巴拉圭':'巴西设备事业部','巴西':'巴西设备事业部',
+  '巴拿马':'哥伦比亚设备事业部','厄瓜多尔':'哥伦比亚设备事业部','哥伦比亚':'哥伦比亚设备事业部',
+  '哥斯达黎加':'哥伦比亚设备事业部','洪都拉斯':'哥伦比亚设备事业部','萨尔瓦多':'哥伦比亚设备事业部','危地马拉':'哥伦比亚设备事业部',
+  '加拿大':'墨西哥设备事业部','墨西哥':'墨西哥设备事业部',
+  '阿根廷':'南美区设备事业部','玻利维亚':'南美区设备事业部','秘鲁':'南美区设备事业部',
+  '乌拉圭':'南美区设备事业部','智利':'南美区设备事业部'
+};
+C.repOf=function(country){ return C.REP_OFFICE[String(country||'').trim()]||'(未归属国家办)'; };
+/* 未来周序列:从 maxPeriod 次周起到 endYear 年最后一周(预算底表延伸用) */
+C.futureWeeksTo=function(maxPeriod,endYear){
+  const out=[];
+  let p=C.addWeeksP(maxPeriod,1);
+  const last=C.mkPeriod(endYear,C.weeksInISOYear(endYear));
+  while(p<=last&&out.length<200){ out.push(p); p=C.addWeeksP(p,1); }
+  return out;
+};
+/* 周→月归属:按该周周四所在月(ISO 8601 惯例;用户 2026-08-26 拍板) */
+C.monthOfP=function(p){
+  const d=C.mondayOf(C.periodY(p),C.periodW(p));
+  const th=new Date(d.getTime()+3*86400000);
+  return th.getUTCMonth()+1;
+};
+
+/* ---------- 国家 SO 目标回填表解析（宽表:每行 渠道×产品,9–12月 SO 目标） ----------
+   识别列:产品线/产品/国家/渠道/原始渠道名/9月SO目标/10月SO目标/11月SO目标/12月SO目标/备注;
+   其余列(库存/DOS 快照)忽略——以软件当前底表为准复算。全角空格/空 = 未填。
+   月底口径(与模板一致,已用样例行锁定):月底库存=上月底库存−该月目标;月底DOS=月底库存÷(该月目标/28天)。 */
+C.parseTargetGrid=function(grid){
+  const rows=[]; const rep={total:0,used:0,noKey:0};
+  if(!grid||!grid.length)return {rows:rows,report:rep};
+  let hi=-1,map=null;
+  const mkMap=function(hdr){
+    const m={line:-1,product:-1,country:-1,channel:-1,rawName:-1,t9:-1,t10:-1,t11:-1,t12:-1,note:-1};
+    hdr.forEach(function(cell,i){
+      const h=String(cell==null?'':cell).trim();
+      if(!h)return;
+      if(m.line<0&&/产品线/.test(h))m.line=i;
+      else if(m.rawName<0&&/原始渠道/.test(h))m.rawName=i;
+      else if(m.channel<0&&/^渠道$|^渠道名|channel/i.test(h))m.channel=i;
+      else if(m.country<0&&/国家|country/i.test(h))m.country=i;
+      else if(m.product<0&&/^产品$|^product$/i.test(h))m.product=i;
+      else if(m.t9<0&&h.indexOf('9月')===0&&h.indexOf('目标')>=0)m.t9=i;
+      else if(m.t10<0&&h.indexOf('10月')===0&&h.indexOf('目标')>=0)m.t10=i;
+      else if(m.t11<0&&h.indexOf('11月')===0&&h.indexOf('目标')>=0)m.t11=i;
+      else if(m.t12<0&&h.indexOf('12月')===0&&h.indexOf('目标')>=0)m.t12=i;
+      else if(m.note<0&&/备注/.test(h))m.note=i;
+    });
+    return (m.product>=0&&m.country>=0&&m.channel>=0&&(m.t9>=0||m.t10>=0||m.t11>=0||m.t12>=0))?m:null;
+  };
+  for(let i=0;i<Math.min(grid.length,10);i++){ const m2=mkMap(grid[i]); if(m2){ hi=i; map=m2; break; } }
+  if(!map)return {rows:rows,report:rep};
+  const gv=function(r,i){ return i>=0&&i<r.length?String(r[i]==null?'':r[i]).trim():''; };
+  const gn=function(r,i){ return i>=0?C.parseCellNum(r[i]):null; };
+  for(let i=hi+1;i<grid.length;i++){
+    const r=grid[i]; if(!r)continue;
+    rep.total++;
+    const country=gv(r,map.country),channel=gv(r,map.channel),product=gv(r,map.product);
+    if(!country||!channel||!product){ rep.noKey++; continue; }
+    if(country==='示例'||product==='示例'){ rep.noKey++; continue; }
+    rows.push({line:gv(r,map.line),product:product,country:country,channel:channel,
+      rawName:gv(r,map.rawName)||channel,
+      t:{9:gn(r,map.t9),10:gn(r,map.t10),11:gn(r,map.t11),12:gn(r,map.t12)},
+      note:gv(r,map.note)});
+    rep.used++;
+  }
+  return {rows:rows,report:rep};
+};
+C.parseTargetTable=function(txt){
+  const lines=String(txt||'').replace(/^﻿/,'').split(/\r?\n/);
+  const grid=[];
+  lines.forEach(function(ln){ if(ln.trim()==='')return;
+    const sep=ln.indexOf('\t')>=0?'\t':',';
+    grid.push(ln.split(sep)); });
+  return C.parseTargetGrid(grid);
+};
+/* 目标推演:逐月递减库存;月底DOS=月底库存÷(该月目标/28);未填月库存持平、DOS 无值 */
+C.targetCalc=function(curInv,tgts){
+  let inv=(curInv==null?0:curInv);
+  const out=[];
+  [9,10,11,12].forEach(function(m){
+    const t=tgts?tgts[m]:null;
+    if(t!=null)inv=inv-t;
+    const dos=(t!=null&&t>0)?Math.round(Math.max(0,inv)/(t/28)):null;
+    out.push({m:m,tgt:t==null?null:t,endInv:Math.round(inv),endDos:dos});
+  });
+  return out;
+};
+
+/* ---------- ST 可行性模型（FSD 年底清库判断） ----------
+   周均ST = 今年至今 ST 总量(负值周计0) ÷ 有记录周数
+   预计可ST = 周均ST × Σ剩余周季节系数(≈剩余周数×大促加权)
+   年底预剩 INV1 = max(0, 当前INV1 − 预计可ST)
+   判定: 无库存=clear / 无ST记录=stuck / 预剩0=ok / 可消化过半=part / 其余=risk */
+C.stPlan=function(o){
+  let ytd=0,wks=0;
+  o.histST.forEach(function(v,p){
+    if(C.periodY(p)===o.curYear&&p<=o.maxPeriod){ ytd+=Math.max(0,v); wks++; } });
+  const avg=wks>0?ytd/wks:0;
+  const can=Math.round(avg*(o.kSum||0));
+  const inv1=o.inv1||0;
+  const left=Math.max(0,Math.round(inv1-can));
+  let verdict;
+  if(inv1<=0)verdict='clear';
+  else if(avg<=0)verdict='stuck';
+  else if(left<=0)verdict='ok';
+  else if(can>=inv1*0.5)verdict='part';
+  else verdict='risk';
+  return {ytdST:Math.round(ytd),weeks:wks,avgST:+avg.toFixed(1),canST:can,endLeft:left,verdict:verdict};
+};
+
+C.meanWeeklyRef=function(u,refYear){
+  let s=0,n=0;
+  u.periods.forEach(function(p){ if(C.periodY(p)===refYear){ const so=u.weeks.get(p).so; if(so!=null&&so>0){s+=so;n++;} } });
+  return n?s/n:0;
+};
+
+/* ---------- SO 预测 ----------
+   参考模式: 预测 = 去年同周SO × 档位 × 增长系数 × (系数/默认系数)   ← 系数未改动时=纯参考去年
+   缺口补估: 去年均值 × 档位 × 增长系数 × 系数
+   基础周销: 预测 = 基础周销 × 系数
+   全部四舍五入到 roundTo(默认5)。手工改写(override)原样保留、永不被公式覆盖。 */
+C.buildForecastForUnit=function(o){
+  const u=o.unit, dec=o.decision, g=(o.growth==null?1:o.growth);
+  const step=(o.cfg&&o.cfg.roundTo)||5;
+  const kd0=o.kdef||{}, ke0=o.kedit||{};
+  const kBase=function(w){ const kd=kd0[w]!=null?kd0[w]:1; const ke=ke0[w]; return ke==null?kd:ke; };
+  const kEff=function(w){ const kd=kd0[w]!=null?kd0[w]:1; if(!kd)return 1; const ke=ke0[w]; return ke==null?1:ke/kd; };
+  let mode=null,srcU=null,scale=1,base=0;
+  if(dec&&dec.mode){ mode=dec.mode; scale=dec.scale==null?1:dec.scale; base=dec.base||0;
+    if(mode==='anchor'){ srcU=o.store.units.get(dec.anchor)||null; if(!srcU)mode=null; }
+    if(mode==='self')srcU=u;
+  } else if(o.cls&&o.cls.status==='auto'){ mode='self'; srcU=u; }
+  const mean=srcU?C.meanWeeklyRef(srcU,o.refYear):0;
+  const bl=o.baseline||null;   // 平销引擎结果 {base,delta,conf}
+  /* 血缘(2026-09-15 FDE 评审 R5):每周原始 SO 同时带出四因子 f={base,scale,k,g},后续 carryTaps 记 carry/raw、quantizeFc 记 plan,
+     模拟记 so/capped。任何一格都能反推:基线 × 档位 × 系数 × 增速 × 承接 = 原始 → 取整 = 计划 → 约束 = 实际。 */
+  const rawOf=function(p,i){
+    if(mode==null) return {so:null,src:'none'};
+    if(mode==='skip') return {so:0,src:'skip',f:{base:0,scale:1,k:1,g:1,how:'停售'}};
+    const w=C.periodW(p);
+    if(mode==='base') return {so:Math.max(0,base*kBase(w)),src:'base',f:{base:base,scale:1,k:kBase(w),g:1,how:'基础周销'}};
+    /* 平销模式:平销 b̂ × 漂移 × 季节 × 增速(与「参考去年」双轨,用户逐产品选用) */
+    if(mode==='flat'){
+      if(!bl||bl.base==null) return {so:null,src:'none'};
+      /* 大促周且用户设了爆发系数覆盖 → 用 平销×爆发倍数 替代周季节系数 */
+      const kk=(o.burst!=null&&o.promoW&&o.promoW[w])?o.burst:kBase(w);
+      const bDrift=bl.base*Math.pow(1+(bl.delta||0),i+1);
+      return {so:Math.max(0,bDrift*kk*g),src:'flat',f:{base:bDrift,scale:1,k:kk,g:g,how:'平销'+((bl.delta||0)?'×漂移':'')}};
+    }
+    const rp=C.refPeriodOf(p,o.refYear);
+    const rw=srcU.weeks.get(rp);
+    const ref=rw?rw.so:null;
+    const refValid=ref!=null&&(srcU.audio?ref>0:true);
+    if(refValid) return {so:Math.max(0,ref*scale*g*kEff(w)),src:'ref',f:{base:ref,scale:scale,k:kEff(w),g:g,how:'去年同周'}};
+    return {so:Math.max(0,mean*scale*g*kBase(w)),src:'fill',f:{base:mean,scale:scale,k:kBase(w),g:g,how:'去年均值补估'}};
+  };
+  return C.quantizeFc(C.carryTaps(o.futureWeeks,rawOf,o.ovSO,o.carryTaps,o.tail),step);
+};
+
+/* ---------- 周度模拟：SI/ST 按 DOS 补货 ----------
+   每周: 先扣SO → 算滚动4周日均SO → 总渠道DOS低于触发线则SI补到目标DOS(四舍五入到5) →
+   下游(INV−INV1)按下游目标DOS由ST从FSD仓补给(不超过FSD可用量) → 记录 INV/INV1/DOS。 */
+C.simulateUnit=function(o){
+  const step=(o.cfg&&o.cfg.roundTo)||5, win=(o.cfg&&o.cfg.dosWindow)||4;
+  const fc=o.forecast;
+  let blocked=false;
+  for(let i=0;i<fc.length;i++){ if(fc[i].so==null){blocked=true;break;} }
+  if(blocked) return {rows:[],yearEnd:null,blocked:true};
+  let inv=o.cur.curInv==null?0:o.cur.curInv;
+  let inv1=o.cur.curInv1==null?0:o.cur.curInv1;
+  const q=o.cur.windowWeeks.map(function(p){ return o.unit.weeks.get(p).so; });
+  /* 年末收官约束:大促期滚动DOS虚低会误触发补货,上限按"平销日均"(dailyBase=预测中位周销/7)折算。
+     每周限制:本周补完后,按预测SO消化到每个未来检查点(10/11/12月末),库存不得超 cap×平销日均。 */
+  const cps=(o.checkpoints||[]).filter(function(c){ return c.idx!=null&&c.idx>=0; });
+  const dailyBase=o.dailyBase||0;
+  const soPre=[]; let accSo=0;
+  fc.forEach(function(f){ accSo+=f.so; soPre.push(accSo); });
+  /* 前瞻需求:本周起未来 8 周计划SO日均——要货看"接下来要卖多少" */
+  const fwdFrom=function(j){ let s=0,c=0; for(let q3=j;q3<fc.length&&c<8;q3++){ s+=(fc[q3].tail?0:(fc[q3].so||0)); c++; } return c?s/c/7:0; };   // 清尾周不算需求
+  const rows=[];
+  fc.forEach(function(f,idx){
+    let so=f.so;
+    const invStart=inv;
+    q.push(so); while(q.length>win)q.shift();
+    let sum=0; q.forEach(function(v){sum+=v;});
+    let daily=q.length?sum/q.length/7:0;
+    let capped=false;
+    if(o.capSO){   // 锁量场景:SO 受可用量(期初库存+当周到货)硬约束,超出即供应断档
+      const avail=inv+((o.ovSI&&o.ovSI[f.p])||0);
+      if(so>avail){ so=Math.max(0,Math.floor(avail)); capped=true; }
+    }
+    const afterSO=inv-so;
+    const ovsi=o.ovSI&&o.ovSI[f.p];
+    let si=0,siSrc='rule';
+    const dF0=fwdFrom(idx); const dFwd=dF0>0?dF0:(dailyBase>0?dailyBase:daily);   // 前瞻需求优先,再平销,再滚动均值
+    const eolStop=(o.eolIdx!=null&&o.eolIdx>=0&&idx>=o.eolIdx);
+    if(ovsi!=null){ si=ovsi; siSrc='override'; }
+    else if(o.noAutoSI){ si=0; }   // 拍板为一次性铺货/手工口径:停用自动补货(手工 ovSI 仍可用)
+    else if(eolStop){ si=0; siSrc='eol'; }   // 末次 SI 之后强制停购
+    else {
+      if(o.params.type==='inv'){
+        /* 水位型(间接渠道学到"库存到 N 台就进货"):补到水位受 进货后DOS中位×需求×1.5 封顶 */
+        if(dFwd>0&&afterSO<=o.params.triggerInv){ let tgt=o.params.targetInv; if(o.params.targetDos!=null)tgt=Math.min(tgt,o.params.targetDos*dFwd*1.5);
+          si=Math.max(0,C.round5(tgt-afterSO,step)||0); }
+      } else if(dFwd>0&&afterSO/dFwd<o.params.trigger){
+        si=Math.max(0,C.round5(o.params.target*dFwd-afterSO,step)||0);
+      }
+      if(cps.length){
+        /* 检查点:cap=FSD 收官梯度(仅上限);level/dos=历史月末画像"月末补到位"(上限+按剩余周均摊补上) */
+        let allowMin=Infinity,near=null;
+        for(let c=0;c<cps.length;c++){ const cp=cps[c];
+          if(cp.idx<idx)continue;
+          const dCp0=fwdFrom(cp.idx+1); const dCp=dCp0>0?dCp0:dailyBase;
+          let lvl=null;
+          if(cp.abs&&cp.level!=null){ lvl=cp.level; if(cp.dos!=null&&dCp>0)lvl=Math.min(lvl,cp.dos*dCp*1.5); }
+          else if(cp.dos!=null&&dCp>0)lvl=cp.dos*dCp;
+          else if(cp.level!=null)lvl=cp.level;
+          else if(cp.cap!=null&&dailyBase>0)lvl=cp.cap*dailyBase;
+          if(lvl==null)continue;
+          if(cp.maxDos!=null&&dCp>0&&lvl>cp.maxDos*dCp)lvl=cp.maxDos*dCp;
+          if(cp.maxInv!=null&&lvl>cp.maxInv)lvl=cp.maxInv;
+          const soTo=soPre[cp.idx]-(idx>0?soPre[idx-1]:0);
+          const allow=lvl+soTo-invStart;
+          if(allow<allowMin)allowMin=allow;
+          const isLevel=cp.level!=null||cp.dos!=null;
+          if(isLevel&&(near==null||cp.idx<near.idx))near={idx:cp.idx,level:lvl,soTo:soTo};
+        }
+        if(allowMin<si)si=Math.max(0,C.round5(Math.max(0,allowMin),step)||0);
+        if(near){
+          const shortfall=near.level+near.soTo-invStart-si; const remain=near.idx-idx+1;
+          if(shortfall>0&&remain>0){ const add=Math.max(0,C.round5(shortfall/remain,step)||0); if(add>0){ si+=add; siSrc='ye'; } }
+          if(si>allowMin)si=Math.max(0,C.round5(Math.max(0,allowMin),step)||0);
+        }
+      }
+      if(o.maxBuy!=null&&si>o.maxBuy){ si=Math.max(0,C.round5(o.maxBuy,step)||0); siSrc='cap'; }   // 渠道历史单周最大进货×1.2
+      if(o.normal&&si>0){
+        /* 正常经营水位:补完库存不超 min(平销库存×1.5, 平销DOS×1.5×前瞻需求),至少留 30 天需求 */
+        const dN=dFwd>0?dFwd:((o.dailyBase>0)?o.dailyBase:daily);
+        if(dN>0){ const ceilN=Math.max(Math.min(o.normal.inv*1.5,o.normal.dos*1.5*dN),dN*30);
+          const room=ceilN-afterSO; if(si>room){ si=Math.max(0,C.round5(Math.max(0,room),step)||0); siSrc='cap'; } }
+      }
+    }
+    /* 2026-09-02 审计:FSD 今年段此前对 SO 没有库存约束也没有补足,手拍 SO 超库存直接负库存/负 DOS 并带进明年。
+       现与下游/新品/明年段同口径:手拍 SO 高于可售且 SI 未手拍 → 当周进货补足(tapcover);末次SI后不补,按可售压回并标 capped;
+       清尾周(tail) SO = 可售量(期初+当周SI),期末归零;任何周库存不为负 */
+    if(f.tail){ so=Math.max(0,Math.floor(inv+si)); }
+    else if(f.src==='override'&&siSrc!=='override'&&!eolStop&&so>inv+si){ si+=C.ceilStep(so-(inv+si),step); siSrc='tapcover'; }
+    if(so>inv+si){ so=Math.max(0,Math.floor(inv+si)); capped=true; }
+    if(so!==f.so){ q[q.length-1]=so; let s2=0; q.forEach(function(v){s2+=v;}); daily=q.length?s2/q.length/7:0; }
+    const afterSO2=inv-so;
+    let down=inv-inv1; if(down<0)down=0;
+    const downAfter=down-so;
+    let st=0;
+    if(daily>0){ st=Math.max(0,C.round5(o.params.downTarget*daily-downAfter,step)||0); }
+    else if(downAfter<0){ st=-downAfter; }
+    st=Math.min(st,inv1+si);
+    inv1=inv1+si-st;
+    inv=Math.max(0,afterSO2+si);
+    const dos=daily>0?Math.round(inv/daily):null;
+    rows.push({p:f.p,si:si,st:st,so:so,inv:inv,inv1:inv1,dos:dos,daily:daily,lin:f.f||null,siSrc:siSrc,soSrc:f.src,capped:capped,carry:f.carry,soPlan:f.so,tail:!!f.tail});
+  });
+  return {rows:rows,yearEnd:rows.length?rows[rows.length-1]:null,blocked:false};
+};
+
+/* ---------- 月末周：每个自然月最后一天所在的 ISO 周（跨年归当年最后一周） ---------- */
+/* 月末周(2026-09-02 统一口径):该月最后一个周四所在的周 = 周四归属下该月的最后一周(此前取"该月最后一天所在 ISO 周",
+   当月末落在周一~周三时那周的周四已在下月,月末库存点与月 SO 的周集合不一致——8 月末会取到 9 月的 W36) */
+C.monthEndPeriodOf=function(y,m){
+  const ws=C.monthWeeksOf(y,m);
+  return ws.length?ws[ws.length-1]:C.mkPeriod(y,C.weeksInISOYear(y));
+};
+C.monthEndPeriods=function(maxPeriod){
+  const y=C.periodY(maxPeriod);
+  const curMonth=C.monthOfP(maxPeriod);
+  const lastW=C.weeksInISOYear(y);
+  const out=[]; const seen={};
+  for(let m=curMonth;m<=12;m++){
+    const p=C.monthEndPeriodOf(y,m);
+    if(p<=maxPeriod)continue;
+    if(seen[p])continue; seen[p]=1;
+    out.push({m:m,p:p,label:m+'月底'});
+  }
+  const pEnd=C.mkPeriod(y,lastW);
+  if(!seen[pEnd]){ out.push({m:12,p:pEnd,label:'年底'}); }
+  else { out[out.length-1].label='年底(12月)'; }
+  return out;
+};
+C.medianOf=function(a){ if(!a||!a.length)return 0;
+  const b=a.slice().sort(function(x,y){return x-y;}); return b[Math.floor(b.length/2)]; };
+
+/* ---------- 去年 10/11/12 月末的品类级参考（绝对库存 + 平销口径DOS） ----------
+   平销口径 = 库存 ÷ (去年该单元中位周销/7)——中位数天然剔除大促尖峰,
+   避免"大促日均抬高分母 → DOS 假低"的失真(用户 2026-08-25 口径)。 */
+/* ---------- 历史年末画像(2026-09-01 用户拍板:不许卡死 DOS,按各渠道×型号回测的年末水平去模拟) ----------
+   对每个已完整走过 Q4 的历史年:平销日均=该年有效周SO中位÷7(音频跳零),10/11/12 月末库存(月末周起往前≤4周取到) ÷ 平销日均 = 月末DOS;
+   跨年取中位;同时保留月末绝对库存(水位型渠道用)。今年 Q4 尚未发生的月份自动跳过。 */
+C.MONTHS=[1,2,3,4,5,6,7,8,9,10,11,12];
+C.yearEndProfileOf=function(u,cfg){
+  /* 全年 12 个月末画像(2026-09-01 用户拍板:不只是 12 月,每个月的 SO/SI 节奏都要从回测学,指引次年) */
+  const byY={};
+  u.periods.forEach(function(p){ const y=C.periodY(p); (byY[y]=byY[y]||[]).push(p); });
+  const lastP=u.periods.length?u.periods[u.periods.length-1]:0;
+  const dosA={},invA={};
+  C.MONTHS.forEach(function(m){ dosA[m]=[]; invA[m]=[]; });
+  Object.keys(byY).map(Number).forEach(function(y){
+    const soVals=[];
+    byY[y].forEach(function(p){ const so=u.weeks.get(p).so;
+      if(u.audio?(so!=null&&so>0):(so!=null))soVals.push(so); });
+    if(soVals.length<8)return;
+    const daily=C.medianOf(soVals)/7;
+    C.MONTHS.forEach(function(m){
+      const pe=C.monthEndPeriodOf(y,m);
+      if(pe>lastP)return;
+      let inv=null;
+      for(let k=0;k<4;k++){ const w=u.weeks.get(C.addWeeksP(pe,-k)); if(w&&w.inv!=null){inv=w.inv;break;} }
+      if(inv==null)return;
+      invA[m].push(inv);
+      if(daily>0)dosA[m].push(inv/daily);
+    });
+  });
+  const res={m:{},n:0};
+  const allDos=[];
+  C.MONTHS.forEach(function(m){
+    if(!invA[m].length)return;
+    res.m[m]={dos:dosA[m].length?Math.round(C.medianOf(dosA[m])):null,inv:Math.round(C.medianOf(invA[m])),n:invA[m].length};
+    if(res.m[m].dos!=null)allDos.push(res.m[m].dos);
+    if(invA[m].length>res.n)res.n=invA[m].length;
+  });
+  res.medDos=allDos.length?Math.round(C.medianOf(allDos)):null;   // 全年月末 DOS 中位=该渠道典型水位
+  return res.n?res:null;
+};
+C.monthEndProfileOf=C.yearEndProfileOf;
+/* 渠道历史单周最大进货量(≥26 周有 SI 记录才可信):模拟里单周进货不得超其 1.2 倍——渠道从没吃过的量,客户也不会有预算 */
+C.maxWeeklySI=function(u){
+  let mx=0,cnt=0;
+  u.periods.forEach(function(p){ const si=u.weeks.get(p).si; if(si!=null){ cnt++; if(si>mx)mx=si; } });
+  return (cnt>=26&&mx>0)?mx:null;
+};
+/* 生命周期累计 SI(2026-09-01 用户拍板:锁量是全生命周期 AATP,已发要从第一次有 SI 的那周起跨年累计到最后一次 SI,不是本年) */
+C.lifecycleSI=function(u){
+  let sent=0,firstP=null,lastP=null;
+  u.periods.forEach(function(p){ const si=u.weeks.get(p).si;
+    if(si!=null&&si>0){ sent+=si; if(firstP==null||p<firstP)firstP=p; if(lastP==null||p>lastP)lastP=p; } });
+  return {sent:sent,firstP:firstP,lastP:lastP};
+};
+/* 财经「经营数据表」输入块透视(2026-09-01 用户给表):行=BU×传播名×国家;列=上年年底库存(K)/SO Q1-Q4(K)/SO全年/SI Q1-Q4(K)/SI全年/年底库存(K)/年底DOS/RRP。
+   输入=预算底表长表行(列位:0线 2预算名 4国家 6源 7年 8季度 9月 10SO 11SI 12月末库存 13RRP);权威口径:剔下游明细行与 FSD 源音频行(音频以专表计),含新品规划。
+   年底DOS=年底库存÷(12月SO÷12月天数),12月天数=周四在12月的周数×7(2026-09-02 统一口径)。数值千台一位小数 */
+C.budgetQuarterPivot=function(rows,endYear){
+  const g={};
+  rows.forEach(function(r){
+    if(r[6]===C.DICT.SRC_RETAIL)return;
+    if(r[6]==='FSD'&&r[0]===C.DICT.GARNET_AUDIO)return;
+    const k=r[0]+'\u0001'+r[2]+'\u0001'+r[4];
+    let e=g[k]; if(!e)e=g[k]={bu:r[0],name:r[2],country:r[4],so:{Q1:0,Q2:0,Q3:0,Q4:0},si:{Q1:0,Q2:0,Q3:0,Q4:0},endInv:0,decSo:0,prevEnd:0,rrp:null};
+    const y=+r[7],m=+r[9],q=r[8];
+    if(y===endYear){
+      e.so[q]=(e.so[q]||0)+(+r[10]||0); e.si[q]=(e.si[q]||0)+(+r[11]||0);
+      if(m===12){ e.endInv+=(+r[12]||0); e.decSo+=(+r[10]||0); }
+    } else if(y===endYear-1&&m===12){ e.prevEnd+=(+r[12]||0); }
+    if(e.rrp==null&&r[13]!==''&&r[13]!=null)e.rrp=+r[13];
+  });
+  const K=function(v){ return Math.round(v/100)/10; };
+  const out=Object.keys(g).sort().map(function(k){ const e=g[k];
+    const soT=e.so.Q1+e.so.Q2+e.so.Q3+e.so.Q4, siT=e.si.Q1+e.si.Q2+e.si.Q3+e.si.Q4;
+    const dv=C.monthDos(e.endInv,e.decSo,C.monthDaysOf(endYear,12)); const dos=dv==null?'':(dv===Infinity?'∞':dv);
+    return [e.bu,e.name,e.country,K(e.prevEnd),K(e.so.Q1),K(e.so.Q2),K(e.so.Q3),K(e.so.Q4),K(soT),
+      K(e.si.Q1),K(e.si.Q2),K(e.si.Q3),K(e.si.Q4),K(siT),K(e.endInv),dos,e.rrp!=null?e.rrp:''];
+  });
+  const hdr=['BU','传播名','国家',((endYear-1)%100)+'年年底库存(K)','SO Q1','SO Q2','SO Q3','SO Q4','SO全年合计','SI Q1','SI Q2','SI Q3','SI Q4','SI全年合计','年底库存(K)','年底DOS','RRP(本币)'];
+  return {headers:hdr,rows:out};
+};
+/* ---------- 产品经营(财经口径):2026-09-02 用户附件「经营数据表_公式版」逐列照抄,"表里的公式怎么算就怎么算" ----------
+   每行 = BU×传播名×国家;每季度 q(量单位 K 台,金额 KUSD):
+     SIP_q    = RRP_q / (1+增值税率) × (1−渠长)                       Excel: =AF/(1+$AG)*(1-$AH)
+     NSIP_q   = SIP_q × (1−负向投入_q) / 汇率_q                       Excel: =AL*(1-AP)/AT
+     递延量_q = IF(DOS_q>90, 季末库存_q/DOS_q×(DOS_q−90), 0)          超 90 天 DOS 的那部分库存不确认收入(递延)
+     收入_q   = NSIP_q × (SI_q − 递延量_q)                            Excel: =AU*(N-IF(X>90,S/X*(X-90),0))
+     销毛率_q = (NSIP_q × (1−其他成本率1−率2−率3) − Floor_q) / NSIP_q   Excel: =(AU*(1-$BH-$BI-$BJ)-BD)/AU
+     全年     = 四季度 SUM(照表;销毛率全年也是四季度之和,另算收入加权供参考)
+   表内没给公式的列(销毛额/营销/费用率/贡献利润)不臆造:销毛额 = 收入×销毛率 只作参考列并注明。
+   空白率照 Excel 当 0;RRP/汇率缺失 → 该季无法算(照表 #DIV/0!),结果为 null 并标缺。 */
+C.FIN_Q=['Q1','Q2','Q3','Q4'];
+C.FIN_QM={Q1:[1,2,3],Q2:[4,5,6],Q3:[7,8,9],Q4:[10,11,12]};
+/* 国家默认参数:来自用户附件各国行(增值税率/渠长/负向投入默认/汇率 Q4);产品经营页可改,导入附件会覆盖 */
+C.FIN_DRIFT_DEF={
+  '墨西哥':{vat:0.16,ch:0.275,neg:0.12,fx:18.025},
+  '哥伦比亚':{vat:0.19,ch:0.245,neg:0.08,fx:3789.5},
+  '阿根廷':{vat:0.21,ch:0.28,neg:0.20,fx:1633.5},
+  '秘鲁':{vat:0.18,ch:null,neg:0.08,fx:3.325},
+  '智利':{vat:0.19,ch:0.20,neg:0.12,fx:955.5},
+  '巴西':{vat:0.18,ch:0.70,neg:0.13,fx:5.565}
+};
+/* 安全算术求值(附件汇率格是 "=(18+17)/2*1.03" 这种公式):只认 数字 + - * / ( ) */
+C.evalArith=function(expr){
+  const s=String(expr==null?'':expr).replace(/\s+/g,'');
+  if(!s||/[^0-9.+\-*/()eE]/.test(s))return null;
+  let i=0;
+  const num=function(){ const m=/^\d*\.?\d+(?:[eE][+-]?\d+)?/.exec(s.slice(i)); if(!m)return NaN; i+=m[0].length; return parseFloat(m[0]); };
+  const fac=function(){ if(s[i]==='('){ i++; const v=expr2(); if(s[i]!==')')return NaN; i++; return v; } if(s[i]==='-'){ i++; return -fac(); } if(s[i]==='+'){ i++; return fac(); } return num(); };
+  const term=function(){ let v=fac(); while(s[i]==='*'||s[i]==='/'){ const op=s[i++]; const r=fac(); v=op==='*'?v*r:v/r; } return v; };
+  const expr2=function(){ let v=term(); while(s[i]==='+'||s[i]==='-'){ const op=s[i++]; const r=term(); v=op==='+'?v+r:v-r; } return v; };
+  const v=expr2();
+  return (i===s.length&&isFinite(v))?Math.round(v*1e10)/1e10:null;   // 去二进制浮点尾差((18+17)/2*1.03 → 18.025,与 Excel 显示一致)
+};
+/* 单元格文本→数:支持 16% / 0.16 / 1,232.472 / =公式 / 全角空格空白 */
+C.finNum=function(v){
+  if(v==null)return null;
+  if(typeof v==='number')return isFinite(v)?v:null;
+  let t=String(v).replace(/[\u3000\s]+/g,'');
+  if(!t||t==='-'||t==='—')return null;
+  let pct=false;
+  if(t.slice(-1)==='%'){ pct=true; t=t.slice(0,-1); }
+  t=t.replace(/,/g,'');
+  if(t[0]==='=')return C.evalArith(t.slice(1));
+  if(!/^[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?$/.test(t))return null;
+  const n=parseFloat(t);
+  return pct?n/100:n;
+};
+/* 比率:16% → 0.16;裸数 16 → 0.16(>1 视为百分数);0.16 → 0.16 */
+C.finRate=function(v){ const n=C.finNum(v); if(n==null)return null; return (n>1&&String(v).indexOf('%')<0)?n/100:n; };
+/* 预算行(BUDGET_HEADERS 列位) → BU×传播名×国家 的季度量:SO/SI 季合计,季末库存=季末月的月末库存,季度 DOS=季末库存÷(季末月SO÷季末月天数)
+   (与推演编辑季列口径一致:季/年 DOS = 末月月末DOS);权威口径同财经Q表(剔下游明细、剔 FSD 源音频行;含新品规划) */
+C.finQuarterPivot=function(rows,endYear){
+  const g={};
+  rows.forEach(function(r){
+    if(r[6]===C.DICT.SRC_RETAIL)return;
+    if(r[6]==='FSD'&&r[0]===C.DICT.GARNET_AUDIO)return;
+    const k=r[0]+'\u0001'+r[2]+'\u0001'+r[4];
+    let e=g[k]; if(!e)e=g[k]={bu:r[0],name:r[2],country:r[4],so:{Q1:0,Q2:0,Q3:0,Q4:0},si:{Q1:0,Q2:0,Q3:0,Q4:0},end:{Q1:0,Q2:0,Q3:0,Q4:0},
+      mSo:{},prevEnd:0,rrp:null,products:{}};
+    const y=+r[7],m=+r[9],q=r[8];
+    if(y===endYear){
+      e.so[q]=(e.so[q]||0)+(+r[10]||0); e.si[q]=(e.si[q]||0)+(+r[11]||0);
+      e.mSo[m]=(e.mSo[m]||0)+(+r[10]||0);
+      if(m===3||m===6||m===9||m===12)e.end[q]=(e.end[q]||0)+(+r[12]||0);
+    } else if(y===endYear-1&&m===12){ e.prevEnd+=(+r[12]||0); }
+    if(e.rrp==null&&r[13]!==''&&r[13]!=null)e.rrp=+r[13];
+    if(r[1])e.products[r[1]]=1;
+  });
+  return Object.keys(g).sort().map(function(k){ const e=g[k];
+    const dos={},lastM={},days={};
+    C.FIN_Q.forEach(function(q){
+      const mL=C.FIN_QM[q][2];
+      lastM[q]=mL; days[q]=C.monthDaysOf(endYear,mL);
+      dos[q]=C.monthDos(e.end[q],e.mSo[mL]||0,days[q]);   // 末月口径:季末库存÷(季末月SO÷该月天数)
+    });
+    return {bu:e.bu,name:e.name,country:e.country,so:e.so,si:e.si,end:e.end,dos:dos,lastM:lastM,days:days,mSo:e.mSo,
+      prevEnd:e.prevEnd,rrp:e.rrp,products:Object.keys(e.products).sort()};
+  });
+};
+/* 逐季公式(照表)。row=finQuarterPivot 的一行(量为台);pm={rrp:[4],vat,ch,neg:[4],fx:[4],zero:[4],r1,r2,r3} */
+C.finCompute=function(row,pm){
+  pm=pm||{};
+  const A=function(a,i){ return (a&&a[i]!=null)?+a[i]:null; };
+  const z=function(v){ return v==null?0:+v; };
+  const out={q:{},year:{}};
+  let revY=0,revN=0,gmSum=0,gmN=0,gmAmtY=0,defAmtY=0,siY=0,soY=0,recogY=0,deferY=0,miss=0;
+  C.FIN_Q.forEach(function(q,i){
+    const rrp=A(pm.rrp,i), fx=A(pm.fx,i), neg=A(pm.neg,i), zero=A(pm.zero,i);
+    const vat=z(pm.vat), ch=z(pm.ch), rates=z(pm.r1)+z(pm.r2)+z(pm.r3);
+    const flags=[];
+    const sip=(rrp!=null)?rrp/(1+vat)*(1-ch):null;
+    if(rrp==null)flags.push('缺RRP');
+    if(pm.ch==null)flags.push('渠长空(按0)');
+    const nsip=(sip!=null&&fx!=null&&fx!==0)?sip*(1-z(neg))/fx:null;
+    if(sip!=null&&(fx==null||fx===0))flags.push('缺汇率');
+    const soK=(row.so[q]||0)/1000, siK=(row.si[q]||0)/1000, invK=(row.end[q]||0)/1000, dos=row.dos[q];
+    let defer=0;
+    if(dos===Infinity){ defer=invK; if(invK>0)flags.push('DOS∞→全额递延'); }
+    else if(dos!=null&&dos>90)defer=invK/dos*(dos-90);
+    const recog=siK-defer;
+    if(recog<0)flags.push('递延>当季SI→收入为负(照表)');
+    const rev=(nsip!=null)?nsip*recog:null;
+    const deferAmt=(nsip!=null)?nsip*defer:null;
+    const gm=(nsip!=null&&nsip!==0&&zero!=null)?(nsip*(1-rates)-zero)/nsip:null;
+    if(nsip!=null&&zero==null)flags.push('缺Floor');
+    const gmAmt=(rev!=null&&gm!=null)?rev*gm:null;
+    if(flags.length)miss++;
+    out.q[q]={soK:soK,siK:siK,invK:invK,dos:dos,days:row.days?row.days[q]:null,lastM:row.lastM?row.lastM[q]:null,
+      rrp:rrp,vat:vat,ch:pm.ch==null?null:ch,sip:sip,neg:neg,fx:fx,nsip:nsip,defer:defer,deferAmt:deferAmt,recog:recog,rev:rev,
+      zero:zero,rates:rates,gm:gm,gmAmt:gmAmt,flags:flags};
+    siY+=siK; soY+=soK; recogY+=recog; deferY+=defer;
+    if(rev!=null){ revY+=rev; revN++; }
+    if(gm!=null){ gmSum+=gm; gmN++; }
+    if(gmAmt!=null)gmAmtY+=gmAmt;
+    if(deferAmt!=null)defAmtY+=deferAmt;
+  });
+  out.year={soK:soY,siK:siY,recog:recogY,defer:deferY,rev:revN?revY:null,gmSum:gmN?gmSum:null,gmW:(revN&&revY!==0&&gmN)?gmAmtY/revY:null,
+    gmAmt:gmN?gmAmtY:null,deferAmt:revN?defAmtY:null,endInvK:out.q.Q4.invK,endDos:out.q.Q4.dos,prevEndK:(row.prevEnd||0)/1000,missQ:miss};
+  return out;
+};
+/* 解析用户经营数据表文本(公式版 tab 分隔 或 Markdown 表):按表头定位列,取每行 传播名×国家 的 RRP Q1-Q4/增值税率/渠长/负向投入 Q1-Q4/汇率/Floor/其他成本率 */
+C.parseFinParamsText=function(txt){
+  const lines=String(txt||'').replace(/\r/g,'').split('\n');
+  const cellsOf=function(ln){
+    let t=ln;
+    if(/^\s*\|/.test(t)){ const a=t.split('|'); a.shift(); if(a.length&&!a[a.length-1].trim())a.pop(); return a.map(function(x){ return x.replace(/\\\*/g,'*').trim(); }); }
+    return t.split('\t').map(function(x){ return x.trim(); });
+  };
+  const clean=function(x){ return String(x==null?'':x).replace(/[\u3000\s]+/g,''); };
+  let h1=null,h2=null,start=-1;
+  for(let i=0;i<lines.length;i++){
+    const c=cellsOf(lines[i]);
+    if(c.length>10&&clean(c[0])==='BU'&&clean(c[1])==='传播名'){ h2=c; h1=i>0?cellsOf(lines[i-1]):null; start=i+1; break; }
+  }
+  const out={rows:[],cols:null,error:null,skipped:0};
+  if(!h2){ out.error='没找到表头行(第一格 BU、第二格 传播名)'; return out; }
+  if(h1&&/^-+$/.test(clean(h1[0]||'-'))){ h1=null; }   // markdown 分隔线不是组头
+  const H=h2.map(clean);
+  const idx=function(pred,from){ for(let i=(from||0);i<H.length;i++)if(pred(H[i],i))return i; return -1; };
+  const iDosEnd=idx(function(h){ return h==='年底DOS'; });
+  const iRRP=idx(function(h){ return h==='Q1'; },iDosEnd>=0?iDosEnd+1:0);
+  const iVat=idx(function(h){ return h.indexOf('增值税率')>=0; });
+  const iCh=idx(function(h){ return h.indexOf('渠长')===0; });
+  if(iRRP<0||iVat<0||iCh<0){ out.error='表头缺列(RRP Q1 / 增值税率 / 渠长)'; return out; }
+  /* 渠长之后的固定形制:SIP Q4 | 负向投入 Q1-Q4 | 汇率 Q4 | NSIP Q4 | 收入 Q1-Q4 全年 | Floor Q4 | 其他成本率 | 销毛率 Q1-Q4 全年 */
+  let iNeg=iCh+2,iFx=iCh+6,iZero=iCh+13,iR1=iCh+14;
+  const shapeOk=H[iNeg]==='Q1'&&H[iNeg+3]==='Q4'&&H[iFx]==='Q4'&&H[iCh+8]==='Q1'&&H[iCh+12]==='全年'&&H[iZero]==='Q4';
+  if(!shapeOk){
+    /* 退回按组头找 */
+    const G=h1?h1.map(clean):[];
+    const gi=function(kw){ for(let i=0;i<G.length;i++)if(G[i].indexOf(kw)>=0)return i; return -1; };
+    const gNeg=gi('负向投入'), gRev=gi('收入'), gOther=gi('其他成本率');
+    if(gNeg<0||gRev<0){ out.error='表头形制不认识(渠长后应为 SIP/负向投入/汇率/NSIP/收入/Floor/其他成本率/销毛率)'; return out; }
+    iNeg=gNeg; iFx=gNeg+4; iZero=gRev+5; iR1=gOther>=0?gOther:gRev+6;
+  }
+  out.cols={rrp:iRRP,vat:iVat,ch:iCh,neg:iNeg,fx:iFx,zero:iZero,r1:iR1,shape:shapeOk?'fixed':'group'};
+  for(let i=start;i<lines.length;i++){
+    const c=cellsOf(lines[i]);
+    if(c.length<iR1)continue;
+    const bu=c[0]||'',name=c[1]||'',country=c[2]||'';
+    if(!name||!country||/^-+$/.test(clean(name))){ out.skipped++; continue; }
+    const q4=function(from,rate){ const a=[]; for(let k=0;k<4;k++){ a.push(rate?C.finRate(c[from+k]):C.finNum(c[from+k])); } return a; };
+    const fx=C.finNum(c[iFx]);
+    out.rows.push({bu:bu,name:name,country:country,rrp:q4(iRRP,false),vat:C.finRate(c[iVat]),ch:C.finRate(c[iCh]),neg:q4(iNeg,true),
+      fx:fx,zero:C.finNum(c[iZero]),r1:C.finRate(c[iR1])});
+  }
+  return out;
+};
+C.lastYearMonthEndCaps=function(store,refYear){
+  const acc={};
+  store.units.forEach(function(u){
+    const soVals=[];
+    u.periods.forEach(function(p){ if(C.periodY(p)!==refYear)return;
+      const so=u.weeks.get(p).so;
+      if(u.audio?(so!=null&&so>0):(so!=null))soVals.push(so); });
+    if(!soVals.length)return;
+    const daily=C.medianOf(soVals)/7;
+    C.MONTHS.forEach(function(m){
+      const p=C.monthEndPeriodOf(refYear,m);
+      let inv=null;
+      for(let k=0;k<4;k++){ const w=u.weeks.get(C.addWeeksP(p,-k)); if(w&&w.inv!=null){inv=w.inv;break;} }
+      if(inv==null)return;
+      let L=acc[u.line]; if(!L)L=acc[u.line]={};
+      let e=L[m]; if(!e)e=L[m]={inv:0,daily:0};
+      e.inv+=inv; e.daily+=daily;
+    });
+  });
+  const out={};
+  Object.keys(acc).forEach(function(line){ out[line]={};
+    Object.keys(acc[line]).forEach(function(m){ const e=acc[line][m];
+      out[line][m]={inv:Math.round(e.inv),dos:e.daily>0?Math.round(e.inv/e.daily):null}; }); });
+  return out;
+};
+
+/* ---------- 收尾判定：零补货情景下,库存仅够支撑 tailWeeks 周 → 自然收尾 ----------
+   收尾产品不参考去年、不乘季节系数(去年正旺季会把已收尾的产品SO强行拉起,卖不存在的货)。 */
+C.isTailUnit=function(cur,tailWeeks){
+  const avg=cur?cur.avgWeeklySO:null;
+  return !!(avg&&avg>0&&cur.curInv!=null&&cur.curInv/avg<=(tailWeeks||12));
+};
+
+/* ---------- 下游渠道 SO 预测：有去年同周参考去年,否则近4周均SO×周系数;不走待确认。
+   o.tail=true(收尾) → 按近4周均SO平推,库存耗尽约束由 simulateRetail 执行 ---------- */
+C.buildRetailForecast=function(o){
+  const u=o.unit, step=(o.cfg&&o.cfg.roundTo)||5;
+  const g=(o.growth==null?1:o.growth);   // 大盘增速倍数(全局/产业/系族默认,单元手工优先)
+  const kd0=o.kdef||{}, ke0=o.kedit||{};
+  const kBase=function(w){ const kd=kd0[w]!=null?kd0[w]:1; const ke=ke0[w]; return ke==null?kd:ke; };
+  const kEff=function(w){ const kd=kd0[w]!=null?kd0[w]:1; if(!kd)return 1; const ke=ke0[w]; return ke==null?1:ke/kd; };
+  const avg=o.cur.avgWeeklySO;
+  const bl=o.baseline||null;
+  const useBl=!!(o.preferBaseline&&bl&&bl.base!=null&&(bl.conf==='high'||bl.conf==='mid'));
+  const rawOf=function(p,i){
+    if(o.tail) return {so:Math.max(0,avg||0),src:'tail',f:{base:avg||0,scale:1,k:1,g:1,how:'清尾·近4周均'}};
+    const w=C.periodW(p);
+    /* 平销优先(全局开关):平销 b̂ × 漂移 × 季节 × 增速;低置信单元自动回退原有链;大促周爆发覆盖优先 */
+    if(useBl){
+      const kk=(o.burst!=null&&o.promoW&&o.promoW[w])?o.burst:kBase(w);
+      const bDrift=bl.base*Math.pow(1+(bl.delta||0),i+1);
+      return {so:Math.max(0,bDrift*kk*g),src:'flat',f:{base:bDrift,scale:1,k:kk,g:g,how:'平销'}};
+    }
+    const rp=C.refPeriodOf(p,o.refYear);
+    const rw=u.weeks.get(rp);
+    const ref=rw?rw.so:null;
+    const refValid=ref!=null&&(u.audio?ref>0:true);
+    if(refValid) return {so:Math.max(0,ref*g*kEff(w)),src:'ref',f:{base:ref,scale:1,k:kEff(w),g:g,how:'去年同周'}};
+    if(avg!=null&&avg>0) return {so:Math.max(0,avg*g*kBase(w)),src:'avg',f:{base:avg,scale:1,k:kBase(w),g:g,how:'近4周均'}};
+    return {so:0,src:'noso',f:{base:0,scale:1,k:1,g:1,how:'无销量'}};
+  };
+  return C.quantizeFc(C.carryTaps(o.futureWeeks,rawOf,o.ovSO,o.carryTaps,o.tail),step);
+};
+
+/* ---------- 下游渠道模拟：零补货消化情景(Purchase 默认0,可手工改) ----------
+   库存硬约束:每周实际SO ≤ 当周可用库存(库存+进货),清零后SO=0——不"卖不存在的货"。 */
+C.simulateRetail=function(o){
+  /* 2026-09-01 用户拍板:下游/音频 Purchase 也自动推演——按历史模拟的 SO 走补货规则(DOS 低于触发线补到目标),
+     手拍覆盖优先,末次SI(eolIdx)后停购;不开 autoBuy 时保持旧零补货口径 */
+  const win=(o.cfg&&o.cfg.dosWindow)||4;
+  const step=(o.cfg&&o.cfg.roundTo)||5;
+  let inv=o.cur.curInv==null?0:o.cur.curInv;
+  const q=o.cur.windowWeeks.map(function(p){ return o.unit.weeks.get(p).so; });
+  const ab=!!(o.autoBuy&&o.params);
+  /* 年末检查点两种语义:cap=仅上限(cap×平销日均,FSD 管理梯度用);level=历史年末画像"月末补到位"——
+     本周补完后到检查点不得超该水平,且距最近画像检查点还差的量按剩余周数均摊补上(2026-09-01 用户拍板:不卡死DOS,模拟渠道真实年末行为);
+     手拍覆盖不受限,末次SI后不补 */
+  const cps=(o.checkpoints||[]).filter(function(c){ return c.idx!=null&&c.idx>=0; });
+  const dailyBase=o.dailyBase||0;
+  const soPre=[]; let accSo=0;
+  (o.forecast||[]).forEach(function(f){ accSo+=(f.so==null?0:f.so); soPre.push(accSo); });
+  /* 前瞻需求:从第 j 周起未来 8 周计划SO的日均——补货看"接下来要卖多少",淡季少补、大促前多补(2026-09-01 用户拍板:要算得聪明) */
+  const fcArr=o.forecast||[];
+  const fwdFrom=function(j){ let s=0,c=0; for(let q3=j;q3<fcArr.length&&c<8;q3++){ s+=((fcArr[q3].so==null||fcArr[q3].tail)?0:fcArr[q3].so); c++; } return c?s/c/7:0; };   // 清尾周不算需求
+  const rows=[];
+  (o.forecast||[]).forEach(function(f,idx){
+    const soPlan=f.so==null?0:f.so;
+    const invStart=inv;
+    let buy,buySrc;
+    if(o.ovSI&&o.ovSI[f.p]!=null){ buy=o.ovSI[f.p]; buySrc='override'; }
+    else if(ab&&!(o.eolIdx!=null&&o.eolIdx>=0&&idx>=o.eolIdx)){
+      /* 先按"不进货"看 SO 后水位;补货策略按渠道历史判型(replenishPolicyOf):
+         inv=水位型(该渠道历史每到某绝对库存台数就进货,补到历史进货后水位)
+         dos=门槛型(DOS<trigger 补到 target,与 FSD 同款口径) */
+      const pre=inv-Math.min(soPlan,inv);
+      const q2=q.slice(); q2.push(Math.min(soPlan,Math.max(0,inv)));
+      while(q2.length>win)q2.shift();
+      let s2=0; q2.forEach(function(v){s2+=v;});
+      const d2=q2.length?s2/q2.length/7:0;
+      const dF0=fwdFrom(idx);
+      const dFwd=dF0>0?dF0:(dailyBase>0?dailyBase:d2);   // 前瞻需求优先,再平销,最后滚动均值(滚动均值在大促后会被放大)
+      if(o.params.type==='inv'){
+        /* 水位型:绝对台数触发;补到水位受「进货后DOS中位×当前需求×1.5」封顶——需求塌了不按老水位回补(濒死SKU不进货) */
+        if(dFwd>0&&pre<=o.params.triggerInv){
+          let tgt=o.params.targetInv;
+          if(o.params.targetDos!=null)tgt=Math.min(tgt,o.params.targetDos*dFwd*1.5);
+          buy=Math.max(0,C.round5(tgt-pre,step)||0); buySrc='rule';
+        } else { buy=0; buySrc='rule0'; }
+      } else {
+        if(dFwd>0&&pre/dFwd<o.params.trigger){
+          buy=Math.max(0,C.round5(o.params.target*dFwd-pre,step)||0); buySrc='rule';
+        } else { buy=0; buySrc='rule0'; }
+      }
+    }
+    else { buy=0; buySrc=(o.eolIdx!=null&&o.eolIdx>=0&&idx>=o.eolIdx)?'eol':'zero'; }
+    if(ab&&cps.length&&buySrc!=='override'&&!(o.eolIdx!=null&&o.eolIdx>=0&&idx>=o.eolIdx)){
+      let allowMin=Infinity,near=null;
+      for(let c=0;c<cps.length;c++){ const cp=cps[c];
+        if(cp.idx<idx)continue;
+        /* 检查点水平:画像 DOS × 检查点之后的前瞻需求(月末库存要覆盖的是接下来的销量);水位型绝对台数受 DOS×需求×1.5 封顶;
+           再受该渠道典型水位(maxDos=全年月末DOS中位×1.6)封顶;cap 型(FSD 梯度)按平销折算 */
+        const dCp0=fwdFrom(cp.idx+1);
+        const dCp=dCp0>0?dCp0:dailyBase;
+        let lvl=null;
+        if(cp.abs&&cp.level!=null){ lvl=cp.level; if(cp.dos!=null&&dCp>0)lvl=Math.min(lvl,cp.dos*dCp*1.5); }
+        else if(cp.dos!=null&&dCp>0)lvl=cp.dos*dCp;
+        else if(cp.level!=null)lvl=cp.level;
+        else if(cp.cap!=null&&dailyBase>0)lvl=cp.cap*dailyBase;
+        if(lvl==null)continue;
+        if(cp.maxDos!=null&&dCp>0&&lvl>cp.maxDos*dCp)lvl=cp.maxDos*dCp;
+        if(cp.maxInv!=null&&lvl>cp.maxInv)lvl=cp.maxInv;   // 平销库存水位×1.5 绝对封顶
+        const soTo=soPre[cp.idx]-(idx>0?soPre[idx-1]:0);
+        const allow=lvl+soTo-invStart;
+        if(allow<allowMin)allowMin=allow;
+        const isLevel=cp.level!=null||cp.dos!=null;
+        if(isLevel&&(near==null||cp.idx<near.idx))near={idx:cp.idx,level:lvl,soTo:soTo};
+      }
+      if(allowMin<buy){ buy=Math.max(0,C.round5(Math.max(0,allowMin),step)||0); if(!(buy>0))buySrc='cap'; }
+      if(near){
+        const shortfall=near.level+near.soTo-invStart-buy;
+        const remain=near.idx-idx+1;
+        if(shortfall>0&&remain>0){
+          const add=Math.max(0,C.round5(shortfall/remain,step)||0);
+          if(add>0){ buy+=add; buySrc='ye'; }
+        }
+        if(buy>allowMin)buy=Math.max(0,C.round5(Math.max(0,allowMin),step)||0);
+      }
+    }
+    if(o.maxBuy!=null&&buySrc!=='override'&&buy>o.maxBuy)buy=Math.max(0,C.round5(o.maxBuy,step)||0);   // 渠道历史单周最大进货×1.2
+    if(o.normal&&buySrc!=='override'&&buy>0){
+      /* 正常经营水位:自动进货后库存不超 min(平销库存×1.5, 平销DOS×1.5×前瞻需求),至少留 30 天前瞻需求 */
+      const dN0=fwdFrom(idx); const dN=dN0>0?dN0:dailyBase;
+      if(dN>0){ const ceilN=Math.max(Math.min(o.normal.inv*1.5,o.normal.dos*1.5*dN),dN*30);
+        const room=ceilN-(inv-Math.min(soPlan,inv));
+        if(buy>room){ buy=Math.max(0,C.round5(Math.max(0,room),step)||0); if(!(buy>0))buySrc='cap'; } }
+    }
+    /* 手拍 SO 高于可售(2026-09-02 用户:产品层拍 3000 落到渠道×型号后被库存压成 2997):拍的是决策,当周进货补足到刚好够卖;
+       SI 也手拍时不动(用户自己负责);锁量重跑时全周 SI 为给定值,超出即断供标记(capped) */
+    if(f.src==='override'&&!f.tail&&buySrc!=='override'&&buySrc!=='eol'&&soPlan>inv+buy){ buy+=C.ceilStep(soPlan-(inv+buy),step); buySrc='tapcover'; }   // 补足量按步长向上取整;末次SI后不补(2026-09-02 审计)
+    const so=f.tail?Math.max(0,inv+buy):Math.min(soPlan,Math.max(0,inv+buy));   // 库存硬约束;清尾周 SO=可售量(期末归零)
+    q.push(so); while(q.length>win)q.shift();
+    let s=0; q.forEach(function(v){s+=v;});
+    const daily=q.length?s/q.length/7:0;
+    inv=Math.max(0,inv+buy-so);
+    const dos=daily>0?Math.round(inv/daily):null;
+    rows.push({p:f.p,so:so,buy:buy,inv:inv,dos:dos,daily:daily,lin:f.f||null,
+      soSrc:f.src,capped:so<soPlan,soPlan:soPlan,buySrc:buySrc,carry:f.carry,tail:!!f.tail});
+  });
+  return {rows:rows,yearEnd:rows.length?rows[rows.length-1]:null,blocked:false};
+};
+
+/* ---------- 监控指标：周对周对账（SO 是否转好 / DOS 是否下降 / 是否仍在 SI / ST 是否发生） ----------
+   底表自带全部历史周,周对周对比即等价于"对比上次刷新";音频跳零口径全程沿用。 ---------- */
+C.watchMetrics=function(u,cfg){
+  const win=(cfg&&cfg.dosWindow)||4;
+  const soWeeks=u.periods.filter(function(p){ const so=u.weeks.get(p).so;
+    return u.audio?(so!=null&&so>0):(so!=null); });
+  const val=function(p){ return u.weeks.get(p).so; };
+  const spark=soWeeks.slice(-10).map(function(p){ return {p:p,so:val(p)}; });
+  const sum=function(arr){ let s=0; arr.forEach(function(p){ s+=val(p); }); return s; };
+  const so4=sum(soWeeks.slice(-4));
+  const soPrev4=sum(soWeeks.slice(-8,-4));
+  const lastP=soWeeks.length?soWeeks[soWeeks.length-1]:null;
+  const prevP=soWeeks.length>1?soWeeks[soWeeks.length-2]:null;
+  const wow=(prevP!=null&&val(prevP)>0&&lastP!=null)?(val(lastP)/val(prevP)-1):null;
+  /* 逐周计算口径 DOS 序列(滚动有数周窗口) */
+  const dosSeq=[]; const q=[];
+  u.periods.forEach(function(p){
+    const w=u.weeks.get(p); const so=w.so;
+    const okSo=u.audio?(so!=null&&so>0):(so!=null);
+    if(okSo){ q.push(so); while(q.length>win)q.shift(); }
+    let s=0; q.forEach(function(v){s+=v;});
+    const daily=q.length?s/q.length/7:0;
+    if(w.inv!=null&&daily>0)dosSeq.push({p:p,dos:Math.round(w.inv/daily)});
+  });
+  const dosNow=dosSeq.length?dosSeq[dosSeq.length-1].dos:null;
+  const dosPrev=dosSeq.length>1?dosSeq[dosSeq.length-2].dos:null;
+  const tail4=u.periods.slice(-4);
+  let si4=0; tail4.forEach(function(p){ const v=u.weeks.get(p).si; if(v)si4+=v; });
+  const stMap=C.deriveHistST(u);
+  let st4=0; tail4.forEach(function(p){ const v=stMap.get(p); if(v&&v>0)st4+=v; });
+  const inv1s=u.periods.filter(function(p){ return u.weeks.get(p).inv1!=null; });
+  const inv1Now=inv1s.length?u.weeks.get(inv1s[inv1s.length-1]).inv1:null;
+  const inv1Ago=inv1s.length>4?u.weeks.get(inv1s[inv1s.length-5]).inv1
+    :(inv1s.length?u.weeks.get(inv1s[0]).inv1:null);
+  return {spark:spark,so4:so4,soPrev4:soPrev4,lastP:lastP,
+    lastSO:lastP!=null?val(lastP):null,wow:wow,
+    dosNow:dosNow,dosPrev:dosPrev,si4:si4,st4:st4,
+    inv1Now:inv1Now,inv1Delta4:(inv1Now!=null&&inv1Ago!=null)?(inv1Now-inv1Ago):null};
+};
+/* 判定：fsd 模块看"库存有没有 ST 下去";retail 模块看"产品有没有被 SO 出去" */
+C.watchVerdict=function(m,kind){
+  if(kind==='fsd'){
+    const cleared=m.st4>0&&(m.inv1Delta4==null||m.inv1Delta4<0);
+    if(cleared&&m.si4>0)return {code:'mid',label:'边清边进',cls:'chip base',
+      detail:'近4周 ST '+m.st4+' 台,但同期仍 SI '+m.si4+' 台'};
+    if(cleared)return {code:'good',label:'清理中',cls:'chip auto',
+      detail:'近4周 ST '+m.st4+' 台,INV1 变化 '+(m.inv1Delta4==null?'—':m.inv1Delta4)+' 台'};
+    if(m.si4>0)return {code:'bad',label:'仍在进货',cls:'chip pend',
+      detail:'近4周 SI '+m.si4+' 台且无有效 ST'};
+    return {code:'bad',label:'无动作',cls:'chip pend',
+      detail:'近4周无 ST,INV1 未下降'};
+  }
+  const soUp=m.soPrev4>0?(m.so4>m.soPrev4):(m.so4>0);
+  const dosDown=(m.dosNow!=null&&m.dosPrev!=null)?(m.dosNow<=m.dosPrev):null;
+  if(m.so4<=0)return {code:'bad',label:'无动销',cls:'chip pend',detail:'近4周 SO 为 0'};
+  if(soUp&&dosDown!==false)return {code:'good',label:'动销转好',cls:'chip auto',
+    detail:'近4周 SO '+m.so4+'(前4周 '+m.soPrev4+'),DOS '+(m.dosPrev==null?'—':(m.dosPrev+'→'+m.dosNow))};
+  if(!soUp&&dosDown===false)return {code:'bad',label:'恶化',cls:'chip pend',
+    detail:'SO 走低且 DOS 上升('+(m.dosPrev+'→'+m.dosNow)+')'};
+  return {code:'mid',label:'持平',cls:'chip',detail:'近4周 SO '+m.so4+' vs 前4周 '+m.soPrev4};
+};
+
+/* ---------- ST→SO 激活效率（电渠/线下分口径,用户 2026-08-26 拍板） ----------
+   线下渠道 ST 后存在铺货周期,SO 滞后 1–3 周属正常;电渠应当 ST 当周–次周即激活。
+   对每次推导 ST(>0):基准SO = ST 前最近 3 个有数周均值;响应SO = 响应窗口有数周均值。
+   激活 = 响应SO > 基准SO(基准为 0 时只要响应>0)。窗口未到齐的事件计 pending 不计分。
+   音频口径:SO=0 视为未报量跳过(与全局口径一致)。 */
+C.stActivation=function(u,histST,ecom,maxPeriod){
+  /* ecom:true=电渠(当周起)/false=线下默认 1–3 周;数字=渠道补货周期天数(SI 后 SO 起量等待,用户逐渠道设置) */
+  let lag0,lag1;
+  if(typeof ecom==='number'&&isFinite(ecom)&&ecom>=0){
+    lag0=Math.round(ecom/7); lag1=lag0+2;
+  } else { lag0=ecom?0:1; lag1=ecom?1:3; }
+  const okSo=function(so){ return u.audio?(so!=null&&so>0):(so!=null); };
+  const soAt=function(p){ const w=u.weeks.get(p); return w?w.so:null; };
+  const events=[]; let pending=0;
+  histST.forEach(function(v,p){
+    if(!(v>0))return;
+    const pre=[];
+    for(let i=u.periods.indexOf(p)-1;i>=0&&pre.length<3;i--){
+      const so=soAt(u.periods[i]); if(okSo(so))pre.push(so); }
+    let preAvg=0; if(pre.length){ pre.forEach(function(x){preAvg+=x;}); preAvg/=pre.length; }
+    const post=[]; let windowFull=true;
+    for(let k=lag0;k<=lag1;k++){
+      const pp=C.addWeeksP(p,k);
+      if(maxPeriod!=null&&pp>maxPeriod){ windowFull=false; continue; }
+      const so=soAt(pp); if(okSo(so))post.push(so);
+    }
+    if(!post.length){ if(!windowFull)pending++; return; }
+    let postAvg=0; post.forEach(function(x){postAvg+=x;}); postAvg/=post.length;
+    const activated=preAvg>0?(postAvg>preAvg):(postAvg>0);
+    events.push({p:p,qty:Math.round(v),pre:+preAvg.toFixed(1),post:+postAvg.toFixed(1),activated:activated});
+  });
+  let act=0; events.forEach(function(e){ if(e.activated)act++; });
+  return {events:events,n:events.length,activated:act,
+    rate:events.length?act/events.length:null,pending:pending,
+    ecom:!!ecom,lag0:lag0,lag1:lag1};
+};
+
+/* 步长取整(2026-09-02 用户:下游全部模拟按 5 台,不是 1 台) */
+C.ceilStep=function(v,step){ step=step||1; return v<=0?0:Math.ceil(v/step-1e-9)*step; };
+C.floorStep=function(v,step){ step=step||1; return v<=0?0:Math.floor(v/step+1e-9)*step; };
+/* ---------- 自顶向下分配：总数按权重分到叶子,最大余数法配平(拍的总数守恒);step>1 时每格为步长倍数,零头给份额最大的一格 ---------- */
+C.distribute=function(total,weights,step){
+  const n=weights.length;
+  if(!n)return [];
+  step=(step&&step>1)?step:1;
+  const T=Math.round(total);
+  if(!isFinite(T)||T<=0)return weights.map(function(){ return 0; });   // 负/非数不拆(2026-09-02 审计)
+  const chunks=step>1?Math.floor(T/step):T;
+  let sum=0; weights.forEach(function(w){ sum+=(w>0?w:0); });
+  const eff=sum>0?weights.map(function(w){ return w>0?w:0; }):weights.map(function(){ return 1; });
+  if(sum<=0)sum=n;
+  const raw=eff.map(function(w){ return chunks*w/sum; });
+  const base=raw.map(function(v){ return Math.floor(v); });
+  let used=0; base.forEach(function(v){ used+=v; });
+  let left=chunks-used;
+  const order=raw.map(function(v,i){ return [v-base[i],i]; }).sort(function(a,b){ return b[0]-a[0]; });
+  for(let k=0;k<order.length&&left>0;k++){ base[order[k][1]]++; left--; }
+  const out=base.map(function(v){ return v*step; });
+  const rem=T-chunks*step;
+  if(rem>0){ let bi=0; for(let i=1;i<n;i++){ if(raw[i]>raw[bi])bi=i; } out[bi]+=rem; }
+  return out;
+};
+/* 叶子分配权重：去年同月 SO 合计 → 近8个有数周 SO 合计 → 0(由 distribute 均分) */
+C.leafWeight=function(u,p,refYear,cfg){
+  const mon=C.monthOfP(p);
+  let wYr=0,found=false;
+  u.periods.forEach(function(pp){
+    if(C.periodY(pp)!==refYear)return;
+    if(C.monthOfP(pp)!==mon)return;
+    const so=u.weeks.get(pp).so;
+    if(u.audio?(so!=null&&so>0):(so!=null)){ wYr+=(so||0); found=true; }
+  });
+  if(found&&wYr>0)return wYr;
+  const soWeeks=u.periods.filter(function(pp){ const so=u.weeks.get(pp).so;
+    return u.audio?(so!=null&&so>0):(so!=null); }).slice(-8);
+  let w8=0; soWeeks.forEach(function(pp){ w8+=(u.weeks.get(pp).so||0); });
+  return w8;
+};
+/* 历史能力上限：去年同月最大周销×1.5,无去年→历史最大周销×1.2;无历史→null(不校验) */
+C.abilityCap=function(u,p,refYear){
+  const mon=C.monthOfP(p);
+  let mYr=0,mAll=0;
+  u.periods.forEach(function(pp){
+    const so=u.weeks.get(pp).so;
+    const ok=u.audio?(so!=null&&so>0):(so!=null&&so>0);
+    if(!ok)return;
+    if(so>mAll)mAll=so;
+    if(C.periodY(pp)===refYear&&C.monthOfP(pp)===mon&&so>mYr)mYr=so;
+  });
+  if(mYr>0)return Math.ceil(mYr*1.5);
+  if(mAll>0)return Math.ceil(mAll*1.2);
+  return null;
+};
+
+/* ---------- 历史 ST 推导: ST_w = INV1_prev + ΣSI(自上个INV1周之后,含当周) − INV1_w ----------
+   INV1 缺周时必须累计间隔内全部 SI,否则 ST 被低估(传染监控近4周ST与ST可行性模型)。可负=回调/调整 */
+C.deriveHistST=function(u){
+  const out=new Map(); let prev=null,siAcc=0;
+  u.periods.forEach(function(p){ const w=u.weeks.get(p);
+    siAcc+=(w.si||0);
+    if(w.inv1!=null){
+      if(prev!=null)out.set(p,Math.round(prev+siAcc-w.inv1));
+      prev=w.inv1; siAcc=0;
+    }
+  });
+  return out;
+};
+
+/* ---------- 内置示例数据（与底表同格式的 TSV,走同一条解析链） ---------- */
+C.genSampleTSV=function(){
+  let seed=20260825;
+  const rnd=function(){ seed=(seed*1103515245+12345)%2147483648; return seed/2147483648; };
+  const promo={12:1.15,20:1.5,21:1.7,26:1.2,46:2.2,47:2.4,48:1.6,50:1.2,51:1.35,52:1.45};
+  const A1='Boreal Abastos Corp.', A2='ANDES MAYORISTA DE COLOMBIA S A S';
+  const defs=[
+    {acct:A1,line:'平板',product:'ACME Slate SE 11-inch',model:'Vantor6-W19DP',base:46,from:2025001},
+    {acct:A1,line:'平板',product:'ACME Slate SE 11" Kids Edition',model:'Vantor6-W09BE',kids:true,from:2025001},
+    {acct:A1,line:'平板',product:'ACME Slate 12 X',model:'Vireo-W29',base:11,from:2026018},
+    {acct:A1,line:'智能穿戴与运动健康',product:'ACME WATCH GX 5',model:'Talos-B19',base:16,from:2025001,fadeFrom:2026028,fade:0.55},
+    {acct:A1,line:'智能穿戴与运动健康',product:'ACME WATCH GX 6',model:'Aris-B19F',base:13,from:2026028},
+    {acct:A1,line:'音频与智能配件',product:'ACME SonicBuds SE 3',model:'Tidal-T20',base:32,from:2025010,audio:true,lastRep:2026032},
+    {acct:A1,line:'音频与智能配件',product:'ACME SonicBuds Pro 5',model:'Nerio-T10',base:9,from:2025048,audio:true,lastRep:2026031},
+    {acct:A1,line:'手机',product:'ACME nimbus 13',model:'Vela-L23',base:24,from:2025005},
+    {acct:A2,line:'平板',product:'ACME Slate SE 11-inch',model:'Vantor6-W19DP',base:19,from:2025001},
+    {acct:A2,line:'音频与智能配件',product:'ACME SonicBuds SE 3',model:'Tidal-T20',base:12,from:2025030,audio:true,lastRep:2026033}
+  ];
+  const allP=[]; let p=2025001;
+  while(p<=2026034){ allP.push(p); p=C.addWeeksP(p,1); }
+  const out=['Management Country/Region\tManagement Account Name(D)\tProduct Line\tProduct\tProduct Model\tPeriod ID\tPSI Type\tQTY'];
+  const fmtP=function(pp){ return String(C.periodY(pp))+String(C.periodW(pp)).padStart(3,'0'); };
+  const push=function(d,pp,type,v){ out.push(['哥伦比亚',d.acct,d.line,d.product,d.model,fmtP(pp),type,v==null?'':String(v)].join('\t')); };
+  defs.forEach(function(d){
+    if(d.kids){
+      allP.forEach(function(pp){ if(C.weekIndex(pp)<C.weekIndex(d.from))return;
+        push(d,pp,'Sell In',0); push(d,pp,'Sell Out',0); push(d,pp,'Inventory',2);
+        push(d,pp,'DOS',null); push(d,pp,'Inventory1',3); });
+      return;
+    }
+    let down=Math.round(d.base*8), inv1=Math.round(d.base*6);
+    const q=[],qr=[];
+    let cnt=0;
+    allP.forEach(function(pp){
+      if(C.weekIndex(pp)<C.weekIndex(d.from))return;
+      cnt++;
+      const y=C.periodY(pp),w=C.periodW(pp);
+      let lvl=d.base*(y===2026?1.08:1);
+      if(d.fadeFrom&&C.weekIndex(pp)>=C.weekIndex(d.fadeFrom))lvl*=d.fade;
+      const age=C.weekIndex(pp)-C.weekIndex(d.from);
+      if(age<4)lvl*=(0.4+0.2*age);
+      const soT=Math.max(0,Math.round(lvl*(promo[w]||1)*(0.78+0.44*rnd())));
+      q.push(soT); if(q.length>4)q.shift();
+      let s=0; q.forEach(function(v){s+=v;}); const avg=s/q.length;
+      down-=soT;
+      let st=0;
+      if(down<avg*8){ st=Math.round(Math.max(0,(avg*9-down))/10)*10; st=Math.min(st,inv1); down+=st; inv1-=st; }
+      let si=0;
+      if(cnt%3===(d.base%3)&&inv1<avg*6){ si=Math.round(Math.max(0,(avg*10-inv1))/10)*10; inv1+=si; }
+      const inv=Math.max(0,Math.round(inv1+down));
+      const soRep=d.audio?(C.weekIndex(pp)<=C.weekIndex(d.lastRep)?soT:0):soT;
+      qr.push(soRep); if(qr.length>4)qr.shift();
+      let sr=0; qr.forEach(function(v){sr+=v;});
+      const dos=sr>0?Math.round(inv/(sr/28)):null;
+      push(d,pp,'Sell In',si); push(d,pp,'Sell Out',soRep); push(d,pp,'Inventory',inv);
+      push(d,pp,'DOS',dos); push(d,pp,'Inventory1',Math.round(inv1));
+    });
+  });
+  return out.join('\n');
+};
+
+/* ---------- 内置下游渠道示例数据（Period 用 2026W01 格式,走同一条解析链） ---------- */
+C.genRetailSampleTSV=function(){
+  let seed=20260826;
+  const rnd=function(){ seed=(seed*1103515245+12345)%2147483648; return seed/2147483648; };
+  const promo={12:1.15,20:1.5,21:1.7,26:1.2,46:2.2,47:2.4,48:1.6,50:1.2,51:1.35,52:1.45};
+  const defs=[
+    {c:'加拿大',ch:'KEYSTONE (Amazon FBA)_Indirect Retailer',line:'音频与智能配件',prod:'SonicBuds SE 3',ser:'低成本TWS耳机',model:'SBC-CT020',base:6,from:2026005,audio:true,lastRep:2026032,initX:14},
+    {c:'加拿大',ch:'MERIDIAN RETAIL_Indirect Retailer',line:'音频与智能配件',prod:'SonicBuds SE 3',ser:'低成本TWS耳机',model:'SBC-CT020',base:3,from:2026008,audio:true,lastRep:2026032,initX:10},
+    {c:'加拿大',ch:'NORTENA MAYOREO_Indirect Retailer',line:'音频与智能配件',prod:'SonicBuds SE 4 ANC',ser:'Kori',model:'Kori-T010',base:4,from:2026010,audio:true,lastRep:2026033,initX:12},
+    {c:'加拿大',ch:'ANDINA COMERCIO_Indirect Retailer',line:'音频与智能配件',prod:'SonicBuds 6i',ser:'Manta',model:'Manta-T100',base:2,from:2026003,audio:true,lastRep:2026031,initX:45,stopBuy:2026012},
+    {c:'哥伦比亚',ch:'AUSTRAL ALMACENES S.A._Indirect Retailer',line:'音频与智能配件',prod:'ACME SonicBuds SE 3',ser:'低成本TWS耳机',model:'Tidal-T20',base:15,from:2025010,audio:true,lastRep:2026032,initX:9},
+    {c:'哥伦比亚',ch:'DORADA MAYOREO S.A._Indirect Retailer',line:'智能穿戴与运动健康',prod:'ACME WATCH GX 6',ser:'Aris',model:'Aris-B19F',dead:true,from:2026020,deadInv:40},
+    {c:'哥伦比亚',ch:'TELCOM ANDINA S.A._Indirect Retailer',line:'手机',prod:'ACME nimbus 13',ser:'Vela',model:'Vela-L23',base:10,from:2026001,initX:8},
+    {c:'秘鲁',ch:'PRIMERA DISTRIBUCION S.A._Indirect Retailer',line:'音频与智能配件',prod:'ACME SonicBuds SE 3',ser:'低成本TWS耳机',model:'Tidal-T20',base:8,from:2026003,audio:true,lastRep:2026033,initX:11}
+  ];
+  const allP=[]; let p=2025010;
+  while(p<=2026034){ allP.push(p); p=C.addWeeksP(p,1); }
+  const out=['Purchase   Country/Region\tChannel Name(R)\tProduct Line\tProduct\tProduct Series\tProduct Model\tPeriod ID\tPSI Type\tQTY'];
+  const fmtP=function(pp){ return String(C.periodY(pp))+'W'+String(C.periodW(pp)).padStart(2,'0'); };
+  const push=function(d,pp,type,v){ out.push([d.c,d.ch,d.line,d.prod,d.ser,d.model,fmtP(pp),type,v==null?'':String(v)].join('\t')); };
+  defs.forEach(function(d){
+    if(d.dead){
+      let first=true;
+      allP.forEach(function(pp){ if(C.weekIndex(pp)<C.weekIndex(d.from))return;
+        push(d,pp,'Purchase',first?d.deadInv:0); push(d,pp,'Sell Out',0);
+        push(d,pp,'Inventory1',d.deadInv); push(d,pp,'DOS1',null); first=false; });
+      return;
+    }
+    let inv=Math.round(d.base*(d.initX||9));
+    const qr=[]; let cnt=0;
+    allP.forEach(function(pp){
+      if(C.weekIndex(pp)<C.weekIndex(d.from))return;
+      cnt++;
+      const y=C.periodY(pp),w=C.periodW(pp);
+      let lvl=d.base*(y===2026?1.05:1);
+      const age=C.weekIndex(pp)-C.weekIndex(d.from);
+      if(age<3)lvl*=(0.5+0.25*age);
+      const soT=Math.max(0,Math.round(lvl*(promo[w]||1)*(0.7+0.6*rnd())));
+      let buy=0;
+      const buyAllowed=!d.stopBuy||C.weekIndex(pp)<=C.weekIndex(d.stopBuy);
+      if(buyAllowed&&cnt%4===(d.base%4)&&inv<d.base*9){ buy=Math.round(Math.max(0,d.base*12-inv)/5)*5; }
+      inv=Math.max(0,inv+buy-soT);
+      const soRep=d.audio?(C.weekIndex(pp)<=C.weekIndex(d.lastRep)?soT:0):soT;
+      qr.push(soRep); if(qr.length>4)qr.shift();
+      let sr=0; qr.forEach(function(v){sr+=v;});
+      const dos=sr>0?Math.round(inv/(sr/28)):null;
+      push(d,pp,'Purchase',buy); push(d,pp,'Sell Out',soRep);
+      push(d,pp,'Inventory1',inv); push(d,pp,'DOS1',dos);
+    });
+  });
+  return out.join('\n');
+};
+
+/* ---------- 内置音频专表示例（格式与 FSD 表一致,只含音频,账户=直接渠道客户） ---------- */
+C.genAudioSampleTSV=function(){
+  let seed=20260827;
+  const rnd=function(){ seed=(seed*1103515245+12345)%2147483648; return seed/2147483648; };
+  const defs=[
+    {c:'乌拉圭',a:'Austral Suministros Corp.',p:'SonicClip',m:'Lark-T00',base:2,initX:40,lastRep:2026030},
+    {c:'乌拉圭',a:'Austral Suministros Corp.',p:'SonicBuds SE 2',m:'SBC-CT010',base:8,initX:60,lastRep:2026030},
+    {c:'加拿大',a:'CENTRAL ABASTOS Corp.',p:'SonicClip',m:'Lark-T00',base:30,initX:10,lastRep:2026033},
+    {c:'加拿大',a:'CENTRAL ABASTOS Corp.',p:'SonicClip',m:'Lark-T01',base:3,initX:20,lastRep:2026032},
+    {c:'加拿大',a:'CENTRAL ABASTOS Corp.',p:'SonicBuds 5',m:'Beacon-T10',base:12,initX:12,lastRep:2026033},
+    {c:'哥伦比亚',a:'Boreal Abastos Corp.',p:'ACME SonicBuds SE 3',m:'Tidal-T20',base:30,initX:12,lastRep:2026032}
+  ];
+  const allP=[]; let p=2025001;
+  while(p<=2026034){ allP.push(p); p=C.addWeeksP(p,1); }
+  const out=['Management   Country/Region\tManagement Account Name(D)\tProduct Line\tProduct\tProduct Model\tPeriod ID\tPSI Type\tQTY'];
+  const fmtP=function(pp){ return String(C.periodY(pp))+String(C.periodW(pp)).padStart(3,'0'); };
+  const push=function(d,pp,type,v){ out.push([d.c,d.a,'音频与智能配件',d.p,d.m,fmtP(pp),type,v==null?'':String(v)].join('\t')); };
+  defs.forEach(function(d){
+    let inv1=Math.round(d.base*(d.initX||10));
+    let down=Math.round(d.base*4);
+    const qr=[]; let cnt=0;
+    allP.forEach(function(pp){
+      cnt++;
+      const w=C.periodW(pp);
+      const promo={20:1.4,46:2.0,47:2.2,48:1.5}[w]||1;
+      const soT=Math.max(0,Math.round(d.base*promo*(0.7+0.6*rnd())));
+      let st=0;
+      down-=soT;
+      if(down<d.base*4&&inv1>0){ st=Math.min(inv1,Math.round(d.base*6)); down+=st; inv1-=st; }
+      let si=0;
+      if(cnt%5===(d.base%5)&&inv1<d.base*6){ si=Math.round(d.base*10/5)*5; inv1+=si; }
+      const soRep=C.weekIndex(pp)<=C.weekIndex(d.lastRep)?soT:0;
+      const inv=Math.max(0,Math.round(inv1+Math.max(0,down)));
+      qr.push(soRep); if(qr.length>4)qr.shift();
+      let sr=0; qr.forEach(function(v){sr+=v;});
+      const dos=sr>0?Math.round(inv/(sr/28)):null;
+      push(d,pp,'Sell In',si); push(d,pp,'Sell Out',soRep); push(d,pp,'Inventory',inv);
+      push(d,pp,'DOS',dos); push(d,pp,'Inventory1',Math.round(inv1));
+    });
+  });
+  return out.join('\n');
+};
+
+if(typeof module!=='undefined'&&module.exports) module.exports=C;
+if(typeof window!=='undefined') window.FsdCore=C;
+})();
+/*CORE-END*/

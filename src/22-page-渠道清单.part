@@ -1,0 +1,18 @@
+/* ===== 渠道清单(2026-09-04 看板收敛 阶段4a):FSD 直签 / 下游 / 音频 三张同形态单元清单合成一页 =====
+   同一份 KPI→筛选→单元表→点行看周表 的层级,只按数据来源切换;各源的列与口径原样保留(列并集与口径统一待 D15/D3 拍板)。
+   渲染仍复用三个原函数(只换容器),门禁断言新页与旧页逐格相同。 */
+function renderChannels(){
+  const el=$('#view-channels');
+  const src=['fsd','retail','audio'].indexOf(state.ui.clSrc)>=0?state.ui.clSrc:'fsd';
+  ['#view-overview','#view-retail','#view-audio'].forEach(function(id){ const s2=$(id); if(s2)s2.innerHTML=''; });   // 同 id 控件不许有第二份
+  const nF=D?D.list.length:0,nR=Dr?Dr.list.length:0,nA=Da?Da.list.length:0;
+  const tabH=function(k,label,n,tip){ return '<button class="'+(src===k?'act':'ghost')+'" data-clsrc="'+k+'" title="'+tip+'">'+label+(n?' <span class="muted">'+n+'</span>':'')+'</button>'; };
+  el.innerHTML='<div class="bar" id="clSrcBar">'
+    +tabH('fsd','FSD 直签渠道',nF,'FSD 底表:直签渠道(含带下游的分销与直达消费者的运营商/电商/零售)的 INV1/INV/SO,ST 风险清单在本页下方')
+    +tabH('retail','下游渠道',nR,'间接零售伙伴底表:下游渠道的 Purchase/SO/库存,以及与 FSD 的对账')
+    +tabH('audio','音频专表',nA,'Management Account 直接客户口径的音频专表(报量制)')
+    +'<span class="note">同一张单元清单，按数据来源切换 · 点行看该单元的周推演</span></div><div id="clBody"></div>';
+  const body=$('#clBody');
+  if(src==='fsd')renderOverview(body); else if(src==='retail')renderRetail(body); else renderAudio(body);
+  el.querySelectorAll('[data-clsrc]').forEach(function(b){ b.onclick=function(){ state.ui.clSrc=b.dataset.clsrc; render(); }; });
+}

@@ -1,0 +1,95 @@
+/* ===== 月末 DOS ===== */
+function renderMonthEnd(elOpt){
+  const el=elOpt||$('#view-monthend');
+  if(!elOpt)pvModeClear();
+  const hasF=!!D, hasR=!!Dr;
+  if(!hasF&&!hasR){ emptyHint(el); return; }
+  let view=state.ui.meView;
+  if(view==='fsd'&&!hasF)view='retail';
+  if(view==='retail'&&!hasR)view='fsd';
+  state.ui.meView=view;
+  const Dx=(view==='fsd')?D:Dr;
+  const curMaxP=(view==='fsd')?store.maxPeriod:retailStore.maxPeriod;
+  const mes=Dx.monthEnds;
+  const srcList=((view==='retail'&&!state.showRetailAudio)||(view==='fsd'))
+    ?Dx.list.filter(function(it){ return !it.u.audio; })   // 下游音频报量制口径不可信,默认隐藏;FSD 视图音频以专表为准(2026-09-02)
+    :Dx.list;
+  const items=srcList.map(function(it){ return {u:it.u,cur:it.cur,exempt:!!(it.exempt||it.ignored),
+    dailyBase:it.dailyBase||0,
+    simRows:(it.sim&&!it.sim.blocked&&!it.exempt&&!it.ignored)?it.sim.rows:null,blocked:!!(it.sim&&it.sim.blocked)}; });
+  const lines=[];
+  items.forEach(function(x){ if(x.u.line&&lines.indexOf(x.u.line)<0)lines.push(x.u.line); });
+  lines.sort();
+  let h='<div class="bar">'
+    +'<button class="'+(view==='fsd'?'act':'ghost')+'" id="meF"'+(hasF?'':' disabled')+'>直接伙伴 FSD</button>'
+    +'<button class="'+(view==='retail'?'act':'ghost')+'" id="meR"'+(hasR?'':' disabled')+'>下游渠道</button>'
+    +msHtml('meLine','产品线',lines,state.ui.meLine)
+    +'<input type="text" id="meQ" placeholder="搜索渠道/产品/型号" value="'+esc(state.ui.meQ)+'">'
+    +'<span class="note">'+(view==='retail'?'含补货推演 · ':'含补货推演 · ')+'月=周按周四归属 · 月末DOS = 月末库存 ÷ (该月SO(实际+推演) ÷ 该月天数=周数×7) · 当前DOS = 当前库存 ÷ 近4周日均 · 悬停看分子分母 · 高库存: ≥150 黄 ≥200 红</span>'
+    +'</div>';
+  const rows=items.filter(function(x){ const u=x.u;
+    if(!msMatch(state.ui.meLine,u.line))return false;
+    if(state.ui.meQ){ const q=state.ui.meQ.toLowerCase();
+      if((u.account+' '+u.product+' '+u.model).toLowerCase().indexOf(q)<0)return false; }
+    return true; });
+  h+='<div class="tblwrap" style="max-height:66vh"><table class="sortable"><thead><tr>'
+    +'<th class="l">'+(view==='fsd'?'账户':'渠道')+'</th><th class="l">产品线</th><th class="l">产品</th><th class="l">型号</th>'
+    +'<th>当前DOS<div style="font-weight:400;font-size:10px;color:var(--sub)">'+F.weekLabel(curMaxP)+'</div></th>';
+  mes.forEach(function(me){ h+='<th'+(me.m===10?' class="oct"':'')+'>'+me.label+'<div style="font-weight:400;font-size:10px;color:var(--sub)">'+F.weekLabel(me.p)+'</div></th>'; });
+  h+='<th class="l noSort">操作</th></tr></thead><tbody>';
+  const CAP=state.ui.meLimit||500;
+  const agg={inv:0,daily:0,me:{}}; mes.forEach(function(me){ agg.me[me.p]={inv:0,daily:0,so:0,days:F.monthDaysOf(F.periodY(me.p),me.m)}; });
+  let exSkip=0;
+  rows.forEach(function(x,idx){
+    if(x.exempt)exSkip++;
+    else {
+      if(x.cur.curInv!=null)agg.inv+=x.cur.curInv;
+      if(x.cur.dailySO)agg.daily+=x.cur.dailySO;
+      if(x.simRows)mes.forEach(function(me){
+        for(let i=0;i<x.simRows.length;i++){ if(x.simRows[i].p===me.p){
+          agg.me[me.p].inv+=x.simRows[i].inv; agg.me[me.p].daily+=(x.simRows[i].daily||0);
+          agg.me[me.p].so+=F.unitMonthSO(x.u,x.simRows,F.periodY(me.p),me.m); break; } }
+      });
+    }
+    if(idx>=CAP)return;
+    const u=x.u;
+    const infCur=!x.exempt&&x.cur.curInv>0&&x.cur.dosCalc==null;
+    h+='<tr'+(x.exempt?' style="opacity:.5"':'')+'><td class="l ell" title="'+esc((u.rawNames&&u.rawNames.length)?u.rawNames.join(' / '):u.account)+'">'+esc(u.account)+'</td>'
+      +'<td class="l">'+esc(u.line)+'</td>'
+      +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+      +'<td class="l">'+esc(u.model)+'</td>'
+      +'<td'+(x.exempt?'':dosRiskClsOct(x.cur.dosCalc,false,infCur))+' title="INV '+F.fmt(x.cur.curInv)+'">'+(x.exempt?'免':(infCur?'∞':F.fmt(x.cur.dosCalc)))+'</td>';
+    mes.forEach(function(me){
+      if(x.exempt){ h+='<td class="muted'+(me.m===10?' oct':'')+'">免</td>'; return; }
+      if(!x.simRows){ h+='<td class="muted'+(me.m===10?' oct':'')+'">待确认</td>'; return; }
+      let r=null;
+      for(let i=0;i<x.simRows.length;i++){ if(x.simRows[i].p===me.p){ r=x.simRows[i]; break; } }
+      if(!r){ h+='<td'+(me.m===10?' class="oct"':'')+'>—</td>'; return; }
+      const soM=F.unitMonthSO(u,x.simRows,F.periodY(me.p),me.m), daysM=F.monthDaysOf(F.periodY(me.p),me.m);
+      const dvM=F.monthDos(r.inv,soM,daysM); const inf=dvM===Infinity;
+      const flat=(view==='fsd'&&x.dailyBase>0)?' · 平销口径≈'+Math.round(r.inv/x.dailyBase)+'天':'';
+      h+='<td'+dosRiskClsOct(inf?null:dvM,me.m===10,inf,me.m)+' title="月末库存 '+F.fmt(r.inv)+' ÷ (该月SO '+F.fmt(soM)+' ÷ '+daysM+'天)'+flat+'">'+F.dosText(dvM)+'</td>';
+    });
+    h+='<td class="l">'+watchBtnHtml(view==='fsd'?'fsd':'retail',u.key)+'</td></tr>';
+  });
+  h+='<tr class="totalRow" style="font-weight:700"><td class="l">合计('+rows.length+'项'+(exSkip?'，不含免推演项'+exSkip+'项':'')+')</td><td class="l"></td><td class="l"></td><td class="l"></td>'
+    +'<td title="INV '+F.fmt(agg.inv)+'">'+(agg.daily>0?F.fmt(Math.round(agg.inv/agg.daily)):'—')+'</td>';
+  mes.forEach(function(me){ const a=agg.me[me.p]; const dv=F.monthDos(a.inv,a.so,a.days);
+    h+='<td'+(me.m===10?' class="oct"':'')+' title="月末库存 '+F.fmt(a.inv)+' ÷ (该月SO '+F.fmt(Math.round(a.so))+' ÷ '+a.days+'天)">'+F.dosText(dv)+'</td>'; });
+  h+='<td></td></tr></tbody></table></div>';
+  if(rows.length>CAP)h+='<div class="bar"><span class="note">已显示 '+Math.min(CAP,rows.length)+' / '+rows.length+' 行（合计行始终为全部筛选结果）</span>'
+    +'<button class="ghost" id="btnMeMore">再显示 500 行</button><button class="ghost" id="btnMeAll">显示全部</button></div>';
+  if(view==='fsd')h+='<div class="note">FSD 视图 = 含 SI/ST 补货 + 年末收官约束（10/11/12月底上限,按平销日均折算,见设置页）；月末格悬停可见平销口径 DOS。「待确认」产品先定推演方式后才有月末值。</div>';
+  else if(!state.showRetailAudio)h+='<div class="note">下游视图已隐藏音频产品（报量制,下游口径不具参考性）,可在下游渠道页勾选显示。</div>';
+  h+='<div class="note">标色规则：各月末列按设置页「DOS 标红规则」对应月份的红线/预警线判定，当前DOS 列用通用阈值，∞（有库存零动销）恒标红。</div>';
+  el.innerHTML=h;
+  $('#meF').onclick=function(){ state.ui.meView='fsd'; render(); };
+  $('#meR').onclick=function(){ state.ui.meView='retail'; render(); };
+  bindMs(el,'meLine',function(a){ state.ui.meLine=a; state.ui.meLimit=500; render(); });
+  $('#meQ').oninput=function(){ state.ui.meQ=this.value; state.ui.meLimit=500; render(); };
+  const meMore=$('#btnMeMore'); if(meMore)meMore.onclick=function(){ state.ui.meLimit=(state.ui.meLimit||500)+500; render(); };
+  const meAll=$('#btnMeAll'); if(meAll)meAll.onclick=function(){ state.ui.meLimit=1e9; render(); };
+  bindWatchBtns(el);
+  makeSortable(el);
+}
+

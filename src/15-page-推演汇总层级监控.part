@@ -1,0 +1,402 @@
+/* ===== 推演汇总层级监控:节点键 nk = 数据源|#|产品线[|#|产品[|#|国家[|#|渠道]]]
+   基线存 watchBase['sum|'+nk]。聚合口径与推演汇总页一致(不含免推演/豁免/待确认)。 ===== */
+function sumLabelsOf(nk){ const a=nk.split('|#|'); return {src:a[0],labels:a.slice(1)}; }
+function sumWatchMetrics(w){
+  const Dx2=w.src==='fsd'?D:(w.src==='retail'?Dr:Da);
+  if(!Dx2)return null;
+  let n=0,inv=0,daily=0,so4=0,prev4=0,si4=0,st4=0,inv1Now=0,inv1Delta=0,hasInv1=false,hasDelta=false;
+  Dx2.list.forEach(function(it){
+    const u=it.u,lb=w.labels;
+    if(lb[0]!=null&&u.line!==lb[0])return;
+    if(lb.length>1&&u.product!==lb[1])return;
+    if(lb.length>2&&u.country!==lb[2])return;
+    if(lb.length>3&&u.account!==lb[3])return;
+    if(w.src==='retail'&&!state.showRetailAudio&&u.audio)return;
+    if(it.exempt||it.ignored)return;
+    if(it.sim&&it.sim.blocked)return;
+    n++;
+    const m=F.watchMetrics(u,state.cfg);
+    so4+=m.so4; prev4+=m.soPrev4; si4+=m.si4; st4+=m.st4;
+    if(it.cur.curInv!=null)inv+=it.cur.curInv;
+    if(it.cur.dailySO)daily+=it.cur.dailySO;
+    if(m.inv1Now!=null){ inv1Now+=m.inv1Now; hasInv1=true; }
+    if(m.inv1Delta4!=null){ inv1Delta+=m.inv1Delta4; hasDelta=true; }
+  });
+  return {n:n,inv:inv,so4:so4,soPrev4:prev4,si4:si4,st4:st4,
+    dosNow:daily>0?Math.round(inv/daily):null,dosPrev:null,
+    inv1Now:hasInv1?inv1Now:null,inv1Delta4:hasDelta?inv1Delta:null,
+    lastP:null,lastSO:null,wow:null,spark:null};
+}
+function addSumWatch(nk){
+  const w=sumLabelsOf(nk);
+  const m=sumWatchMetrics(w);
+  if(!m||!m.n){ alert('该层级在当前数据中没有可监控的单元。'); return; }
+  state.watch.sum[nk]={src:w.src,labels:w.labels};
+  const stx=w.src==='fsd'?store:(w.src==='retail'?retailStore:audioStore);
+  state.watchBase['sum|'+nk]={p:(stx&&stx.maxPeriod)||0,inv:m.inv,dos:m.dosNow,so4:m.so4,n:m.n};
+  saveState(); render();
+}
+function removeSumWatch(nk){ delete state.watch.sum[nk]; delete state.watchBase['sum|'+nk]; saveState(); render(); }
+function sumWatchRows(){
+  return Object.keys(state.watch.sum||{}).map(function(nk){
+    const w=state.watch.sum[nk];
+    const m=sumWatchMetrics({src:w.src,labels:w.labels});
+    const v=(m&&m.n)?F.watchVerdict(m,w.src==='fsd'?'fsd':'retail'):null;
+    return {nk:nk,w:w,m:m,v:v,b:state.watchBase['sum|'+nk]||{}};
+  });
+}
+function exportSumWatch(){
+  const rows=sumWatchRows();
+  if(!rows.length){ alert('推演汇总监控列表为空。请先在「推演汇总」页对层级行点「监控」。'); return; }
+  const SRC_LAB={fsd:'FSD',retail:'下游',audio:'音频专表'};
+  const LV=['产品线','产品','国家','渠道'];
+  const rawMaps={fsd:rawNameMapOf('fsd'),retail:rawNameMapOf('retail'),audio:rawNameMapOf('audio')};
+  const headers=['数据源','产品线','产品','国家','渠道','原始渠道名','层级','单元数','基线周','INV基线','INV当前','SO4基线','近4周SO','前4周SO','DOS基线','DOS当前','近4周SI','近4周ST','判定'];
+  const data=rows.map(function(r){
+    const lb=r.w.labels;
+    return [SRC_LAB[r.w.src]||r.w.src,lb[0]||'',lb[1]||'',lb[2]||'',lb[3]||'',
+      lb[3]?((rawMaps[r.w.src]||{})[lb[3]]||lb[3]):'',LV[lb.length-1]||'',
+      r.m?r.m.n:0,r.b.p?F.weekLabel(r.b.p):'',r.b.inv!=null?r.b.inv:'',r.m?r.m.inv:'',
+      r.b.so4!=null?r.b.so4:'',r.m?r.m.so4:'',r.m?r.m.soPrev4:'',
+      r.b.dos!=null?r.b.dos:'',(r.m&&r.m.dosNow!=null)?r.m.dosNow:'',
+      r.m?r.m.si4:'',r.m?r.m.st4:'',r.v?r.v.label:'无数据'];
+  });
+  exportTable('推演汇总-监控列表',headers,data);
+}
+function renderWatch(elOpt){
+  const el=elOpt||$('#view-watch');
+  if(!elOpt){ const c=$('#view-monitor'); if(c)c.innerHTML=''; }
+  const collect=function(kinds){
+    const out=[];
+    kinds.forEach(function(k){
+      Object.keys(state.watch[k]||{}).forEach(function(key){
+        const byKey=watchByKeyOf(k);
+        out.push({key:key,kind:k,it:(byKey&&byKey.get(key))||null});
+      });
+    });
+    return out;
+  };
+  const rowsF=collect(['fsd','audio']);
+  const rowsR=collect(['retail']);
+  const nSum=Object.keys(state.watch.sum||{}).length;
+  const hasTg=!!(Dt&&targetRows&&targetRows.length);
+  /* 间接渠道高库存仍进货:自动扫描(不依赖监控名单)——DOS 已超红线仍有 SI,必须显性告警 */
+  const indirRisk=[];
+  if(D)D.list.forEach(function(it){
+    const cc=chanClassOf(it.u);
+    if(!cc||cc.cls!=='indirect')return;
+    if(it.exempt||it.ignored)return;
+    const m=F.watchMetrics(it.u,state.cfg);
+    if(m.si4<=0)return;
+    const dosV=it.cur.dosCalc;
+    const inf=(it.cur.curInv||0)>0&&dosV==null;
+    if(inf||(dosV!=null&&dosV>=dosThOf(null).red))indirRisk.push({it:it,m:m,dos:inf?'∞':dosV});
+  });
+  const nEol=Object.keys(state.lifecycle||{}).filter(function(pd){
+    const lc=state.lifecycle[pd]; return lc&&(lc.eolSI||lc.eolSO); }).length;
+  if(!rowsF.length&&!rowsR.length&&!nSum&&!hasTg&&!indirRisk.length&&!nEol){
+    el.innerHTML='<div class="panel">监控名单为空。在「FSD库存」「下游渠道」「音频专板」「月末DOS」各表行内点「监控」,即可将重点关注的 渠道×产品 加入本看板;'
+      +'在「推演汇总」页可对 产品线/产品/国家/渠道 任意层级行点「监控」,按聚合口径整体跟踪。<br>'
+      +'<span class="note">每周导入新底表后,本页自动对账：SO 是否转好、DOS 是否下降、渠道是否仍在 SI、库存是否 ST 下去——据此判断各国是否在切实清理渠道库存。</span></div>';
+    return;
+  }
+  const enrich=function(rows,module){
+    return rows.map(function(r){
+      if(!r.it)return {key:r.key,kind:r.kind,missing:true};
+      const m=F.watchMetrics(r.it.u,state.cfg);
+      /* 用户拍板:标记为间接渠道的 FSD 单元,监控按下游口径评估(SO 出去没/DOS 降没),不看清库 */
+      const cc=chanClassOf(r.it.u);
+      const mod2=(module==='fsd'&&cc&&cc.cls==='indirect')?'retail':module;
+      const v=F.watchVerdict(m,mod2);
+      return {key:r.key,kind:r.kind,it:r.it,m:m,v:v,indirect:mod2!==module,base:state.watchBase[r.key]||{}};
+    });
+  };
+  const eF=enrich(rowsF,'fsd'), eR=enrich(rowsR,'retail');
+  const eS=sumWatchRows();
+  const cnt={good:0,mid:0,bad:0,miss:0};
+  eF.concat(eR).forEach(function(r){ if(r.missing)cnt.miss++; else cnt[r.v.code]++; });
+  eS.forEach(function(r){ if(!r.v)cnt.miss++; else cnt[r.v.code]++; });
+  let h='<div class="cards">'
+    +'<div class="kpi"><div class="v">'+(eF.length+eR.length+eS.length)+'</div><div class="t">监控项(FSD '+eF.length+' / 下游 '+eR.length+' / 汇总层级 '+eS.length+')</div></div>'
+    +'<div class="kpi"><div class="v" style="color:var(--ok)">'+cnt.good+'</div><div class="t">积极(清理中/动销转好)</div></div>'
+    +'<div class="kpi"><div class="v" style="color:var(--amber)">'+cnt.mid+'</div><div class="t">中性(边清边进/持平)</div></div>'
+    +'<div class="kpi'+(cnt.bad?' warn':'')+'"><div class="v">'+cnt.bad+'</div><div class="t">消极(无动作/仍在进货/恶化)</div></div>'
+    +(cnt.miss?'<div class="kpi"><div class="v">'+cnt.miss+'</div><div class="t">当前数据未找到</div></div>':'')
+    +'</div>';
+  const rowHtml=function(r,module){
+    if(r.missing)
+      return '<tr style="opacity:.5"><td class="l" colspan="'+(module==='fsd'?11:11)+'">'+esc(r.key.split(F.SEP).join(' · '))
+        +' <span class="muted">（当前数据中未找到,可能已停售或渠道改名）</span>'
+        +' <button class="mini" data-unwatch="'+esc(r.kind)+'" data-wk="'+esc(r.key)+'">移出</button></td></tr>';
+    const u=r.it.u,m=r.m,b=r.base;
+    const src=r.kind==='audio'?' <span class="chip audio" title="来源:音频专表(直接客户口径)">音频专表</span>':'';
+    const ops=' <button class="mini" data-unwatch="'+esc(r.kind)+'" data-wk="'+esc(r.key)+'" title="移出监控">移出</button>'
+      +' <button class="mini" data-rebase="'+esc(r.kind)+'" data-wk="'+esc(r.key)+'" title="以当前值重置基线">重置基线</button>';
+    if(module==='fsd'){
+      return '<tr><td class="l">'+esc(u.country)+'</td>'
+        +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+src+'</td>'
+        +'<td class="l">'+esc(u.line)+'</td>'
+        +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+        +'<td class="l">'+esc(u.model)+'</td>'
+        +'<td>'+deltaCell(b.inv1,m.inv1Now,true)+'</td>'
+        +'<td>'+F.fmt(m.st4)+'</td>'
+        +'<td'+(m.si4>0?' class="dosLow"':'')+'>'+F.fmt(m.si4)+'</td>'
+        +'<td>'+deltaCell(b.dos,m.dosNow,true)+'</td>'
+        +'<td>'+sparkHtml(m.spark)+'</td>'
+        +'<td class="l"><span class="'+r.v.cls+'" title="'+esc(r.v.detail)+'">'+r.v.label+'</span>'+ops+'</td></tr>';
+    }
+    return '<tr><td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+'</td>'
+      +'<td class="l">'+esc(u.country)+'</td>'
+      +'<td class="l">'+esc(u.line)+'</td>'
+      +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+      +'<td class="l">'+esc(u.model)+'</td>'
+      +'<td>'+deltaCell(b.inv,r.it.cur.curInv,true)+'</td>'
+      +'<td>'+F.fmt(m.so4)+' <span class="muted">/ 前4周 '+F.fmt(m.soPrev4)+'</span></td>'
+      +'<td>'+(m.lastP?F.weekLabel(m.lastP)+' : '+F.fmt(m.lastSO):'—')
+        +(m.wow!=null?' <b style="color:var(--'+(m.wow>=0?'ok':'warn')+')">'+(m.wow>=0?'+':'')+Math.round(m.wow*100)+'%</b>':'')+'</td>'
+      +'<td>'+deltaCell(b.dos,m.dosNow,true)+'</td>'
+      +'<td>'+sparkHtml(m.spark)+'</td>'
+      +'<td class="l"><span class="'+r.v.cls+'" title="'+esc(r.v.detail)+'">'+r.v.label+'</span>'+ops+'</td></tr>';
+  };
+  if(indirRisk.length){
+    h+='<div class="panel" style="border-left:4px solid var(--warn)"><h3>下游渠道(FSD表内标记为间接)高库存仍在进货（'+indirRisk.length+' 项,自动扫描）</h3>'
+      +'<div class="note">已标记为间接渠道、当前 DOS 达到通用红线（或 ∞）且近 4 周仍有 SI 进货——高库存下继续压货,需立即干预。'
+      +'（此处为底表实际 SI;其推演进货已按下游同款学习链计算。）</div>'
+      +'<div class="tblwrap" style="max-height:26vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">国家</th><th class="l">渠道</th><th class="l">产品</th><th class="l">型号</th>'
+      +'<th>当前DOS</th><th>近4周SI</th><th>近4周SO</th><th>INV</th></tr></thead><tbody>';
+    indirRisk.forEach(function(x){ const u=x.it.u;
+      h+='<tr><td class="l">'+esc(u.country)+'</td>'
+        +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+'</td>'
+        +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+        +'<td class="l">'+esc(u.model)+'</td>'
+        +'<td class="dosLow">'+x.dos+'</td>'
+        +'<td class="dosLow">'+F.fmt(x.m.si4)+'</td>'
+        +'<td>'+F.fmt(x.m.so4)+'</td>'
+        +'<td>'+F.fmt(x.it.cur.curInv)+'</td></tr>'; });
+    h+='</tbody></table></div></div>';
+  }
+  if(eF.length){
+    h+='<div class="panel"><h3>模块一：FSD 库存监控（库存有没有 ST 下去;含音频专表项;FSD表内的下游渠道(间接)按动销口径判定）'
+      +' <button class="ghost" id="btnExpWF" style="margin-left:8px">导出 Excel</button></h3>'
+      +'<div class="tblwrap" style="max-height:38vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">国家</th><th class="l">账户/客户</th><th class="l">产品线</th><th class="l">产品</th><th class="l">型号</th>'
+      +'<th title="基线(加入监控时)→当前;下降为绿">INV1 基线→当前</th>'
+      +'<th title="近4周 ST 合计(由 INV1 变动推导,正值)">近4周ST</th>'
+      +'<th title="近4周 SI 合计;清库期间仍进货标红">近4周SI</th>'
+      +'<th title="计算口径;下降为绿">DOS 基线→当前</th>'
+      +'<th class="noSort" title="近10个有数周的SO">SO走势</th><th class="l noSort">判定 / 操作</th></tr></thead><tbody>';
+    eF.forEach(function(r){ h+=rowHtml(r,'fsd'); });
+    h+='</tbody></table></div></div>';
+  }
+  if(eR.length){
+    h+='<div class="panel"><h3>模块二：下游渠道监控（产品有没有被 SO 出去）'
+      +' <button class="ghost" id="btnExpWR" style="margin-left:8px">导出 Excel</button></h3>'
+      +'<div class="tblwrap" style="max-height:38vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">渠道</th><th class="l">国家</th><th class="l">产品线</th><th class="l">产品</th><th class="l">型号</th>'
+      +'<th title="基线→当前;下降为绿">INV 基线→当前</th>'
+      +'<th title="与再前4周对比">近4周SO</th>'
+      +'<th title="最新有数周与环比">最新周SO(WoW)</th>'
+      +'<th title="计算口径;下降为绿">DOS 基线→当前</th>'
+      +'<th class="noSort">SO走势</th><th class="l noSort">判定 / 操作</th></tr></thead><tbody>';
+    eR.forEach(function(r){ h+=rowHtml(r,'retail'); });
+    h+='</tbody></table></div></div>';
+  }
+  if(eS.length){
+    const SRC_LAB={fsd:'FSD',retail:'下游',audio:'音频专表'};
+    h+='<div class="panel"><h3>模块三：推演汇总层级监控（产品线 / 产品 / 国家 / 渠道聚合口径）'
+      +' <button class="ghost" id="btnExpWS" style="margin-left:8px">导出 Excel</button></h3>'
+      +'<div class="tblwrap" style="max-height:34vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">数据源</th><th class="l">产品线</th><th class="l">产品</th><th class="l">国家</th><th class="l">渠道</th>'
+      +'<th class="l" title="该监控项聚合到哪一层级">监控层级</th><th>单元数</th>'
+      +'<th title="基线(加入监控时)→当前;下降为绿">INV 基线→当前</th>'
+      +'<th title="基线→当前;上升为绿">近4周SO 基线→当前</th>'
+      +'<th title="与再前4周对比">近4周 vs 前4周</th>'
+      +'<th title="Σ库存÷Σ日均SO;下降为绿">DOS 基线→当前</th>'
+      +'<th>近4周SI</th><th>近4周ST</th><th class="l noSort">判定 / 操作</th></tr></thead><tbody>';
+    const LV3=['产品线','产品','国家','渠道'];
+    eS.forEach(function(r){
+      const ops=' <button class="mini" data-sunwatch="'+esc(r.nk)+'" title="移出监控">移出</button>'
+        +' <button class="mini" data-srebase="'+esc(r.nk)+'" title="以当前值重置基线">重置基线</button>';
+      const lb=r.w.labels;
+      const dimTds='<td class="l">'+esc(lb[0]||'—')+'</td>'
+        +'<td class="l ell" title="'+esc(lb[1]||'')+'">'+esc(lb[1]||'—')+'</td>'
+        +'<td class="l">'+esc(lb[2]||'—')+'</td>'
+        +'<td class="l ell" title="'+esc(lb[3]||'')+'">'+esc(lb[3]||'—')+'</td>'
+        +'<td class="l">'+(LV3[lb.length-1]||'')+'</td>';
+      if(!r.m||!r.m.n){
+        h+='<tr style="opacity:.5"><td class="l">'+(SRC_LAB[r.w.src]||'')+'</td>'+dimTds
+          +'<td class="l" colspan="7"><span class="muted">当前数据中没有匹配单元,可能口径变化或已停售</span></td>'
+          +'<td class="l">'+ops+'</td></tr>';
+        return;
+      }
+      h+='<tr><td class="l">'+(SRC_LAB[r.w.src]||'')+'</td>'+dimTds
+        +'<td>'+r.m.n+(r.b.n&&r.b.n!==r.m.n?' <span class="muted">(基线'+r.b.n+')</span>':'')+'</td>'
+        +'<td>'+deltaCell(r.b.inv,r.m.inv,true)+'</td>'
+        +'<td>'+deltaCell(r.b.so4,r.m.so4,false)+'</td>'
+        +'<td>'+F.fmt(r.m.so4)+' <span class="muted">/ '+F.fmt(r.m.soPrev4)+'</span></td>'
+        +'<td>'+deltaCell(r.b.dos,r.m.dosNow,true)+'</td>'
+        +'<td>'+F.fmt(r.m.si4)+'</td><td>'+F.fmt(r.m.st4)+'</td>'
+        +'<td class="l"><span class="'+r.v.cls+'" title="'+esc(r.v.detail)+'">'+r.v.label+'</span>'+ops+'</td></tr>';
+    });
+    h+='</tbody></table></div>'
+      +'<div class="note">聚合口径与推演汇总页一致：不含免推演、豁免与待确认项；下游源未勾选「显示音频」时亦不含音频产品。'
+      +'判定按数据源：FSD 源看清库进展(ST/SI/INV1)，下游/音频源看动销(SO/DOS)。</div></div>';
+  }
+  if(hasTg){
+    const A=Dt.alerts;
+    const nA=Dt.nAlert;
+    h+='<div class="panel"><h3>模块四：国家 SO 目标告警（回填目标 vs 实际与 DOS 管控'+(nA?'，共 <span style="color:var(--warn)">'+nA+'</span> 条告警':'，当前无告警')+'）'
+      +' <button class="ghost" id="btnTgGo" style="margin-left:8px">打开 SO 目标跟踪</button></h3>';
+    const secHtml=function(title,list,rowFn){
+      if(!list.length)return '';
+      let s='<div style="margin:6px 0 2px"><b>'+title+'（'+list.length+'）</b></div><div class="tblwrap" style="max-height:20vh"><table><tbody>';
+      list.slice(0,30).forEach(function(x){ s+=rowFn(x); });
+      s+='</tbody></table></div>';
+      if(list.length>30)s+='<div class="note">仅显示前 30 条,完整清单请打开「SO目标」页导出。</div>';
+      return s;
+    };
+    const rlab=function(row){ return esc(row.rep+' · '+row.tr.country+' · '+row.tr.channel+' · '+row.tr.product); };
+    h+=secHtml('月度 SO 未达成（月份已结束,实际 < 目标）',A.monthFail,function(x){
+      return '<tr><td class="l">'+rlab(x.row)+'</td><td class="l">'+x.m+'月 目标 '+F.fmt(x.tgt)+' · 实际 '+F.fmt(x.act)+' · 达成率 '+Math.round(x.act/x.tgt*100)+'%</td></tr>'; });
+    h+=secHtml('进行中月进度落后（实际累计 < 目标 × 时间进度）',A.paceLag,function(x){
+      return '<tr><td class="l">'+rlab(x.row)+'</td><td class="l">'+x.m+'月已过 '+x.pace.past+'/'+x.pace.total+' 周,应达 '+F.fmt(x.need)+' · 实际 '+F.fmt(x.act)+'（目标 '+F.fmt(x.tgt)+'）</td></tr>'; });
+    h+=secHtml('月底 DOS 未达承诺（月份已结束,实际月底 DOS 高于国家目标推算值）',A.monthDos,function(x){
+      return '<tr><td class="l">'+rlab(x.row)+'</td><td class="l">'+x.m+'月底 实际 DOS '+x.dos+' 天 > 承诺 '+x.red+' 天（承诺=按国家回填目标推算）</td></tr>'; });
+    h+=secHtml('年底 DOS 超基线（国家回填的 SO 不足以在年底达到系族基线）',A.yearOver,function(x){
+      return '<tr><td class="l">'+rlab(x.row)+'</td><td class="l">年底 DOS '+x.dos+' 天 > 基线 '+x.red+' 天'+(x.byFam?'（系族基线）':'（12月红线兜底）')+',需上调 SO 目标或加大清理</td></tr>'; });
+    h+=secHtml('产品系族年底 DOS 超基线',A.famOver,function(fr){
+      return '<tr><td class="l">'+esc(fr.line+' · '+fr.family)+'</td><td class="l">年底 DOS '+fr.endDos+' 天 > 基线 '+fr.base+' 天（覆盖 '+fr.n+' 行目标）</td></tr>'; });
+    h+=secHtml('目标超出可用库存（回填量大于当前库存,请国家核对）',A.overSell,function(row){
+      return '<tr><td class="l">'+rlab(row)+'</td><td class="l">年底库存推算为 '+F.fmt(row.calc[3].endInv)+'（负值）</td></tr>'; });
+    if(A.unfilled.length)h+='<div class="note" style="margin-top:4px">另有 '+A.unfilled.length+' 行未回填、'+A.unmapped.length+' 行未匹配到底表数据（详见「SO目标」页）。</div>';
+    h+='</div>';
+  }
+  /* 模块五:产品退市监控(设了末次SI/退市周的产品:衰减外推到退市时点的预剩 vs 残值水位) */
+  (function(){
+    const pds=Object.keys(state.lifecycle).filter(function(pd){
+      const lc=state.lifecycle[pd]; return lc&&(lc.eolSI||lc.eolSO); });
+    if(!pds.length)return;
+    const rows5=[];
+    pds.forEach(function(pd){
+      const lc=state.lifecycle[pd];
+      [[D,'FSD'],[Dr,'下游'],[Da,'音频专表']].forEach(function(pair){
+        const Dx=pair[0]; if(!Dx)return;
+        let inv=0,endInv=0,n=0,anchor=0,rho=0.93,fwEnd=null;
+        Dx.list.forEach(function(it){
+          if(it.u.product!==pd)return;
+          n++;
+          const stock=it.cur.curInv!=null?it.cur.curInv:it.cur.curInv1;
+          if(stock!=null)inv+=stock;
+          const rows=it.sim&&it.sim.rows||[];
+          if(rows.length){
+            endInv+=rows[rows.length-1].inv||0;
+            anchor+=rows[rows.length-1].so||0;
+            fwEnd=rows[rows.length-1].p;
+          }
+          rho=eolRhoOf(it.u);
+        });
+        if(!n)return;
+        /* 外推:推演期末之后到退市周,SO 按几何衰减继续消化 */
+        let resLeft=endInv;
+        if(lc.eolSO&&fwEnd&&lc.eolSO>fwEnd&&anchor>0&&rho<1){
+          const k=Math.max(0,F.weekIndex(lc.eolSO)-F.weekIndex(fwEnd));
+          const consume=anchor*rho*(1-Math.pow(rho,k))/(1-rho);
+          resLeft=Math.max(0,Math.round(endInv-consume));
+        }
+        const resBase=(function(){
+          let u0=null;
+          Dx.list.forEach(function(it){ if(!u0&&it.u.product===pd)u0=it.u; });
+          return u0?eolResidualOf(u0):100;
+        })();
+        const over=resLeft>resBase*1.5;
+        rows5.push({pd:pd,src:pair[1],n:n,inv:inv,endInv:endInv,resLeft:resLeft,resBase:resBase,
+          eolSI:lc.eolSI,eolSO:lc.eolSO,over:over});
+      });
+    });
+    if(!rows5.length)return;
+    const nOver=rows5.filter(function(x){ return x.over; }).length;
+    h+='<div class="panel"><h3>模块五：产品退市监控（'+pds.length+' 个产品'+(nOver?'，<span style="color:var(--warn)">'+nOver+' 项预剩超残值水位</span>':'，全部可控')+'）</h3>'
+      +'<div class="note">口径：末次 SI 后停止自动补货、SO 按几何衰减（衰减率从历史退市品学习）；'
+      +'「退市预剩」= 推演期末库存按衰减继续外推到退市周的剩余量；退市库存不会降到零，'
+      +'对照的是<b>历史退市品的残值水位</b>（分系族学习）×1.5——超出即需提前加大清理。</div>'
+      +'<div class="tblwrap" style="max-height:26vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">产品</th><th class="l">源</th><th>单元数</th><th>当前库存</th>'
+      +'<th class="l">末次SI</th><th class="l">退市周</th><th>推演期末</th>'
+      +'<th title="外推到退市周">退市预剩</th><th title="历史退市品残值中位(分系族)">残值水位</th><th class="l">判定</th></tr></thead><tbody>';
+    rows5.forEach(function(x){
+      const wk=function(p){ return p?(F.periodY(p)%100+'W'+F.periodW(p)):'—'; };
+      h+='<tr><td class="l ell" style="max-width:260px" title="'+esc(x.pd)+'">'+esc(x.pd)+'</td>'
+        +'<td class="l">'+x.src+'</td><td>'+x.n+'</td><td>'+F.fmt(x.inv)+'</td>'
+        +'<td class="l">'+wk(x.eolSI)+'</td><td class="l">'+wk(x.eolSO)+'</td>'
+        +'<td>'+F.fmt(x.endInv)+'</td>'
+        +'<td'+(x.over?' class="dosLow"':'')+'>'+F.fmt(x.resLeft)+'</td>'
+        +'<td>'+F.fmt(x.resBase)+'</td>'
+        +'<td class="l">'+(x.over?'<span class="chip pend">预剩超残值水位,需加大清理</span>'
+          :'<span class="chip auto">退市节奏可控</span>')+'</td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+  })();
+  /* 按国家判定汇总:哪个国家在认真清理,哪个没动作 */
+  const byC={};
+  eF.concat(eR).forEach(function(r){
+    if(r.missing)return;
+    const c=r.it.u.country||'(未知)';
+    let e=byC[c]; if(!e)e=byC[c]={n:0,good:0,mid:0,bad:0};
+    e.n++; e[r.v.code]++;
+  });
+  const cKeys=Object.keys(byC);
+  if(cKeys.length){
+    cKeys.sort(function(a,b){ return byC[b].bad-byC[a].bad; });
+    h+='<div class="panel"><h3>按国家判定汇总（消极项多 = 该国未在切实清理渠道库存）</h3>'
+      +'<div class="tblwrap" style="max-height:26vh"><table class="sortable"><thead><tr>'
+      +'<th class="l">国家</th><th>监控项</th><th>积极</th><th>中性</th><th>消极</th></tr></thead><tbody>';
+    cKeys.forEach(function(c){ const e=byC[c];
+      h+='<tr><td class="l">'+esc(c)+'</td><td>'+e.n+'</td>'
+        +'<td style="color:var(--ok)">'+e.good+'</td>'
+        +'<td style="color:var(--amber)">'+e.mid+'</td>'
+        +'<td'+(e.bad?' class="dosLow"':'')+'>'+e.bad+'</td></tr>'; });
+    h+='</tbody></table></div></div>';
+  }
+  h+='<div class="note">判定口径：FSD 模块——近4周有 ST 且 INV1 下降 =「清理中」;ST 与 SI 并存 =「边清边进」;无 ST 且仍 SI =「仍在进货」;都无 =「无动作」。'
+    +'下游模块——近4周 SO 高于前4周且 DOS 未升 =「动销转好」;SO 走低且 DOS 上升 =「恶化」;近4周 SO 为 0 =「无动销」。均为计算口径,音频跳过未报量周。</div>';
+  el.innerHTML=h;
+  el.querySelectorAll('button[data-unwatch]').forEach(function(b){
+    b.onclick=function(){ removeWatch(b.dataset.unwatch,b.dataset.wk); };
+  });
+  el.querySelectorAll('button[data-sunwatch]').forEach(function(b){
+    b.onclick=function(){ removeSumWatch(b.dataset.sunwatch); };
+  });
+  el.querySelectorAll('button[data-srebase]').forEach(function(b){
+    b.onclick=function(){
+      const nk=b.dataset.srebase; const w=state.watch.sum[nk]; if(!w)return;
+      const m=sumWatchMetrics(w); if(!m)return;
+      const stx=w.src==='fsd'?store:(w.src==='retail'?retailStore:audioStore);
+      state.watchBase['sum|'+nk]={p:(stx&&stx.maxPeriod)||0,inv:m.inv,dos:m.dosNow,so4:m.so4,n:m.n};
+      saveState(); render(); };
+  });
+  const bws=$('#btnExpWS'); if(bws)bws.onclick=function(){ exportSumWatch(); };
+  const btg=$('#btnTgGo'); if(btg)btg.onclick=function(){ state.ui.tab='monitor'; state.ui.monTab='targets'; render(); };
+  el.querySelectorAll('button[data-rebase]').forEach(function(b){
+    b.onclick=function(){ delete state.watchBase[b.dataset.wk]; addWatch(b.dataset.rebase,b.dataset.wk); };
+  });
+  const expW=function(rows2,module,name){
+    const headers=module==='fsd'
+      ?['来源','国家','账户/客户','原始渠道名','产品线','产品','型号','INV1基线','INV1当前','近4周ST','近4周SI','DOS基线','DOS当前','判定','说明']
+      :['渠道','原始渠道名','国家','产品线','产品','型号','INV基线','INV当前','近4周SO','前4周SO','最新周SO','DOS基线','DOS当前','判定','说明'];
+    const data=rows2.filter(function(r){return !r.missing;}).map(function(r){
+      const u=r.it.u,m=r.m,b=r.base;
+      if(module==='fsd')return [r.kind==='audio'?'音频专表':'FSD',u.country,u.account,rawNamesOfUnit(u),u.line,u.product,u.model,
+        b.inv1!=null?b.inv1:'',m.inv1Now!=null?m.inv1Now:'',m.st4,m.si4,
+        b.dos!=null?b.dos:'',m.dosNow!=null?m.dosNow:'',r.v.label,r.v.detail];
+      return [u.account,rawNamesOfUnit(u),u.country,u.line,u.product,u.model,
+        b.inv!=null?b.inv:'',r.it.cur.curInv!=null?r.it.cur.curInv:'',m.so4,m.soPrev4,
+        m.lastSO!=null?m.lastSO:'',b.dos!=null?b.dos:'',m.dosNow!=null?m.dosNow:'',r.v.label,r.v.detail];
+    });
+    exportTable(name,headers,data);
+  };
+  const bF=$('#btnExpWF'); if(bF)bF.onclick=function(){ expW(eF,'fsd','监控-FSD库存'); };
+  const bR=$('#btnExpWR'); if(bR)bR.onclick=function(){ expW(eR,'retail','监控-下游渠道'); };
+  makeSortable(el);
+}
+

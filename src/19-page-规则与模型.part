@@ -1,0 +1,15 @@
+/* ===== 规则与模型(2026-09-10 看板收敛 阶段4e 第一步)=====
+   设置页 16 个面板 + 系数与参数页(五层系数表/补货参数/回测台)本是一件事:告诉推演"按什么规则算"。
+   先合成一页两个 Tab(原函数渲染进子容器,数值与交互原样,门禁逐格相同);按规则对象重排成 4 张表留第二步。 */
+const RULE_TABS=[['settings','规则','免推演阈值 / 补货参数 / DOS 红线 / 收官上限 / 大促周历 / 生命周期 / 渠道 / 系族 / 预算名 / RRP / 快照 / AI'],['coef','模型','周系数五层表(可微调)/ 补货规律回测 / 模型回测台 / 平销体检']];
+function renderRules(){
+  const el=$('#view-rules');
+  const t=RULE_TABS.some(function(x){ return x[0]===state.ui.rulesTab; })?state.ui.rulesTab:'settings';
+  ['#view-settings','#view-coef'].forEach(function(id){ const s2=$(id); if(s2)s2.innerHTML=''; });
+  el.innerHTML='<div class="bar" id="rulesTabBar">'+RULE_TABS.map(function(x){
+    return '<button class="'+(t===x[0]?'act':'ghost')+'" data-rulestab="'+x[0]+'" title="'+x[2]+'">'+x[1]+'</button>';
+  }).join('')+'<span class="note">规则 = 推演按什么算；模型 = 系数怎么来、准不准</span></div><div id="rulesBody"></div>';
+  const body=$('#rulesBody');
+  if(t==='coef')renderCoef(body); else renderSettings(body);
+  el.querySelectorAll('[data-rulestab]').forEach(function(b){ b.onclick=function(){ state.ui.rulesTab=b.dataset.rulestab; render(); }; });
+}

@@ -1,0 +1,177 @@
+/* ===== 音频专板（直接渠道客户口径;报量制下下游明细不可信,这里是音频唯一可信视图） ===== */
+function renderAudio(elOpt){
+  const el=elOpt||$('#view-audio');
+  if(!elOpt){ const c=$('#view-channels'); if(c)c.innerHTML=''; }
+  if(!Da){ el.innerHTML='<div class="panel">尚未载入音频专表 —— 去「数据」页配置音频专表文件夹（Management Account 直接客户口径,只含音频,格式同 FSD 表）,或点击「载入内置演示数据」。</div>'; return; }
+  const list=Da.list;
+  let totInv1=0,totInv=0,noMove=0,lag=0,ignN=0;
+  list.forEach(function(it){
+    if(it.cur.curInv1!=null)totInv1+=it.cur.curInv1;
+    if(it.cur.curInv!=null)totInv+=it.cur.curInv;
+    if(it.ignored){ ignN++; return; }
+    if(it.cur.curInv>0&&it.cur.dosCalc==null)noMove++;
+    if(it.cur.lastSOP!=null&&audioStore&&it.cur.lastSOP<audioStore.maxPeriod)lag++;
+  });
+  const countries=[],accts=[];
+  list.forEach(function(it){ const u=it.u;
+    if(u.country&&countries.indexOf(u.country)<0)countries.push(u.country);
+    if(accts.indexOf(u.account)<0)accts.push(u.account); });
+  countries.sort();accts.sort();
+  let h='<div class="cards">'
+    +'<div class="kpi"><div class="v">'+list.length+'</div><div class="t">客户×产品单元</div></div>'
+    +'<div class="kpi"><div class="v">'+F.fmt(totInv1)+'</div><div class="t">直接客户自有库存(ΣINV1)</div></div>'
+    +'<div class="kpi"><div class="v">'+F.fmt(totInv)+'</div><div class="t">渠道总库存(ΣINV)</div></div>'
+    +'<div class="kpi'+(noMove?' warn':'')+'"><div class="v">'+noMove+'</div><div class="t">有库存·零报量</div></div>'
+    +'<div class="kpi"><div class="v">'+lag+' / '+ignN+'</div><div class="t">报量滞后 / 已豁免</div></div>'
+    +'</div>';
+  h+='<div class="filters">'
+    +msHtml('auC','国家',countries,state.ui.auC)
+    +msHtml('auA','客户',accts,state.ui.auA)
+    +'<input type="text" id="auQ" placeholder="搜索产品/型号" value="'+esc(state.ui.auQ)+'">'
+    +'<button class="ghost" id="btnExportAu">导出列表</button>'
+    +riskBarHtml('audio')
+    +'<span class="note">音频=报量制:本板为直接渠道客户(Management Account)口径 · 当前DOS为计算口径(跳过未报量周) · 默认按 INV1 降序 · 点行看历史 · 最左列勾选风险产品后可导出</span></div>';
+  const rows=list.filter(function(it){ const u=it.u;
+    if(!msMatch(state.ui.auC,u.country))return false;
+    if(!msMatch(state.ui.auA,u.account))return false;
+    if(state.ui.auQ){ const q=state.ui.auQ.toLowerCase();
+      if((u.product+' '+u.model).toLowerCase().indexOf(q)<0)return false; }
+    return true; });
+  const limit=state.ui.auLimit||500;
+  h+='<div class="tblwrap" style="max-height:46vh"><table class="sortable"><thead><tr>'
+    +riskThHtml('audio')
+    +'<th class="l">国家</th><th class="l">客户</th><th class="l">产品</th><th class="l">型号</th>'
+    +'<th title="最近'+state.cfg.dosWindow+'个有数周(SO>0)的平均周销">近4周均SO</th>'
+    +'<th title="直接客户自有(已SI未ST);音频报量缺失时比 INV 更可信">INV1</th>'
+    +'<th title="渠道总库存(SI−SO推算,报量缺失时会低估)">INV</th>'
+    +'<th title="当前口径:INV ÷ 最近4个有数周日均SO(跳过未报量周)">当前DOS</th><th title="底表 DOS 原值(音频未报量时会虚高)">底表DOS</th>'
+    +'<th class="l">最近报量</th><th class="l">状态</th></tr></thead><tbody>';
+  rows.slice(0,limit).forEach(function(it){ const u=it.u; const i=Da.list.indexOf(it);
+    const inf=!it.ignored&&it.cur.curInv>0&&it.cur.dosCalc==null;
+    const lagW=(it.cur.lastSOP!=null&&audioStore)?(F.weekIndex(audioStore.maxPeriod)-F.weekIndex(it.cur.lastSOP)):null;
+    const ignBtn=it.ignored
+      ?' <button class="mini" data-ign="off" data-i="'+i+'" title="恢复风险监控">恢复</button>'
+      :' <button class="mini" data-ign="on" data-i="'+i+'" title="买断、低量或无需跟进的库存：标记后移出风险监控（沉底显示，不计入风险统计）">豁免</button>';
+    h+='<tr data-i="'+i+'"'+(state.ui.auUnit===u.key?' style="outline:2px solid var(--accent)"':(it.ignored?' style="opacity:.5"':''))+'>'
+      +riskCkHtml('audio',u.key)
+      +'<td class="l">'+esc(u.country)+'</td>'
+      +'<td class="l ell" title="'+esc(u.account)+'">'+esc(u.account)+'</td>'
+      +'<td class="l ell" title="'+esc(u.product)+'">'+esc(u.product)+'</td>'
+      +'<td class="l">'+esc(u.model)+'</td>'
+      +'<td>'+(it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'—')+'</td>'
+      +'<td>'+F.fmt(it.cur.curInv1)+'</td>'
+      +'<td>'+F.fmt(it.cur.curInv)+'</td>'
+      +'<td'+(it.ignored?'':dosRiskClsOct(it.cur.dosCalc,false,inf))+'>'+(inf?'∞':F.fmt(it.cur.dosCalc))+'</td>'
+      +'<td class="muted">'+F.fmt(it.cur.sysDos)+'</td>'
+      +'<td class="l">'+(it.cur.lastSOP?F.weekLabel(it.cur.lastSOP)+(lagW>0?' <span class="chip audio">滞后'+lagW+'周</span>':''):'—')+'</td>'
+      +'<td class="l">'+(it.ignored?'<span class="chip skip" title="已手动豁免；点「恢复」重新纳入监控">已豁免</span>':(inf?'<span class="chip pend" title="存在库存但无任何报量记录">零报量</span>':''))+ignBtn+watchBtnHtml('audio',u.key)+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  if(rows.length>limit)
+    h+='<div class="bar"><span class="note">已显示 '+Math.min(limit,rows.length)+' / '+rows.length+' 行</span>'
+      +'<button class="ghost" id="btnAuMore">再显示 500 行</button><button class="ghost" id="btnAuAll">显示全部</button></div>';
+  const sel=Da.byKey.get(state.ui.auUnit);
+  if(sel)h+=audioDetailHtml(sel);
+  el.innerHTML=h;
+  if(sel){
+    const cp=audioChartParts(sel);
+    renderChartInto($('#audioChart'),cp.xs,cp.series,state.chartSmooth);
+  }
+  bindMs(el,'auC',function(a){ state.ui.auC=a; state.ui.auLimit=500; render(); });
+  bindMs(el,'auA',function(a){ state.ui.auA=a; state.ui.auLimit=500; render(); });
+  $('#auQ').oninput=function(){ state.ui.auQ=this.value; state.ui.auLimit=500; render(); };
+  const auMore=$('#btnAuMore'); if(auMore)auMore.onclick=function(){ state.ui.auLimit=(state.ui.auLimit||500)+500; render(); };
+  const auAll=$('#btnAuAll'); if(auAll)auAll.onclick=function(){ state.ui.auLimit=1e9; render(); };
+  $('#btnExportAu').onclick=function(){
+    const headers=['国家','客户','产品','型号','近4周均SO','INV1','INV','当前DOS(计算)','底表DOS','最近报量周'];
+    const data=rows.map(function(it){ const u=it.u;
+      return [u.country,u.account,u.product,u.model,
+        it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'',
+        it.cur.curInv1||0,it.cur.curInv||0,
+        it.cur.dosCalc!=null?it.cur.dosCalc:((it.cur.curInv>0)?'∞':''),
+        it.cur.sysDos!=null?it.cur.sysDos:'',
+        it.cur.lastSOP?F.weekLabel(it.cur.lastSOP):'']; });
+    exportTable('音频专板',headers,data);
+  };
+  bindRiskSel(el,'audio',rows.map(function(it){ return it.u.key; }),function(keys){
+    const sel2=keys.map(function(k){ return Da.byKey.get(k); }).filter(Boolean);
+    const headers=['国家','客户','产品','型号','近4周均SO','INV1','INV','当前DOS(计算)','底表DOS','最近报量周'];
+    const data=sel2.map(function(it){ const u=it.u;
+      return [u.country,u.account,u.product,u.model,
+        it.cur.avgWeeklySO!=null?Math.round(it.cur.avgWeeklySO):'',
+        it.cur.curInv1||0,it.cur.curInv||0,
+        it.cur.dosCalc!=null?it.cur.dosCalc:((it.cur.curInv>0)?'∞':''),
+        it.cur.sysDos!=null?it.cur.sysDos:'',
+        it.cur.lastSOP?F.weekLabel(it.cur.lastSOP):'']; });
+    exportTable('音频风险勾选清单',headers,data);
+  });
+  el.querySelectorAll('button[data-ign]').forEach(function(b){
+    b.onclick=function(e){ e.stopPropagation();
+      const it2=Da.list[+b.dataset.i]; if(!it2)return;
+      if(b.dataset.ign==='on')state.ignored[it2.u.key]=1;
+      else delete state.ignored[it2.u.key];
+      recompute(); };
+  });
+  el.querySelectorAll('tbody tr[data-i]').forEach(function(tr){
+    tr.style.cursor='pointer';
+    tr.onclick=function(){ const it2=Da.list[+tr.dataset.i]; if(!it2)return;
+      state.ui.auUnit=it2.u.key; render(); };
+  });
+  bindUnitWeekTaps(el,'audio',function(){ return state.ui.auUnit; });   // 音频周表拍数(2026-09-04 阶段1:此前未绑定)
+  bindWatchBtns(el);
+  makeSortable(el);
+}
+function audioDetailHtml(it){
+  const u=it.u;
+  const hist=u.periods.slice(-8);
+  const fw=Da.fw;
+  let h='<div class="panel" style="margin-top:12px"><h3>'+esc(u.account)+' · '+esc(u.product)+' ('+esc(u.model)+')'
+    +' <span class="chip audio">音频·报量制</span>'
+    +(it.tail?' <span class="chip skip" title="库存仅可支撑数周,SO 按近4周均量平推至清库">自然收尾</span>':'')
+    +' <span class="chip" title="预测所用周系数层">系数层:'+esc(it.kl.label)+'</span></h3>'
+    +'<div class="note" style="margin-bottom:6px">零补货情景推演：未来 Purchase 默认为 0,SO 受库存硬约束;Purchase 与 SO 单元格可点击编辑,清空即恢复公式值。</div>'
+    +'<div id="audioChart" style="margin-bottom:8px"></div>'
+    +'<div class="tblwrap"><table class="grid"><thead><tr><th class="met">指标</th>';
+  hist.forEach(function(p){ h+='<th class="wk hist">'+F.weekLabel(p)+'<div class="d">'+F.weekRangeLabel(p)+'</div></th>'; });
+  fw.forEach(function(p,i){ h+='<th class="wk'+(i===0?' futStart':'')+'">'+F.weekLabel(p)+'<div class="d">'+F.weekRangeLabel(p)+'</div></th>'; });
+  h+='</tr></thead><tbody>';
+  h+='<tr><td class="met">SI/Purchase 进货</td>';
+  hist.forEach(function(p){ h+='<td class="hist">'+F.fmt(u.weeks.get(p).si)+'</td>'; });
+  fw.forEach(function(p,i){ const r=it.sim.rows[i]; const ov=r&&r.buySrc==='override';
+    h+='<td class="'+(i===0?'futStart':'')+(ov?' ov':'')+'" contenteditable data-kind="rsi" data-p="'+p+'">'+F.fmt(r?r.buy:0)+'</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">ST 出货(推导)</td>';
+  hist.forEach(function(p){ const v=it.histST.get(p);
+    h+='<td class="hist muted">'+(v==null?'·':F.fmt(v))+'</td>'; });
+  fw.forEach(function(p,i){ h+='<td class="'+(i===0?'futStart ':'')+'muted">—</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">SO 报量</td>';
+  hist.forEach(function(p){ const norep=it.cur.lastSOP!=null&&p>it.cur.lastSOP;
+    h+=norep?'<td class="hist norep" title="未报量">未报</td>':'<td class="hist">'+F.fmt(u.weeks.get(p).so)+'</td>'; });
+  fw.forEach(function(p,i){ const f=it.fc[i]; const r=it.sim.rows[i];
+    const cls=(f&&f.src==='override')?' ov':((f&&(f.src==='avg'||f.src==='tail'))?' fill':'');
+    const tip=(f?({ref:'参考去年同周',avg:'近4周均值×周系数',tail:'自然收尾:近4周均量平推',override:'手工改写',noso:'无报量'}[f.src]||''):'')
+      +((r&&r.capped)?'（受库存约束,计划 '+F.fmt(r.soPlan)+' → 实际可售 '+F.fmt(r.so)+'）':'');
+    h+='<td class="'+(i===0?'futStart':'')+cls+'" contenteditable data-kind="rso" data-p="'+p+'" title="'+tip+'">'+F.fmt(r?r.so:(f?f.so:null))+'</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">INV 渠道总</td>';
+  hist.forEach(function(p){ h+='<td class="hist">'+F.fmt(u.weeks.get(p).inv)+'</td>'; });
+  fw.forEach(function(p,i){ const r=it.sim.rows[i];
+    h+='<td class="'+(i===0?'futStart':'')+'">'+F.fmt(r?r.inv:null)+'</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">INV1 客户自有</td>';
+  hist.forEach(function(p){ h+='<td class="hist">'+F.fmt(u.weeks.get(p).inv1)+'</td>'; });
+  fw.forEach(function(p,i){ h+='<td class="'+(i===0?'futStart ':'')+'muted">—</td>'; });
+  h+='</tr>';
+  h+='<tr><td class="met">DOS</td>';
+  hist.forEach(function(p){ h+='<td class="hist muted">'+F.fmt(u.weeks.get(p).dos)+'</td>'; });
+  fw.forEach(function(p,i){ const r=it.sim.rows[i]; const inf=r&&r.inv>0&&r.dos==null;
+    h+='<td'+dosRiskClsOct(r?r.dos:null,false,!!inf)+' style="'+(i===0?'border-left:2px solid var(--accent)':'')+'">'+(inf?'∞':F.fmt(r?r.dos:null))+'</td>'; });
+  h+='</tr></tbody></table></div>'
+    +'<div class="legend"><span><i style="background:var(--hist)"></i>历史(底表)</span>'
+    +'<span><i style="background:var(--ov)"></i>手工改写</span>'
+    +'<span><i style="background:var(--fill)"></i>均值/收尾推演</span>'
+    +'<span>历史DOS=底表原值;未来DOS=零补货情景推演（高库存: ≥150 黄 ≥200 红）</span></div></div>';
+  return h;
+}
+

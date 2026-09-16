@@ -1,0 +1,39 @@
+/* ===== 通用:表头点击排序（class="sortable" 的表;合计行 .totalRow 固定底部） ===== */
+function makeSortable(root){
+  root.querySelectorAll('table.sortable').forEach(function(tb){
+    const ths=tb.querySelectorAll('thead th');
+    ths.forEach(function(th,ci){
+      if(th.dataset.sortBound)return;
+      if(th.classList.contains('noSort'))return;   // 勾选列等不参与排序
+      th.dataset.sortBound='1';
+      th.style.cursor='pointer';
+      th.title=(th.title?th.title+' · ':'')+'点击排序';
+      th.addEventListener('click',function(){
+        const tbody=tb.querySelector('tbody'); if(!tbody)return;
+        const rows=Array.prototype.filter.call(tbody.querySelectorAll('tr'),function(r){return !r.classList.contains('totalRow');});
+        const total=tbody.querySelector('tr.totalRow');
+        const dir=th.dataset.dir==='desc'?'asc':'desc';
+        ths.forEach(function(t){ delete t.dataset.dir; const a=t.querySelector('.sortArr'); if(a)a.textContent=''; });
+        th.dataset.dir=dir;
+        let arr=th.querySelector('.sortArr');
+        if(!arr){ arr=document.createElement('span'); arr.className='sortArr'; th.appendChild(arr); }
+        arr.textContent=dir==='desc'?' ▼':' ▲';
+        const val=function(tr){ const td=tr.children[ci]; if(!td)return null;
+          let t=(td.dataset.v!=null?td.dataset.v:td.textContent).trim();
+          if(t==='∞')return Infinity;
+          if(t===''||t==='—'||t==='·'||t==='待确认'||t==='免')return null;
+          const n=parseFloat(t.replace(/,/g,''));
+          return isNaN(n)?t.toLowerCase():n; };
+        rows.sort(function(a,b){ const va=val(a),vb=val(b);
+          if(va==null&&vb==null)return 0; if(va==null)return 1; if(vb==null)return -1;
+          const na=typeof va==='number',nb=typeof vb==='number';
+          if(na&&nb)return dir==='desc'?vb-va:va-vb;
+          if(na)return -1; if(nb)return 1;
+          return dir==='desc'?String(vb).localeCompare(String(va),'zh'):String(va).localeCompare(String(vb),'zh'); });
+        rows.forEach(function(r){ tbody.appendChild(r); });
+        if(total)tbody.appendChild(total);
+      });
+    });
+  });
+}
+
