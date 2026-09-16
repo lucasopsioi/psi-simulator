@@ -67,6 +67,21 @@ const SHELL=window.fsdShell||null;
 /* ===== 错误可见(2026-09-15 FDE 评审 R10)=====
    此前 49 处 catch(e){ reportErr(e,'page-open'); } 静默吞错,用户看到「数不对」而不是「哪里错了」。现在:环形日志 + 头部角标 + 浮层,并经主进程追加到 userData/errors.log。
    引擎(CORE)保持纯函数不上报;自检里刻意容错的 catch 也不动。 */
+/* ===== 持久化 schema(2026-09-15 FDE 评审 R11)=====
+   state 整包落盘,此前迁移散在 boot 里的一堆 if。现在:state.schema 记版本,迁移只在 MIGRATIONS 阶梯里按序执行(幂等),
+   新加迁移 = 加一项 + STATE_SCHEMA+1。来自更高版本的方案文件不降级,只提示。 */
+const STATE_SCHEMA=2;
+const MIGRATIONS=[
+  {v:1,note:'2026-09-01 取整步长 1→5(V34 曾误改)',fn:function(s){ if(s.cfg&&s.cfg.roundTo===1)s.cfg.roundTo=5; }},
+  {v:2,note:'2026-09-15 单元键改稳定 uid(袋子键在底表载入后由 migrateBagsToUid 迁移)',fn:function(s){ if(!s.uidMap)s.uidMap={}; if(!s.uidSeq)s.uidSeq=0; }}
+];
+function migrateState(from){
+  const f0=(from==null)?0:+from; const log=[];
+  if(f0>STATE_SCHEMA){ reportErr(new Error('方案文件 schema '+f0+' 高于本版支持的 '+STATE_SCHEMA+',按原样读取,不降级'),'migrateState'); state.schema=f0; return {ahead:true,applied:log}; }
+  MIGRATIONS.forEach(function(m){ if(m.v>f0){ try{ m.fn(state); log.push(m.v); }catch(e){ reportErr(e,'migrate v'+m.v); } } });
+  state.schema=STATE_SCHEMA;
+  return {ahead:false,applied:log};
+}
 window.__errRing=window.__errRing||[];
 function reportErr(e,where){
   try{

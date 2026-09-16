@@ -185,7 +185,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:
 </style>
 <script>
 /* 版本号单一定义处:发布新版只改这里(界面两处显示自动跟随),同时把 package.json 的 version 对齐 */
-window.APP_VER='V89';
+window.APP_VER='V90';
 </script>
 </head>
 <body>
@@ -3078,6 +3078,21 @@ const SHELL=window.fsdShell||null;
 /* ===== 错误可见(2026-09-15 FDE 评审 R10)=====
    此前 49 处 catch(e){ reportErr(e,'page-open'); } 静默吞错,用户看到「数不对」而不是「哪里错了」。现在:环形日志 + 头部角标 + 浮层,并经主进程追加到 userData/errors.log。
    引擎(CORE)保持纯函数不上报;自检里刻意容错的 catch 也不动。 */
+/* ===== 持久化 schema(2026-09-15 FDE 评审 R11)=====
+   state 整包落盘,此前迁移散在 boot 里的一堆 if。现在:state.schema 记版本,迁移只在 MIGRATIONS 阶梯里按序执行(幂等),
+   新加迁移 = 加一项 + STATE_SCHEMA+1。来自更高版本的方案文件不降级,只提示。 */
+const STATE_SCHEMA=2;
+const MIGRATIONS=[
+  {v:1,note:'2026-09-01 取整步长 1→5(V34 曾误改)',fn:function(s){ if(s.cfg&&s.cfg.roundTo===1)s.cfg.roundTo=5; }},
+  {v:2,note:'2026-09-15 单元键改稳定 uid(袋子键在底表载入后由 migrateBagsToUid 迁移)',fn:function(s){ if(!s.uidMap)s.uidMap={}; if(!s.uidSeq)s.uidSeq=0; }}
+];
+function migrateState(from){
+  const f0=(from==null)?0:+from; const log=[];
+  if(f0>STATE_SCHEMA){ reportErr(new Error('方案文件 schema '+f0+' 高于本版支持的 '+STATE_SCHEMA+',按原样读取,不降级'),'migrateState'); state.schema=f0; return {ahead:true,applied:log}; }
+  MIGRATIONS.forEach(function(m){ if(m.v>f0){ try{ m.fn(state); log.push(m.v); }catch(e){ reportErr(e,'migrate v'+m.v); } } });
+  state.schema=STATE_SCHEMA;
+  return {ahead:false,applied:log};
+}
 window.__errRing=window.__errRing||[];
 function reportErr(e,where){
   try{
@@ -10094,11 +10109,11 @@ async function aiLlm(payload,streamInto){
     return SHELL.aiChatCli({cmd:c.cliCmd,argsTmpl:c.cliArgs,inputMode:c.cliMode,prompt:flat,
       timeoutMs:(+((state.ai||{}).timeoutMs)||240)*1000});
   }
-  if(c.provider!=='lmstudio'&&!(state.ai&&state.ai.onlineOk)){
+  if(c.provider!=='lmstudio'&&!window.__aiOnlineOk){   // R12:每次会话确认一次,不再永久记住(数据不出本机是承诺,不是一次性勾选)
     /* 数据不出本机(2026-09-04 D13):在线模型会收到工具返回的 SO/SI/库存,首次使用必须显式确认(只问一次,可在设置页改回本机) */
-    const okGo=window.confirm('AI 解读将把问题与取数结果(SO/SI/库存等)发送到在线服务「'+aiProviderTag()+'」。\n确认发送?(只问一次;可在设置页改回本机 LM Studio)');
+    const okGo=window.confirm('AI 解读将把问题与取数结果(SO/SI/库存等)发送到在线服务「'+aiProviderTag()+'」。\n确认发送?(本次会话只问一次;可在设置页改回本机 LM Studio)');
     if(!okGo)throw new Error('已取消:未向在线服务发送数据');
-    state.ai.onlineOk=true; saveState();
+    window.__aiOnlineOk=true;
   }
   const body=Object.assign(aiReqBase(),{temperature:0},payload);
   if((state.ai||{}).timeoutMs)body.timeoutMs=Math.max(body.timeoutMs||0,(+state.ai.timeoutMs)*1000);
@@ -14557,6 +14572,17 @@ window.__selftest=async function(arg){
        再按周拆分时余数只能塞进某一周 → 月合计出现 19/13/169/187 这种非 5 倍数。
        断言:承接月(备注含「承接拍数比例」)的 SO 与 SI 都是 roundTo 的倍数。 */
     sfStep('roundStepOk begin');
+    /* R11 门禁 schemaOk:启动后 schema 已盖章;老档(无 schema、roundTo=1)经阶梯迁移后 roundTo=5;更高版本不降级 */
+    let schemaOk=false;
+    try{
+      const s0=state.schema,r0=state.cfg.roundTo;
+      const stamped=state.schema===STATE_SCHEMA;
+      state.cfg.roundTo=1; const m1=migrateState(null);
+      const migrated=state.cfg.roundTo===5&&state.schema===STATE_SCHEMA&&m1.applied.indexOf(1)>=0;
+      const m2=migrateState(99); const ahead=!!m2.ahead&&state.schema===99;
+      state.schema=STATE_SCHEMA; state.cfg.roundTo=r0; window.__errRing.length=0; const b=document.getElementById('errBadge'); if(b)b.style.display='none';
+      schemaOk=stamped&&migrated&&ahead; tms.schema={stamped:stamped,migrated:migrated,ahead:ahead,was:s0};
+    }catch(e){ tms.schema='ERR:'+String(e&&e.message||e).slice(0,120); }
     /* R10 门禁 errVisibleOk:上报一条 → 环形日志 +1、角标显示计数;清空后角标隐藏 */
     let errVisibleOk=false;
     try{
@@ -15817,9 +15843,9 @@ window.__selftest=async function(arg){
     (function(){ const c=calcCache(); delete c.budTo; delete c.budOv; delete c.pvExt; delete c.lyModels; })();
     sfStep('pendGroup done');
     window.__soToolOff=__soSnap.off; if(SHELL&&SHELL.soTool){ state.cfg.autoFlat=__soSnap.autoFlat; }
-    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&lineageOk&&uidOk&&errVisibleOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
+    return {ok:!!okScan&&!!store&&store.units.size>0&&!!okRetail&&!!Dr&&Dr.list.length>0&&!!okAudio&&!!Da&&Da.list.length>0&&persistOk&&unitTapOk&&qEqOk&&roundStepOk&&pendGroupOk&&!!window.__channelsOk&&!!window.__pvModesOk&&!!window.__monitorOk&&!!window.__reconMoveOk&&!!window.__rulesOk&&!!window.__viewNavOk&&!!window.__soToolOk&&lineageOk&&uidOk&&errVisibleOk&&schemaOk&&smSimOk&&sumWatchOk&&expPrevOk&&targetOk&&btOk&&engOk&&budOk&&mkOk&&lockOk&&xgOk&&aiOk&&pvOk&&udOk&&osOk&&npPvOk&&npLateOk&&reconOk&&ctOk&&xgPvOk&&incOk&&dosQOk&&finOk&&tapAuditOk&&perfOk,
       incOk:incOk,dosQOk:dosQOk,finOk:finOk,tapAuditOk:tapAuditOk,perfOk:perfOk,smSimOk:smSimOk,sumWatchOk:sumWatchOk,expPrevOk:expPrevOk,targetOk:targetOk,btOk:btOk,mkOk:mkOk,lockOk:lockOk,xgOk:xgOk,aiOk:aiOk,pvOk:pvOk,udOk:udOk,osOk:osOk,npPvOk:npPvOk,npLateOk:npLateOk,reconOk:reconOk,ctOk:ctOk,xgPvOk:xgPvOk,
-      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk, lineageOk:lineageOk, uidOk:uidOk, errVisibleOk:errVisibleOk,
+      viewDigests:viewDigests, exportDigests:exportDigests, unitTapOk:unitTapOk, qEqOk:qEqOk, roundStepOk:roundStepOk, pendGroupOk:pendGroupOk, channelsOk:!!window.__channelsOk, pvModesOk:!!window.__pvModesOk, monitorOk:!!window.__monitorOk, reconMoveOk:!!window.__reconMoveOk, rulesOk:!!window.__rulesOk, viewNavOk:!!window.__viewNavOk, soToolOk:!!window.__soToolOk, lineageOk:lineageOk, uidOk:uidOk, errVisibleOk:errVisibleOk, schemaOk:schemaOk,
       units:store?store.units.size:0, maxPeriod:store?store.maxPeriod:0, pend:pendingList().length,
       files:folderInfo&&folderInfo.files?folderInfo.files.length:0,
       retailUnits:retailStore?retailStore.units.size:0,
@@ -15893,6 +15919,7 @@ async function boot(){
   }
   if(!restored){ try{ const s=localStorage.getItem(LS_STATE); if(s)restored=JSON.parse(s); }catch(e){} }
   if(restored){ Object.keys(state).forEach(function(k){ if(restored[k]!=null)state[k]=restored[k]; }); }
+  migrateState(restored?restored.schema:null);   // R11:按阶梯迁移到当前 schema(无档=全新,直接盖章)
   if(SHELL&&SHELL.getPaths){ try{ SHELL_PATHS=await SHELL.getPaths(); }catch(e){} }
   state.ui=Object.assign({},UI_DEFAULTS,state.ui||{});   // 旧版本存档缺新键时补默认
   /* kedit 旧格式迁移:裸产品线键 → 'L|'+线 */
@@ -15906,7 +15933,6 @@ async function boot(){
   if(!state.channelAlias)state.channelAlias={};
   if(state.showRetailAudio==null)state.showRetailAudio=false;
   if(state.cfg.tailWeeks==null)state.cfg.tailWeeks=12;
-  if(state.cfg.roundTo===1)state.cfg.roundTo=5;   // 2026-09-01 二次拍板:推演值要像手拍的,统一 5 台取整(V34 曾误改成 1 台,老档自动迁回)
   if(!state.buyMode)state.buyMode={};
   if(state.cfg.blHead==null)state.cfg.blHead=8;
   if(state.cfg.blKappa==null)state.cfg.blKappa=1.25;

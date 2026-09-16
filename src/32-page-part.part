@@ -703,11 +703,11 @@ async function aiLlm(payload,streamInto){
     return SHELL.aiChatCli({cmd:c.cliCmd,argsTmpl:c.cliArgs,inputMode:c.cliMode,prompt:flat,
       timeoutMs:(+((state.ai||{}).timeoutMs)||240)*1000});
   }
-  if(c.provider!=='lmstudio'&&!(state.ai&&state.ai.onlineOk)){
+  if(c.provider!=='lmstudio'&&!window.__aiOnlineOk){   // R12:每次会话确认一次,不再永久记住(数据不出本机是承诺,不是一次性勾选)
     /* 数据不出本机(2026-09-04 D13):在线模型会收到工具返回的 SO/SI/库存,首次使用必须显式确认(只问一次,可在设置页改回本机) */
-    const okGo=window.confirm('AI 解读将把问题与取数结果(SO/SI/库存等)发送到在线服务「'+aiProviderTag()+'」。\n确认发送?(只问一次;可在设置页改回本机 LM Studio)');
+    const okGo=window.confirm('AI 解读将把问题与取数结果(SO/SI/库存等)发送到在线服务「'+aiProviderTag()+'」。\n确认发送?(本次会话只问一次;可在设置页改回本机 LM Studio)');
     if(!okGo)throw new Error('已取消:未向在线服务发送数据');
-    state.ai.onlineOk=true; saveState();
+    window.__aiOnlineOk=true;
   }
   const body=Object.assign(aiReqBase(),{temperature:0},payload);
   if((state.ai||{}).timeoutMs)body.timeoutMs=Math.max(body.timeoutMs||0,(+state.ai.timeoutMs)*1000);
