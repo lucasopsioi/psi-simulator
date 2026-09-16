@@ -239,12 +239,16 @@ function pvLongRows(items,src,yrs,curY,fwSet){
       acc(y,F.monthOfP(rr.p),(src==='fsd'?(rr.si||0):(rr.buy||0)),(rr.so||0),rr.inv,rr.p);
     });
     const e=extByKey?extByKey.get(pv2UKey(u.country,u.account,u.model)):null;
-    yrs.forEach(function(y){
+    let lastInv=null;   // D2:桶内无库存记录 → 结转上一已知(与矩阵桶口径一致;此前长表留空、矩阵结转,两处对不上)
+    yrs.slice().sort(function(a,b){ return a-b; }).forEach(function(y){
       for(let m=1;m<=12;m++){
         const k=y+'-'+m;
         let s1,s2,iv;
         if(y>curY){ const o=e&&e[k]; if(!o)continue; s1=o.si; s2=o.so; iv=o.inv; }
-        else { if(si[k]==null&&so[k]==null&&invE[k]==null)continue; s1=si[k]||0; s2=so[k]||0; iv=invE[k]; }
+        else {
+          if(invE[k]!=null)lastInv=invE[k];
+          if(si[k]==null&&so[k]==null&&invE[k]==null&&lastInv==null)continue;
+          s1=si[k]||0; s2=so[k]||0; iv=invE[k]!=null?invE[k]:lastInv; }
         const js=mSerial(y,m), qq='Q'+Math.ceil(m/3);
         data.push(['','','','','',u.line,famName,u.country,modelName,js,'Sell In',Math.round(s1),u.account,y,qq]);
         data.push(['','','','','',u.line,famName,u.country,modelName,js,'Sell Out',Math.round(s2),u.account,y,qq]);

@@ -4,7 +4,7 @@ const SM_DIMS={line:['产品线'],country:['国家'],product:['产品'],
 function smAgg(){ return {n:0,inv:0,daily:0,futSO:0,futSI:0,mo:{},moSI:{},me:{},endInv:0}; }
 function smAdd(a,it,mes,fwMonthOf){
   a.n++;
-  if(it.cur.curInv!=null)a.inv+=it.cur.curInv;
+  { const ivC=F.invCurOf(it.cur); if(ivC!=null)a.inv+=ivC; }   // D3 统一口径
   if(it.cur.dailySO)a.daily+=it.cur.dailySO;
   const rows=it.sim?it.sim.rows:[];
   rows.forEach(function(r){
@@ -471,9 +471,9 @@ function renderSummaryFlat(elOpt){
     if(!gobj){ gobj={kArr:kArr,inv:0,daily:0,futSO:0,endInv:0,n:0,me:{}};
       mes.forEach(function(m2){ gobj.me[m2.p]={inv:0,daily:0,so:0,days:F.monthDaysOf(F.periodY(m2.p),m2.m)}; }); groups.set(k,gobj); }
     gobj.n++;
-    if(it.cur.curInv!=null)gobj.inv+=it.cur.curInv;
+    { const ivC=F.invCurOf(it.cur); if(ivC!=null)gobj.inv+=ivC; }   // D3 统一口径
     if(it.cur.dailySO)gobj.daily+=it.cur.dailySO;
-    it.fc.forEach(function(f){ if(f.so)gobj.futSO+=f.so; });
+    ((it.sim&&it.sim.rows)||[]).forEach(function(r){ gobj.futSO+=(r.so||0); });   // D7:未来SO=压回后的推演行,与树形/推演编辑同数
     const simRows=it.sim?it.sim.rows:[];
     if(simRows.length){ gobj.endInv+=simRows[simRows.length-1].inv; }
     mes.forEach(function(m2){

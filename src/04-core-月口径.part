@@ -16,12 +16,16 @@ C.CALIBER={
   dosBaseline:{label:'DOS(平销口径)',    f:'库存÷平销日均(dailyBase)',                             impl:'inv/dailyBase'},
   dosMedYear: {label:'年末DOS(去年画像)',f:'去年各月末库存÷(去年周销中位÷7)',                     impl:'C.lastYearMonthEndCaps'},
   dosFinQ:    {label:'季DOS(财经)',      f:'季末库存÷(季末月SO÷该月天数)',                         impl:'C.finCompute'},
-  invCur:     {label:'当前INV',          f:'最新有数周的 INV(缺失不回落 INV1)',                     impl:'cur.curInv'},
-  invCurF:    {label:'当前INV(回落INV1)',f:'INV 缺失时取 INV1',                                     impl:'mkAggOf'},
+  invCur:     {label:'当前INV',          f:'最新有数周的 INV,缺失取 INV1(2026-09-15 D3 统一)',      impl:'C.invCurOf'},
+  invCurF:    {label:'当前INV',          f:'同 invCur(D3 后合并,保留 id 兼容)',                       impl:'C.invCurOf'},
   futSO:      {label:'未来SO',           f:'Σ推演周 SO(库存/锁量压回后)',                           impl:'sim.rows.so'},
   futSOPlan:  {label:'未来SO(计划)',     f:'Σ推演周计划 SO(压回前)',                                impl:'fc.so'}
 };
 C.calTitle=function(id){ const c=C.CALIBER[id]; return c?(c.label+' = '+c.f):''; };
+/* 当前库存唯一实现(2026-09-15 R6/D3):INV 缺失回落 INV1;两者都缺为 null。所有聚合(汇总树/平铺/月末/监控/总控/q)只准调这一处 */
+C.invCurOf=function(cur){ if(!cur)return null; return cur.curInv!=null?cur.curInv:(cur.curInv1!=null?cur.curInv1:null); };
+/* 历史月末库存唯一规则(2026-09-15 R6/D2):某周期之前(含)最晚一个有库存的周,INV 缺失取 INV1;没有则 null */
+C.invAtOrBefore=function(u,pe){ let best=null,bp=0; u.periods.forEach(function(p2){ if(p2>pe||p2<bp)return; const w=u.weeks.get(p2); const iv=w?(w.inv!=null?w.inv:w.inv1):null; if(iv!=null){ best=iv; bp=p2; } }); return best; };
 /* 血缘文案(R5):一格 SO 怎么来的。r=模拟行(含 lin/so/soPlan/capped/siSrc/buySrc/tail) */
 C.lineageText=function(r){
   if(!r)return '';

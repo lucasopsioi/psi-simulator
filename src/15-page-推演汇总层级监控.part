@@ -17,7 +17,7 @@ function sumWatchMetrics(w){
     n++;
     const m=F.watchMetrics(u,state.cfg);
     so4+=m.so4; prev4+=m.soPrev4; si4+=m.si4; st4+=m.st4;
-    if(it.cur.curInv!=null)inv+=it.cur.curInv;
+    { const ivC=F.invCurOf(it.cur); if(ivC!=null)inv+=ivC; }   // D3 统一口径
     if(it.cur.dailySO)daily+=it.cur.dailySO;
     if(m.inv1Now!=null){ inv1Now+=m.inv1Now; hasInv1=true; }
     if(m.inv1Delta4!=null){ inv1Delta+=m.inv1Delta4; hasDelta=true; }

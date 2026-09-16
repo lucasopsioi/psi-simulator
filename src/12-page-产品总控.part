@@ -8,7 +8,7 @@ function mkAggOf(items,mFsd,mAud,months,meF,meA,fiF,fiA,extCtx){
   const conf={high:0,mid:0,low:0,none:0};
   items.forEach(function(x){
     const it=x.it;
-    inv+=((it.cur.curInv!=null?it.cur.curInv:it.cur.curInv1)||0);
+    inv+=(F.invCurOf(it.cur)||0);   // D3:唯一实现
     daily+=(it.cur.dailySO||0);
     if(it.bl&&it.bl.base!=null)conf[it.bl.conf||'low']++; else conf.none++;
     const ovo=state.ovSO[ovKey(x.src,it.u.key)],ovi=state.ovSI[ovKey(x.src,it.u.key)];
@@ -672,8 +672,7 @@ async function exportMkLong(rowsAll,ctx){
             if(rr&&rr.inv!=null)invEnd[m]=(invEnd[m]||0)+(rr.inv||0);
           } else {
             const pe=F.monthEndPeriodOf(curY,m);
-            const w=u.weeks.get(pe);
-            const iv=w?(w.inv!=null?w.inv:w.inv1):null;
+            const iv=F.invAtOrBefore(u,pe);   // D2:恰好月末周缺库存时取之前最晚一个有数周(与矩阵/推演编辑长表同口径)
             if(iv!=null)invEnd[m]=(invEnd[m]||0)+iv;
           }
         }

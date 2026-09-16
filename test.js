@@ -1930,7 +1930,8 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   eq(qf.rows.length, 1 + 2, 'qRun flat: 合计 + 2 叶子');
   eq(C.curAgg(Dx.list, {}).inv, 1800, 'curAgg: Σ当前库存');
   eq(C.curAgg([{ u: u1, cur: { curInv: null, curInv1: 50, dailySO: 1 } }], { invFallback: 'inv1' }).inv, 50, 'curAgg: invFallback=inv1 回落');
-  eq(C.curAgg([{ u: u1, cur: { curInv: null, curInv1: 50, dailySO: 1 } }], {}).inv, null, 'curAgg: 默认不回落');
+  eq(C.curAgg([{ u: u1, cur: { curInv: null, curInv1: 50, dailySO: 1 } }], {}).inv, 50, 'curAgg: 默认回落 INV1(2026-09-15 D3)');
+  eq(C.curAgg([{ u: u1, cur: { curInv: null, curInv1: 50, dailySO: 1 } }], { invFallback: 'none' }).inv, null, 'curAgg: invFallback=none 才不回落');
   eq(C.unitKey3('A', 'X', null), 'A\u0001X\u0001', 'unitKey3: 型号空串');
 })();
 
@@ -1998,6 +1999,18 @@ eq(C.medianOf([70, 70, 300, 70, 70]), 70, 'median ignores promo spike');
   const u = st1.units.get('u1');
   ok(u && u.nameKey === 'CO::A::M' && u.key === 'u1', 'buildStore keyOf: key=uid, nameKey 保留可读名', u && u.key);
   eq(C.nameKey3('CO', 'A', null), 'CO::A::', 'nameKey3: 型号空');
+})();
+
+
+/* ---------- R6(2026-09-15):口径唯一实现 ---------- */
+(function () {
+  eq(C.invCurOf({ curInv: 10, curInv1: 3 }), 10, 'invCurOf: 有 INV 取 INV');
+  eq(C.invCurOf({ curInv: null, curInv1: 3 }), 3, 'invCurOf: INV 缺失回落 INV1');
+  eq(C.invCurOf({ curInv: null, curInv1: null }), null, 'invCurOf: 都缺为 null');
+  const weeks = new Map([[2026010, { inv: 100 }], [2026012, { inv: null, inv1: 80 }], [2026020, { inv: 60 }]]);
+  const u = { periods: [2026010, 2026012, 2026020], weeks: weeks };
+  eq(C.invAtOrBefore(u, 2026015), 80, 'invAtOrBefore: 取之前最晚有数周(INV 缺失取 INV1)');
+  eq(C.invAtOrBefore(u, 2026005), null, 'invAtOrBefore: 之前没有则 null');
 })();
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

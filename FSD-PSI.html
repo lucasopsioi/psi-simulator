@@ -185,7 +185,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:
 </style>
 <script>
 /* 版本号单一定义处:发布新版只改这里(界面两处显示自动跟随),同时把 package.json 的 version 对齐 */
-window.APP_VER='V87';
+window.APP_VER='V88';
 </script>
 </head>
 <body>
@@ -1328,12 +1328,16 @@ C.CALIBER={
   dosBaseline:{label:'DOS(平销口径)',    f:'库存÷平销日均(dailyBase)',                             impl:'inv/dailyBase'},
   dosMedYear: {label:'年末DOS(去年画像)',f:'去年各月末库存÷(去年周销中位÷7)',                     impl:'C.lastYearMonthEndCaps'},
   dosFinQ:    {label:'季DOS(财经)',      f:'季末库存÷(季末月SO÷该月天数)',                         impl:'C.finCompute'},
-  invCur:     {label:'当前INV',          f:'最新有数周的 INV(缺失不回落 INV1)',                     impl:'cur.curInv'},
-  invCurF:    {label:'当前INV(回落INV1)',f:'INV 缺失时取 INV1',                                     impl:'mkAggOf'},
+  invCur:     {label:'当前INV',          f:'最新有数周的 INV,缺失取 INV1(2026-09-15 D3 统一)',      impl:'C.invCurOf'},
+  invCurF:    {label:'当前INV',          f:'同 invCur(D3 后合并,保留 id 兼容)',                       impl:'C.invCurOf'},
   futSO:      {label:'未来SO',           f:'Σ推演周 SO(库存/锁量压回后)',                           impl:'sim.rows.so'},
   futSOPlan:  {label:'未来SO(计划)',     f:'Σ推演周计划 SO(压回前)',                                impl:'fc.so'}
 };
 C.calTitle=function(id){ const c=C.CALIBER[id]; return c?(c.label+' = '+c.f):''; };
+/* 当前库存唯一实现(2026-09-15 R6/D3):INV 缺失回落 INV1;两者都缺为 null。所有聚合(汇总树/平铺/月末/监控/总控/q)只准调这一处 */
+C.invCurOf=function(cur){ if(!cur)return null; return cur.curInv!=null?cur.curInv:(cur.curInv1!=null?cur.curInv1:null); };
+/* 历史月末库存唯一规则(2026-09-15 R6/D2):某周期之前(含)最晚一个有库存的周,INV 缺失取 INV1;没有则 null */
+C.invAtOrBefore=function(u,pe){ let best=null,bp=0; u.periods.forEach(function(p2){ if(p2>pe||p2<bp)return; const w=u.weeks.get(p2); const iv=w?(w.inv!=null?w.inv:w.inv1):null; if(iv!=null){ best=iv; bp=p2; } }); return best; };
 /* 血缘文案(R5):一格 SO 怎么来的。r=模拟行(含 lin/so/soPlan/capped/siSrc/buySrc/tail) */
 C.lineageText=function(r){
   if(!r)return '';
@@ -1516,7 +1520,7 @@ C.DIM_OF={
 C.curAgg=function(items,o){
   o=o||{}; let inv=0,daily=0,n=0,hasInv=false;
   items.forEach(function(it){ const c=it.cur||{}; n++;
-    const iv=(c.curInv!=null)?c.curInv:(o.invFallback==='inv1'?c.curInv1:null);
+    const iv=(o.invFallback==='none')?c.curInv:C.invCurOf(c);   // D3:默认回落 INV1;'none' 仅供比对旧口径
     if(iv!=null){ inv+=iv; hasInv=true; }
     daily+=(c.dailySO||0); });
   return {n:n,inv:hasInv?inv:null,daily:daily,dosCur:(hasInv&&daily>0)?Math.round(inv/daily):null};
@@ -4638,7 +4642,7 @@ function mkAggOf(items,mFsd,mAud,months,meF,meA,fiF,fiA,extCtx){
   const conf={high:0,mid:0,low:0,none:0};
   items.forEach(function(x){
     const it=x.it;
-    inv+=((it.cur.curInv!=null?it.cur.curInv:it.cur.curInv1)||0);
+    inv+=(F.invCurOf(it.cur)||0);   // D3:唯一实现
     daily+=(it.cur.dailySO||0);
     if(it.bl&&it.bl.base!=null)conf[it.bl.conf||'low']++; else conf.none++;
     const ovo=state.ovSO[ovKey(x.src,it.u.key)],ovi=state.ovSI[ovKey(x.src,it.u.key)];
@@ -5302,8 +5306,7 @@ async function exportMkLong(rowsAll,ctx){
             if(rr&&rr.inv!=null)invEnd[m]=(invEnd[m]||0)+(rr.inv||0);
           } else {
             const pe=F.monthEndPeriodOf(curY,m);
-            const w=u.weeks.get(pe);
-            const iv=w?(w.inv!=null?w.inv:w.inv1):null;
+            const iv=F.invAtOrBefore(u,pe);   // D2:恰好月末周缺库存时取之前最晚一个有数周(与矩阵/推演编辑长表同口径)
             if(iv!=null)invEnd[m]=(invEnd[m]||0)+iv;
           }
         }
@@ -5374,7 +5377,7 @@ function sumWatchMetrics(w){
     n++;
     const m=F.watchMetrics(u,state.cfg);
     so4+=m.so4; prev4+=m.soPrev4; si4+=m.si4; st4+=m.st4;
-    if(it.cur.curInv!=null)inv+=it.cur.curInv;
+    { const ivC=F.invCurOf(it.cur); if(ivC!=null)inv+=ivC; }   // D3 统一口径
     if(it.cur.dailySO)daily+=it.cur.dailySO;
     if(m.inv1Now!=null){ inv1Now+=m.inv1Now; hasInv1=true; }
     if(m.inv1Delta4!=null){ inv1Delta+=m.inv1Delta4; hasDelta=true; }
@@ -6025,12 +6028,16 @@ function pvLongRows(items,src,yrs,curY,fwSet){
       acc(y,F.monthOfP(rr.p),(src==='fsd'?(rr.si||0):(rr.buy||0)),(rr.so||0),rr.inv,rr.p);
     });
     const e=extByKey?extByKey.get(pv2UKey(u.country,u.account,u.model)):null;
-    yrs.forEach(function(y){
+    let lastInv=null;   // D2:桶内无库存记录 → 结转上一已知(与矩阵桶口径一致;此前长表留空、矩阵结转,两处对不上)
+    yrs.slice().sort(function(a,b){ return a-b; }).forEach(function(y){
       for(let m=1;m<=12;m++){
         const k=y+'-'+m;
         let s1,s2,iv;
         if(y>curY){ const o=e&&e[k]; if(!o)continue; s1=o.si; s2=o.so; iv=o.inv; }
-        else { if(si[k]==null&&so[k]==null&&invE[k]==null)continue; s1=si[k]||0; s2=so[k]||0; iv=invE[k]; }
+        else {
+          if(invE[k]!=null)lastInv=invE[k];
+          if(si[k]==null&&so[k]==null&&invE[k]==null&&lastInv==null)continue;
+          s1=si[k]||0; s2=so[k]||0; iv=invE[k]!=null?invE[k]:lastInv; }
         const js=mSerial(y,m), qq='Q'+Math.ceil(m/3);
         data.push(['','','','','',u.line,famName,u.country,modelName,js,'Sell In',Math.round(s1),u.account,y,qq]);
         data.push(['','','','','',u.line,famName,u.country,modelName,js,'Sell Out',Math.round(s2),u.account,y,qq]);
@@ -11943,7 +11950,7 @@ function renderMonthEnd(elOpt){
   rows.forEach(function(x,idx){
     if(x.exempt)exSkip++;
     else {
-      if(x.cur.curInv!=null)agg.inv+=x.cur.curInv;
+      { const ivC=F.invCurOf(x.cur); if(ivC!=null)agg.inv+=ivC; }   // D3 统一口径
       if(x.cur.dailySO)agg.daily+=x.cur.dailySO;
       if(x.simRows)mes.forEach(function(me){
         for(let i=0;i<x.simRows.length;i++){ if(x.simRows[i].p===me.p){
@@ -13123,7 +13130,7 @@ const SM_DIMS={line:['产品线'],country:['国家'],product:['产品'],
 function smAgg(){ return {n:0,inv:0,daily:0,futSO:0,futSI:0,mo:{},moSI:{},me:{},endInv:0}; }
 function smAdd(a,it,mes,fwMonthOf){
   a.n++;
-  if(it.cur.curInv!=null)a.inv+=it.cur.curInv;
+  { const ivC=F.invCurOf(it.cur); if(ivC!=null)a.inv+=ivC; }   // D3 统一口径
   if(it.cur.dailySO)a.daily+=it.cur.dailySO;
   const rows=it.sim?it.sim.rows:[];
   rows.forEach(function(r){
@@ -13590,9 +13597,9 @@ function renderSummaryFlat(elOpt){
     if(!gobj){ gobj={kArr:kArr,inv:0,daily:0,futSO:0,endInv:0,n:0,me:{}};
       mes.forEach(function(m2){ gobj.me[m2.p]={inv:0,daily:0,so:0,days:F.monthDaysOf(F.periodY(m2.p),m2.m)}; }); groups.set(k,gobj); }
     gobj.n++;
-    if(it.cur.curInv!=null)gobj.inv+=it.cur.curInv;
+    { const ivC=F.invCurOf(it.cur); if(ivC!=null)gobj.inv+=ivC; }   // D3 统一口径
     if(it.cur.dailySO)gobj.daily+=it.cur.dailySO;
-    it.fc.forEach(function(f){ if(f.so)gobj.futSO+=f.so; });
+    ((it.sim&&it.sim.rows)||[]).forEach(function(r){ gobj.futSO+=(r.so||0); });   // D7:未来SO=压回后的推演行,与树形/推演编辑同数
     const simRows=it.sim?it.sim.rows:[];
     if(simRows.length){ gobj.endInv+=simRows[simRows.length-1].inv; }
     mes.forEach(function(m2){

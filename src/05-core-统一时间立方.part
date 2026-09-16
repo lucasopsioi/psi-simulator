@@ -166,7 +166,7 @@ C.DIM_OF={
 C.curAgg=function(items,o){
   o=o||{}; let inv=0,daily=0,n=0,hasInv=false;
   items.forEach(function(it){ const c=it.cur||{}; n++;
-    const iv=(c.curInv!=null)?c.curInv:(o.invFallback==='inv1'?c.curInv1:null);
+    const iv=(o.invFallback==='none')?c.curInv:C.invCurOf(c);   // D3:默认回落 INV1;'none' 仅供比对旧口径
     if(iv!=null){ inv+=iv; hasInv=true; }
     daily+=(c.dailySO||0); });
   return {n:n,inv:hasInv?inv:null,daily:daily,dosCur:(hasInv&&daily>0)?Math.round(inv/daily):null};

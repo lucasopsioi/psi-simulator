@@ -43,7 +43,7 @@ function renderMonthEnd(elOpt){
   rows.forEach(function(x,idx){
     if(x.exempt)exSkip++;
     else {
-      if(x.cur.curInv!=null)agg.inv+=x.cur.curInv;
+      { const ivC=F.invCurOf(x.cur); if(ivC!=null)agg.inv+=ivC; }   // D3 统一口径
       if(x.cur.dailySO)agg.daily+=x.cur.dailySO;
       if(x.simRows)mes.forEach(function(me){
         for(let i=0;i<x.simRows.length;i++){ if(x.simRows[i].p===me.p){

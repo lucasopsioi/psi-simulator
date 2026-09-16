@@ -556,7 +556,10 @@
 | R2 底表契约 | V84 | `C.SCHEMA`（必填/可选/别名/PSI 取值）+ `C.validateGrid`；`parseGrid` 在 缺必填列 / PSI 全不识别 / 无表头列数不对 时整表拒绝并说清；三个导入入口原样显示原因；`C.DICT` 收拢 19 处逻辑用中文字面量 | 6 条契约单测；指纹不变 |
 | R4 物理拆文件 | v85+ | `scripts/split.js` 按分节注释切成 `src/*.part`（55 个）+ `src/manifest.json`；`scripts/build.js` 拼回单文件，`--check` 校验；**源码真相在 `src/`，`FSD-PSI.html` 是构建产物**；补丁一律用 `scripts/patch.py`（锚点跨部件唯一才落盘） | 拼回 sha256 与切分前逐字节相同 |
 
-下一步：R5 计算期血缘（四因子）→ R3 uid 键 → R6 口径强制 → R8 SO 工具物理独立 → R9–R12。
+| R5 计算期血缘 | V86 | `buildForecastForUnit / buildRetailForecast` 每周带 `f={base,scale,k,g,how}`，`carryTaps` 记 `carry/raw`，`quantizeFc` 记 `plan`，模拟行带 `lin`；`C.lineageText` 一处生成文案；单元明细 SO 格悬停、矩阵右键浮层「四因子」块 | 门禁 `lineageOk`：全部推演周 四因子相乘==原始、取整序列==计划、实际≤计划（361 周） |
+| R3 稳定 uid 键 | V87 | `buildStore` 注入 `keyOf=uidOf`（`state.uidMap` 持久化），`u.key` 变 `uN`、`u.nameKey` 保留可读名；`ovExtKeyOf` 统一把外推键换成 uid；改名只给新名登记同一 uid（`aliasUidForRename`），袋子一个键不动；老档 `migrateBagsToUid` 一次性迁移 | 门禁 `uidOk`：袋键全为 uid；改名回环 同 uid / 手拍在 / 监控在 / 数不变；老档迁移。指纹不变 |
+
+下一步：R6 口径强制 → R8 SO 工具物理独立 → R9–R12。
 
 ## 模块合并方案（2026-09-02 提出，待用户拍板后实施）
 
