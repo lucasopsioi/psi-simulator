@@ -561,7 +561,13 @@
 
 | R6 口径唯一实现 | V88 | **D3** 当前库存 INV 缺失回落 INV1：`C.invCurOf` 一处实现，汇总树 / 平铺 / 月末 / 监控 / 总控 / `q()` 同口径；**D7** 平铺「未来SO」改取压回后的推演行（与树形、推演编辑同数）；**D2** 历史月末库存缺则结转上一已知：`C.invAtOrBefore`，推演编辑长表与总控长表与矩阵桶一致。D1/D4/D5/D6 按评审维持，`dosWatch` / `dosTarget28` 保持独立 id | 基线差异只有推演编辑长表 +36 行（免推演单元数据结束后的月份按结转出行）；其余 43 视图 / 18 导出逐位不变 |
 
-下一步：R8 SO 工具物理独立 → R9 缓存统一 → R10 错误可见 → R11 持久化 schema → R12 隐私。
+| R10 错误可见 | V89 | `reportErr` 环形日志（50 条）+ 头部角标 + 浮层 + 主进程 `errors.log`（1MB 轮转）；页面层 26 处 `catch(e){}` 改为上报，`window.onerror / unhandledrejection` 也上报；引擎与自检里刻意容错的不动 | 门禁 `errVisibleOk` |
+| R11 持久化 schema | V90 | `STATE_SCHEMA=2`，迁移只在 `MIGRATIONS` 阶梯里按序幂等执行（v1 取整 1→5 从 boot 挪入，v2 uid 键），`migrateState` 盖章、来自更高版本不降级只提示 | 门禁 `schemaOk`：老档迁移、盖章、更高版本不降级 |
+| R12 隐私 | V90 | 在线 AI provider 的「发送 SO/SI/库存」确认改为**每次会话一次**（`window.__aiOnlineOk`），不再永久记住 | — |
+| R8 SO 工具物理独立 | 押后 | 55 个部件在同一个 `<script>` 里、自检覆盖全部页面，拼子集会让 SO 自检大面积失效；收益只是 exe 小一点，`soTool()` 分叉本就少 | — |
+| R9 缓存统一 memo | 押后 | 六层缓存现由 `incOk / qEqOk / roundStepOk / lineageOk` 盯住；重写失效逻辑的风险大于收益，等 R8 拆分后一起做 | — |
+
+FDE 清单：R1–R7、R10–R12 完成（V83→V90，8 版），R8/R9 押后。
 
 ## 模块合并方案（2026-09-02 提出，待用户拍板后实施）
 
